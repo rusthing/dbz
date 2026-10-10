@@ -1,0 +1,54 @@
+= 常用命令
+:scripts: cjk
+:toc: left
+:toclevels: 3
+:toc-title: 目录
+:numbered:
+:sectnums:
+:sectnum-depth: 3
+:source-highlighter: coderay
+
+== 生成建表语句
+
+略
+
+== 生成建表语句后，修改建表语句
+
+如果是MySQL的脚本，将bool替换为bit(1)，否则MySQL默认会转成tinyint(1)
+
+== 新增数据库版本
+
+. 进入dbz-svr的项目目录
+. 执行新增数据库版本
++
+[source,bash]
+----
+# pgsql
+sqlx migrate add <版本名称> --source migrations/pgsql
+# mysql
+# sqlx migrate add <版本名称> --source migrations/mysql
+----
++
+[NOTE]
+====
+版本名称: 例如 `create-table`、`alter-table`、`init-data`、`update-data`
+====
+. 上面的命令会在`migrations/[mysql或pgsql]`目录下生成一个文件，文件名格式为 `<版本号>_<版本名称>.sql`，例如 `20220101000000_create-table.sql`
+. 在生成的文件中编写SQL语句，并保存
+. 每次运行程序都会自动判断是否需要执行数据库迁移，如果需要则执行迁移
+
+== 生成sea-orm的Model
+
+进入dbz-api的项目目录，执行下面的命令
+
+[source,bash]
+----
+sea-orm-cli generate entity --entity-format dense --model-extra-derives Default --with-serde both --ignore-tables _sqlx_migrations --database-url postgres://dbz:dbz@pgsql/dbz -o src/mo
+----
+
+- model-extra-derives: 模型文件添加的 trait，例如 `Default`
+- with-serde: 是否生成 serde 的代码，both 表示生成正反序列化的代码，还有 `deserialize` 和 `serialize` 可以选择
+- ignore-tables: 忽略的表，多个表用逗号分隔
+- database-url: 数据库连接字符串
+- o: 输出目录，模型文件将生成到`src/mo`目录下
+

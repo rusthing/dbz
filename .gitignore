@@ -1,0 +1,13 @@
+target/
+Cargo.lock
+.DS_Store
+*.swp
+*.swo
+*~
+logs/
+.idea/
+.vscode/
+*.iml
+*.pdb
+*.pjb
+*.ldb

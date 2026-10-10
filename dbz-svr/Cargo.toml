@@ -1,0 +1,50 @@
+[package]
+name = "dbz-svr"
+version = "1.0.0"
+edition = "2024"
+authors = ["zbz"]
+license = "MIT"
+keywords = ["debezium", "kafka-connect", "cdc"]
+description = "A Rust-based Debezium task management service system. Supports task registration, deregistration, status query, scheduled status checking, and automatic restart on failure."
+categories = ["web-programming::http-server"]
+homepage = "https://github.com/rusthing/dbz"
+repository = "https://github.com/rusthing/dbz"
+readme = "README.md"
+
+[dependencies]
+anyhow = { workspace = true }
+tracing = { workspace = true }
+clap = { workspace = true, features = ["derive"] }
+config = { workspace = true }
+chrono = { workspace = true }
+derive_setters = { workspace = true }
+typed-builder = { workspace = true }
+arc-swap = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+serde_with = { workspace = true }
+reqwest = { workspace = true }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "macros", "signal"] }
+tokio-util = { workspace = true }
+axum = { workspace = true, features = ["macros", "multipart"] }
+sqlx = { workspace = true, features = ["runtime-tokio", "any", "all-databases"] }
+sea-orm = { workspace = true, features = ["sqlx-all", "runtime-tokio-rustls", "debug-print"] }
+linkme = { workspace = true }
+regex = { workspace = true }
+o2o = { workspace = true }
+validator = { workspace = true, features = ["derive"] }
+strum = { workspace = true, features = ["derive"] }
+utoipa = { workspace = true, features = ["axum_extras"] }
+utoipa-swagger-ui = { workspace = true, features = ["axum", "vendored"] }
+
+wheel-rs = { workspace = true }
+idworker = { workspace = true, features = ["utils"] }
+robotech = { workspace = true, features = ["db", "config-center", "registry-center", "macros", "redis"] }
+dbz-api = { workspace = true, features = ["server"] }
+jobx-api = { workspace = true }
+jobx-api-client = { workspace = true }
+alarm-api = { workspace = true }
+alarm-api-client = { workspace = true }
+
+[build-dependencies]
+openssl = { version = "0.10.81", features = ["vendored"] }

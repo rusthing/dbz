@@ -1,0 +1,30 @@
+[package]
+name = "dbz-api"
+version = "1.0.0"
+edition = "2024"
+authors = ["zbz"]
+license = "MIT"
+keywords = ["debezium", "api", "dto", "vo"]
+description = "Shared DTO, VO, MO and Dic types for Debezium task management server and API client"
+categories = ["web-programming::http-server"]
+homepage = "https://github.com/rusthing/dbz"
+repository = "https://github.com/rusthing/dbz"
+readme = "README.md"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+serde_with = { workspace = true }
+strum = { workspace = true, features = ["derive"] }
+utoipa = { workspace = true }
+derive_setters = { workspace = true }
+typed-builder = { workspace = true }
+wheel-rs = { workspace = true }
+robotech = { workspace = true, features = ["macros", "db"] }
+
+# Server-side dependencies
+sea-orm = { workspace = true, optional = true }
+o2o = { workspace = true, optional = true }
+validator = { workspace = true, optional = true, features = ["derive"] }
+
+[features]
+server = ["sea-orm", "o2o", "validator", "robotech/macros"]

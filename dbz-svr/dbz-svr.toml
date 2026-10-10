@@ -1,0 +1,22 @@
+# dbz-svr 配置文件
+
+[db]
+url = "postgresql://postgres:postgres@localhost:5432/dbz"
+max-connections = 10
+
+[web]
+port = 8084
+api-prefix = "/api"
+
+[redis]
+url = "redis://localhost:6379"
+
+[id-worker]
+worker-id = 1
+datacenter-id = 1
+
+[jobx]
+base-url = "http://localhost:8082/api"
+
+[alarm]
+base-url = "http://localhost:8083/api"

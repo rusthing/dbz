@@ -1,0 +1,11 @@
+[log]
+level = "info"
+
+[log.file]
+enabled = true
+path = "logs/dbz-svr.log"
+max-size = "10MB"
+max-files = 10
+
+[log.console]
+enabled = true
