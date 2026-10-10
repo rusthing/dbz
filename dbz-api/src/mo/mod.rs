@@ -2,4 +2,4 @@
 
 pub mod prelude;
 
-pub mod dbz_task;
+pub mod dbz_instance;
