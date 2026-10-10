@@ -1,3 +1,3 @@
-pub mod dbz_task_vo;
+pub mod dbz_instance_vo;
 
-pub use dbz_task_vo::*;
+pub use dbz_instance_vo::*;

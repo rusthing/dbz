@@ -13,7 +13,7 @@ create table dbz_instance (
    id                   INT8                 not null,
    name                 VARCHAR(50)          not null,
    job_id               INT8                 not null,
-   "Kafka Connect 地址"   VARCHAR(100)         not null,
+   kafka_connect_url    VARCHAR(100)         not null,
    source_connector_name VARCHAR(50)          not null,
    source_connector_config TEXT                 not null,
    sink_connector_name  VARCHAR(50)          not null,
@@ -44,7 +44,7 @@ comment on column dbz_instance.name is
 comment on column dbz_instance.job_id is
 '关联的任务计划ID';
 
-comment on column dbz_instance."Kafka Connect 地址" is
+comment on column dbz_instance.kafka_connect_url is
 'Kafka Connect 地址';
 
 comment on column dbz_instance.source_connector_name is
@@ -99,4 +99,3 @@ comment on column dbz_instance.update_ms is
 create unique index dbz_instance_PK on dbz_instance (
 id
 );
-

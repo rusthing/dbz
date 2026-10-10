@@ -13,8 +13,7 @@ pub struct Model {
     pub name: String,
     #[sea_orm(unique)]
     pub job_id: i64,
-    #[sea_orm(column_name = "Kafka Connect 地址")]
-    pub kafka_connect_地址: String,
+    pub kafka_connect_url: String,
     #[sea_orm(unique)]
     pub source_connector_name: String,
     #[sea_orm(column_type = "Text")]

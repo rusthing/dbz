@@ -1,3 +1,3 @@
-mod dbz_task_svc;
+mod dbz_instance_svc;
 
-pub use dbz_task_svc::*;
+pub use dbz_instance_svc::*;

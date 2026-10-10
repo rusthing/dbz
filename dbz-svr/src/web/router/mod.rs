@@ -1,1 +1,1 @@
-mod dbz_task_router;
+mod dbz_instance_router;

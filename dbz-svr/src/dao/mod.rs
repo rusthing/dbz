@@ -1,3 +1,3 @@
-pub mod dbz_task_dao;
+pub mod dbz_instance_dao;
 
-pub use dbz_task_dao::*;
+pub use dbz_instance_dao::*;

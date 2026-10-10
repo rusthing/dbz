@@ -1,3 +1,3 @@
-pub mod dbz_task_dto;
+pub mod dbz_instance_dto;
 
-pub use dbz_task_dto::*;
+pub use dbz_instance_dto::*;
