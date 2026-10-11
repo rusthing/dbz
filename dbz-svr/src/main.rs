@@ -1,6 +1,6 @@
 use anyhow::anyhow;
 use config::Value;
-use dbz_svr::config::AppConfig;
+use dbz_svr::config::{AppConfig, setup_app_config};
 use dbz_svr::utils::setup_dbz_scheduler;
 use idworker::setup_id_worker;
 use robotech::db::setup_db_conn;
@@ -22,6 +22,7 @@ async fn setup(
     let db_url = app_config.db.get_url();
     db_migrate!(db_url);
 
+    setup_app_config(app_config.as_ref().clone(), changed);
     setup_id_worker(app_config.id_worker.clone(), changed)?;
     setup_redis_conn(app_config.redis.clone(), changed).await?;
     setup_db_conn(app_config.db.clone(), changed).await?;

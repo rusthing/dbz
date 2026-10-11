@@ -15,8 +15,18 @@ url = "redis://localhost:6379"
 worker-id = 1
 datacenter-id = 1
 
+[dbz]
+# 连接器状态检查间隔（内置调度器扫描周期 + jobx 定时检查任务间隔）
+check-interval = "30s"
+# jobx 定时检查任务的执行器编码
+executor-code = "dbz-svr"
+
 [jobx]
 base-url = "http://localhost:8082/api"
 
 [alarm]
 base-url = "http://localhost:8083/api"
+# 告警事件编码（需在 alarm-svr 中预先配置对应的事件来源与策略）
+event-code = "dbz-connector-status"
+# 告警ID（对应 alarm-svr 中的 alarm_alert.id，取消注释并填写后才会真正上报告警）
+# alert-id = 1

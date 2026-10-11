@@ -10,5 +10,9 @@ use robotech::macros::api_doc;
     get_by_query_dto,
     list_by_query_dto,
     page_by_query_dto,
+    register,
+    unregister,
+    check_status,
+    restart
 )]
 pub struct DbzInstanceApiDoc;

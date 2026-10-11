@@ -6,7 +6,9 @@ pub struct DbzInstanceDto {
     /// 实例名称
     pub name: String,
     /// 关联的任务计划ID
-    pub job_id: i64,
+    ///
+    /// 由注册接口创建 jobx 定时检查任务后自动回填，调用方无需传入。
+    pub job_id: u64,
     /// Kafka Connect 地址
     pub kafka_connect_url: String,
     /// 上游连接器名称
