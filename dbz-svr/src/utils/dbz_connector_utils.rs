@@ -183,6 +183,43 @@ impl DbzConnectorUtils {
         })?;
         Ok(parse_connector_state(&status_resp.connector.state))
     }
+
+    /// # 检查连接器是否存在
+    ///
+    /// 调用 `GET /connectors/{name}`，根据返回状态码判断连接器是否存在。
+    /// 与 [`fetch_connector_status`] 不同，本方法仅判断存在性，不做状态解析。
+    ///
+    /// ## 参数
+    /// * `base_url` - Kafka Connect 地址
+    /// * `connector_name` - 连接器名称
+    ///
+    /// ## 返回值
+    /// * `Ok(true)` - 连接器存在
+    /// * `Ok(false)` - 连接器不存在
+    /// * `Err(ConnectorError)` - 请求失败
+    pub async fn connector_exists(
+        base_url: &str,
+        connector_name: &str,
+    ) -> Result<bool, ConnectorError> {
+        let url = format!(
+            "{}/connectors/{}",
+            base_url.trim_end_matches('/'),
+            connector_name
+        );
+        let resp = HTTP_CLIENT.get(&url).send().await.map_err(|e| {
+            ConnectorError::Request(format!("检查连接器<{connector_name}>是否存在失败: {e}"))
+        })?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(false);
+        }
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(ConnectorError::Request(format!(
+                "检查连接器<{connector_name}>是否存在失败: {body}"
+            )));
+        }
+        Ok(true)
+    }
 }
 
 /// # Kafka Connect 连接器状态响应
