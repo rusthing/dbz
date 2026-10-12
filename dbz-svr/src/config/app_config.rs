@@ -2,6 +2,7 @@ use crate::config::DbzConfig;
 use arc_swap::ArcSwapOption;
 use config::Value;
 use idworker::IdWorkerConfig;
+use robotech::api_client::ApiClientConfig;
 use robotech::cfg::CfgError;
 use robotech::db::DbConnConfig;
 use robotech::redis::RedisConfig;
@@ -54,30 +55,7 @@ pub struct AppConfig {
     /// dbz
     #[serde(default = "DbzConfig::default")]
     pub dbz: DbzConfig,
-    /// jobx
-    pub jobx: JobxConfig,
-    /// alarm
-    pub alarm: AlarmConfig,
-}
-
-/// # jobx 配置
-#[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "kebab-case")]
-pub struct JobxConfig {
-    /// jobx-svr 服务地址（用于创建定时检查任务计划）
-    pub base_url: String,
-}
-
-/// # alarm 配置
-#[derive(Debug, Deserialize, Clone)]
-#[serde(rename_all = "kebab-case")]
-pub struct AlarmConfig {
-    /// alarm-svr 服务地址（用于发送告警）
-    pub base_url: String,
-    /// 告警事件编码（需在 alarm-svr 中预先配置对应的事件来源与策略）
-    #[serde(default)]
-    pub event_code: Option<String>,
-    /// 告警ID（对应 alarm-svr 中的 alarm_alert.id，未配置时跳过告警上报）
-    #[serde(default)]
-    pub alert_id: Option<u64>,
+    /// API客户端设置
+    #[serde(default = "HashMap::default")]
+    pub api: HashMap<String, ApiClientConfig>,
 }

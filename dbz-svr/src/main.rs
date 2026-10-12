@@ -1,7 +1,7 @@
 use anyhow::anyhow;
 use config::Value;
 use dbz_svr::config::{AppConfig, setup_app_config};
-use dbz_svr::utils::setup_dbz_scheduler;
+use dbz_svr::utils::setup_dbz_config;
 use idworker::setup_id_worker;
 use robotech::db::setup_db_conn;
 use robotech::macros::{bootstrap, db_migrate, log_call};
@@ -27,7 +27,7 @@ async fn setup(
     setup_redis_conn(app_config.redis.clone(), changed).await?;
     setup_db_conn(app_config.db.clone(), changed).await?;
 
-    setup_dbz_scheduler(app_config.clone(), changed);
+    setup_dbz_config(app_config.clone(), changed);
     setup_web_server(app_config.web.clone(), port, old_pid, changed).await?;
 
     Ok(())
