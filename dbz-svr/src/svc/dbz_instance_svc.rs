@@ -28,16 +28,10 @@ impl DbzInstanceSvc {
                 "实例<{}>(id={}): 被禁用，注销上游连接器<{}>和下游连接器<{}>",
                 one.name, one.id, one.source_connector_name, one.sink_connector_name
             );
-            DbzConnectorUtils::delete_connector(
-                &one.kafka_connect_url,
-                &one.source_connector_name,
-            )
-            .await?;
-            DbzConnectorUtils::delete_connector(
-                &one.kafka_connect_url,
-                &one.sink_connector_name,
-            )
-            .await?;
+            DbzConnectorUtils::delete_connector(&one.kafka_connect_url, &one.source_connector_name)
+                .await?;
+            DbzConnectorUtils::delete_connector(&one.kafka_connect_url, &one.sink_connector_name)
+                .await?;
         }
 
         Ok(one)
@@ -53,15 +47,12 @@ impl DbzInstanceSvc {
     /// ## 返回值
     /// - `Ok(Vec<String>)` - 返回所有异常实例的错误详情列表；若无异常则返回空 Vec
     /// - `Err` - 基础设施错误（如数据库连接失败）
-    pub async fn check_all_connectors() -> Result<Vec<String>, anyhow::Error> {
+    pub async fn check_all_connectors() -> anyhow::Result<String> {
         info!("开始定时检查所有 Debezium 实例的连接器状态...");
 
-        let db = get_db_conn()
-            .map_err(|e| anyhow!("获取数据库连接失败: {e}"))?;
+        let db = get_db_conn().map_err(|e| anyhow!("获取数据库连接失败: {e}"))?;
 
-        let query_dto = DbzInstanceQueryDto::builder()
-            .enabled(true)
-            .build();
+        let query_dto = DbzInstanceQueryDto::builder().enabled(true).build();
 
         let ro = Self::list_by_query_dto::<DatabaseConnection>(query_dto, Some(&db))
             .await
@@ -79,13 +70,17 @@ impl DbzInstanceSvc {
             }
         }
 
-        if errors.is_empty() {
-            info!("所有实例连接器状态检查完成，一切正常");
+        let exec_detail = if errors.is_empty() {
+            let msg = "所有实例连接器状态检查完成，一切正常";
+            info!("{}", msg);
+            msg.to_string()
         } else {
-            warn!("实例连接器状态检查完成，{} 个实例存在异常", errors.len());
-        }
+            let msg = format!("实例连接器状态检查完成，{} 个实例存在异常", errors.len());
+            warn!("{}", msg);
+            msg.to_string()
+        };
 
-        Ok(errors)
+        Ok(exec_detail)
     }
 
     /// # 检查单个实例的连接器状态

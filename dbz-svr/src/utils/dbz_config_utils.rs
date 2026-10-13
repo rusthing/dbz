@@ -1,36 +1,23 @@
 use crate::config::{DBZ_CONFIG_KEY, DbzConfig, set_dbz_config};
 use crate::svc::DbzInstanceSvc;
+use anyhow::bail;
 use async_trait::async_trait;
 use config::Value;
 use jobx_api::vo::JobxTaskVo;
 use jobx_api_client::api_client::get_jobx_api_client;
-use jobx_wkr::{JobxTaskHandler, init_jobx_executor};
+use jobx_wkr::{JobxTaskHandler, init_jobx_executor, set_jobx_executor_config};
+use robotech::api::RO_CODE_WARNING_DUPLICATE_KEY;
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::info;
 use wheel_rs::config_utils::has_config_changed;
 
 struct HealthCheckHandler;
 
 #[async_trait]
 impl JobxTaskHandler for HealthCheckHandler {
-    async fn handle(&self, _task: &JobxTaskVo) {
-        info!("健康检查任务开始执行...");
-        match DbzInstanceSvc::check_all_connectors().await {
-            Ok(errors) => {
-                if errors.is_empty() {
-                    info!("健康检查任务执行完成，一切正常");
-                } else {
-                    let detail = errors.join("; ");
-                    warn!("健康检查任务执行完成，存在异常: {detail}");
-                    panic!("健康检查异常: {detail}");
-                }
-            }
-            Err(e) => {
-                warn!("健康检查任务执行失败: {e}");
-                panic!("健康检查任务执行失败: {e}");
-            }
-        }
+    async fn handle(&self, _task: &JobxTaskVo) -> anyhow::Result<String> {
+        DbzInstanceSvc::check_all_connectors().await
     }
 }
 
@@ -54,10 +41,24 @@ pub async fn setup_dbz_config(
                 Arc::new(HealthCheckHandler),
             )
             .await?;
-            // 添加计划
+            // 添加健康检查任务计划
             let jobx_client = get_jobx_api_client()?;
             let add_dto: jobx_api::dto::JobxJobAddDto = health_check_job_config.into();
-            jobx_client.job_client.add(&add_dto).await?;
+            match jobx_client.job_client.add(&add_dto).await {
+                Ok(ro) => {
+                    info!("health check job added result: {ro:?}");
+                    if ro.is_ok() || ro.is_warn_code(RO_CODE_WARNING_DUPLICATE_KEY) {
+                        info!("health check job added successfully");
+                    } else {
+                        bail!("health check job added failed: {ro:?}");
+                    }
+                }
+                Err(e) => {
+                    bail!("health check job added failed: {e:?}");
+                }
+            }
+        } else {
+            set_jobx_executor_config(dbz_config.health_check.executor.clone());
         }
         set_dbz_config(&dbz_config);
     }
