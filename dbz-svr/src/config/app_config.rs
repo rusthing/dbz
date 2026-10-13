@@ -7,7 +7,7 @@ use robotech::cfg::CfgError;
 use robotech::db::DbConnConfig;
 use robotech::redis::RedisConfig;
 use robotech::web::WebServerConfig;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::info;
@@ -58,4 +58,24 @@ pub struct AppConfig {
     /// API客户端设置
     #[serde(default = "HashMap::default")]
     pub api: HashMap<String, ApiClientConfig>,
+    /// 告警配置
+    #[serde(default = "AlarmConfig::default")]
+    pub alarm: AlarmConfig,
+}
+
+/// # 告警配置
+///
+/// 对应配置文件中的 `[alarm]` 配置段，用于向 alarm-svr 上报实例连接器异常事件。
+#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct AlarmConfig {
+    /// alarm-svr 的 API 地址
+    #[serde(default)]
+    pub base_url: String,
+    /// 告警事件编码（需在 alarm-svr 中预先配置对应的事件来源与策略）
+    #[serde(default)]
+    pub event_code: Option<String>,
+    /// 告警ID（对应 alarm-svr 中的 alarm_alert.id，不填则跳过告警上报）
+    #[serde(default)]
+    pub alert_id: Option<u64>,
 }

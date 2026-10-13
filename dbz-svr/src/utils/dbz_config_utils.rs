@@ -1,9 +1,9 @@
-use crate::config::{AppConfig, DBZ_CONFIG_KEY, set_dbz_config};
+use crate::config::{DBZ_CONFIG_KEY, DbzConfig, set_dbz_config};
 use crate::svc::DbzInstanceSvc;
 use async_trait::async_trait;
 use config::Value;
 use jobx_api::vo::JobxTaskVo;
-use jobx_api_client::api_client::{get_jobx_api_client, setup_jobx_api_client};
+use jobx_api_client::api_client::get_jobx_api_client;
 use jobx_wkr::{JobxTaskHandler, init_jobx_executor};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -35,17 +35,15 @@ impl JobxTaskHandler for HealthCheckHandler {
 }
 
 pub async fn setup_dbz_config(
-    app_config: AppConfig,
+    dbz_config: DbzConfig,
     changed: &Option<HashMap<String, Value>>,
 ) -> anyhow::Result<()> {
-    info!("setup dbz config...: {app_config:?}");
+    info!("setup dbz config...: {dbz_config:?}");
     if changed
         .as_ref()
         .map(|changed| has_config_changed(DBZ_CONFIG_KEY, changed))
         .unwrap_or(true)
     {
-        setup_jobx_api_client(app_config.api, changed).await?;
-        let dbz_config = app_config.dbz.clone();
         let health_check_job_config = dbz_config.health_check.job.clone();
         let health_check_executor_config = dbz_config.health_check.executor.clone();
         // 如果是首次配置
@@ -61,7 +59,7 @@ pub async fn setup_dbz_config(
             let add_dto: jobx_api::dto::JobxJobAddDto = health_check_job_config.into();
             jobx_client.job_client.add(&add_dto).await?;
         }
-        set_dbz_config(&app_config.dbz.clone());
+        set_dbz_config(&dbz_config);
     }
     Ok(())
 }

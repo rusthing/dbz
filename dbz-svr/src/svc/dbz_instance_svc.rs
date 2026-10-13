@@ -8,10 +8,41 @@ use sea_orm::DatabaseConnection;
 use tracing::{info, warn};
 use wheel_rs::time_utils::now_ms;
 
-#[svc]
+#[svc(after_modify = DbzInstanceSvc::after_modify_hook)]
 pub struct DbzInstanceSvc;
 
 impl DbzInstanceSvc {
+    /// # 修改后钩子：实例被禁用时注销连接器
+    ///
+    /// 由 `#[svc]` 宏在 `modify` 方法执行后自动调用。
+    /// 若实例被禁用（`modify_dto.enabled = Some(false)`），注销上游和下游连接器。
+    ///
+    /// 注：连接器名称变更场景中旧名称无法在 after_modify 中检测（数据库已更新），
+    /// 若需处理名称变更，应先禁用旧实例再创建新实例。
+    async fn after_modify_hook(
+        modify_dto: DbzInstanceModifyDto,
+        one: DbzInstanceVo,
+    ) -> Result<DbzInstanceVo, SvcError> {
+        if modify_dto.enabled == Some(false) {
+            info!(
+                "实例<{}>(id={}): 被禁用，注销上游连接器<{}>和下游连接器<{}>",
+                one.name, one.id, one.source_connector_name, one.sink_connector_name
+            );
+            DbzConnectorUtils::delete_connector(
+                &one.kafka_connect_url,
+                &one.source_connector_name,
+            )
+            .await?;
+            DbzConnectorUtils::delete_connector(
+                &one.kafka_connect_url,
+                &one.sink_connector_name,
+            )
+            .await?;
+        }
+
+        Ok(one)
+    }
+
     /// # 定时检查所有已启用实例的连接器状态
     ///
     /// 由 jobx 健康检查任务定时触发。遍历所有 `enabled = true` 的实例，
@@ -44,7 +75,7 @@ impl DbzInstanceSvc {
         for instance in &instances {
             if let Err(e) = Self::check_one_instance(instance).await {
                 warn!("检查实例<{}>(id={})失败: {e}", instance.name, instance.id);
-                errors.push(format!("实例<{}>(id={}): {e}", instance.name, instance.id, e));
+                errors.push(format!("实例<{}>(id={}): {e}", instance.name, instance.id));
             }
         }
 

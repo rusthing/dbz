@@ -1,32 +1,32 @@
 # dbz-svr 配置文件
 
 [db]
-url = "postgresql://postgres:postgres@localhost:5432/dbz"
-max-connections = 10
-
-[web]
-port = 8084
-api-prefix = "/api"
+url = "postgresql://dbz:dbz@localhost:5432/dbz"
 
 [redis]
 url = "redis://localhost:6379"
 
-[id-worker]
-worker-id = 1
-datacenter-id = 1
-
-[dbz]
-# 连接器状态检查间隔（内置调度器扫描周期 + jobx 定时检查任务间隔）
-check-interval = "30s"
-# jobx 定时检查任务的执行器编码
-executor-code = "dbz-svr"
-
-[jobx]
+# API 客户端配置（对应 AppConfig::api），键名即客户端编码
+[api.jobx]
+type = "Simple"
 base-url = "http://localhost:8082/api"
 
+# 告警配置（对应 AppConfig::alarm）
 [alarm]
 base-url = "http://localhost:8083/api"
 # 告警事件编码（需在 alarm-svr 中预先配置对应的事件来源与策略）
 event-code = "dbz-connector-status"
 # 告警ID（对应 alarm-svr 中的 alarm_alert.id，取消注释并填写后才会真正上报告警）
 # alert-id = 1
+
+[micro-jobx.consul]
+base-url = "http://consul:8500"
+[micro-jobx.consul.registry]
+
+[web]
+port = 9006
+
+[id-worker]
+epoch = 1758108749211
+machine-id = 1
+node-id = 1

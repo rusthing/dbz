@@ -11,8 +11,6 @@ pub struct Model {
     pub id: i64,
     #[sea_orm(unique)]
     pub name: String,
-    #[sea_orm(unique)]
-    pub job_id: i64,
     pub kafka_connect_url: String,
     #[sea_orm(unique)]
     pub source_connector_name: String,

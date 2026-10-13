@@ -7,8 +7,6 @@ pub struct DbzInstanceVo {
     pub id: u64,
     /// 实例名称
     pub name: String,
-    /// 关联的任务计划ID
-    pub job_id: u64,
     /// Kafka Connect 地址
     pub kafka_connect_url: String,
     /// 上游连接器名称

@@ -4586,21 +4586,6 @@ DAT 1791624231</a:History>
 <a:Column.Mandatory>1</a:Column.Mandatory>
 <a:GlobalObjectID/>
 </o:Column>
-<o:Column Id="o10">
-<a:ObjectID>E926195B-D003-40E8-AA6C-DA9D97164BB5</a:ObjectID>
-<a:Name>关联的任务计划ID</a:Name>
-<a:Code>job_id</a:Code>
-<a:CreationDate>1791624230</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1791624230</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:History>ORG {09F714CF-E758-4367-AC80-93E5DC84C4BE}
-DAT 1791624231</a:History>
-<a:DataType>INT8</a:DataType>
-<a:Length>8</a:Length>
-<a:Column.Mandatory>1</a:Column.Mandatory>
-<a:GlobalObjectID/>
-</o:Column>
 <o:Column Id="o11">
 <a:ObjectID>4FEB919E-729E-456E-A701-30B00B35DAA8</a:ObjectID>
 <a:Name>Kafka Connect 地址</a:Name>
@@ -4827,22 +4812,6 @@ INS COLNCOL {46E7CE47-B49B-47B7-95B7-2549666A9894}</a:History>
 <o:Column Ref="o9"/>
 </c:Key.Columns>
 </o:Key>
-<o:Key Id="o25">
-<a:ObjectID>8DDD3867-D267-4C51-B9B3-E7982422B668</a:ObjectID>
-<a:Name>关联的任务计划ID</a:Name>
-<a:Code>job_id</a:Code>
-<a:CreationDate>1791624537</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1791624544</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:History>ORG {87A2E120-A564-41F5-8C03-9F1AA6F72705}
-DAT 1791624538
-INS COLNCOL {09F714CF-E758-4367-AC80-93E5DC84C4BE}</a:History>
-<a:GlobalObjectID/>
-<c:Key.Columns>
-<o:Column Ref="o10"/>
-</c:Key.Columns>
-</o:Key>
 <o:Key Id="o26">
 <a:ObjectID>05938E00-9C08-427F-83B4-EE231AEFED71</a:ObjectID>
 <a:Name>上游连接器名称</a:Name>
@@ -4933,36 +4902,6 @@ INS COLNCOL {51D7DB4D-81D9-4576-BC5C-DFF1A7727E77}</a:History>
 </c:Column>
 <c:Elements>
 <o:Column Ref="o9"/>
-</c:Elements>
-</o:IndexColumn>
-</c:IndexColumns>
-</o:Index>
-<o:Index Id="o32">
-<a:ObjectID>E75547BE-5A01-467F-AFDE-B9827373BCBC</a:ObjectID>
-<a:Name>dbz_instance_AK2</a:Name>
-<a:Code>dbz_instance_AK2</a:Code>
-<a:CreationDate>1791624538</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1791624544</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:GlobalObjectID/>
-<a:Unique>1</a:Unique>
-<c:LinkedObject>
-<o:Key Ref="o25"/>
-</c:LinkedObject>
-<c:IndexColumns>
-<o:IndexColumn Id="o33">
-<a:ObjectID>F0FA3113-9766-4F6E-B686-828B87F34184</a:ObjectID>
-<a:CreationDate>1791624538</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1791624544</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:GlobalObjectID/>
-<c:Column>
-<o:Column Ref="o10"/>
-</c:Column>
-<c:Elements>
-<o:Column Ref="o10"/>
 </c:Elements>
 </o:IndexColumn>
 </c:IndexColumns>

@@ -12,7 +12,6 @@ drop index dbz_instance_PK;
 create table dbz_instance (
    id                   INT8                 not null,
    name                 VARCHAR(50)          not null,
-   job_id               INT8                 not null,
    kafka_connect_url    VARCHAR(100)         not null,
    source_connector_name VARCHAR(50)          not null,
    source_connector_config TEXT                 not null,
@@ -27,7 +26,6 @@ create table dbz_instance (
    update_ms            INT8                 not null,
    constraint PK_DBZ_INSTANCE primary key (id),
    constraint AK_NAME_DBZ_INSTANCE unique (name),
-   constraint AK_JOB_ID_DBZ_INSTANCE unique (job_id),
    constraint AK_SOURCE_CONNECTOR_NAME_DBZ_INSTANCE unique (source_connector_name),
    constraint AK_SINK_CONNECTOR_NAME_DBZ_INSTANCE unique (sink_connector_name)
 );
@@ -40,9 +38,6 @@ comment on column dbz_instance.id is
 
 comment on column dbz_instance.name is
 '名称';
-
-comment on column dbz_instance.job_id is
-'关联的任务计划ID';
 
 comment on column dbz_instance.kafka_connect_url is
 'Kafka Connect 地址';

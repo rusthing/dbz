@@ -1573,19 +1573,6 @@ LABL 0 新宋体,8,N</a:FontList>
 <o:EntityAttribute Ref="o10"/>
 </c:Identifier.Attributes>
 </o:Identifier>
-<o:Identifier Id="o11">
-<a:ObjectID>87A2E120-A564-41F5-8C03-9F1AA6F72705</a:ObjectID>
-<a:Name>关联的任务计划ID</a:Name>
-<a:Code>job_id</a:Code>
-<a:CreationDate>1791624347</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1791624435</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:GlobalObjectID/>
-<c:Identifier.Attributes>
-<o:EntityAttribute Ref="o12"/>
-</c:Identifier.Attributes>
-</o:Identifier>
 <o:Identifier Id="o13">
 <a:ObjectID>F53EA186-91AE-4FF4-9874-BEA134E72529</a:ObjectID>
 <a:Name>上游连接器名称</a:Name>
@@ -1639,18 +1626,6 @@ LABL 0 新宋体,8,N</a:FontList>
 <a:Modifier>张柏子</a:Modifier>
 <a:DataType>VA50</a:DataType>
 <a:Length>50</a:Length>
-<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
-<a:GlobalObjectID/>
-</o:EntityAttribute>
-<o:EntityAttribute Id="o12">
-<a:ObjectID>09F714CF-E758-4367-AC80-93E5DC84C4BE</a:ObjectID>
-<a:Name>关联的任务计划ID</a:Name>
-<a:Code>job_id</a:Code>
-<a:CreationDate>1791623588</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1791624435</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:DataType>LI</a:DataType>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
 <a:GlobalObjectID/>
 </o:EntityAttribute>
