@@ -28,9 +28,9 @@ async fn setup(
     setup_redis_conn(app_config.redis.clone(), changed).await?;
     setup_db_conn(app_config.db.clone(), changed).await?;
     setup_jobx_api_client(app_config.api.clone(), changed).await?;
+    setup_web_server(app_config.web.clone(), port, old_pid, changed).await?;
 
     setup_dbz_config(app_config.dbz.clone(), changed).await?;
-    setup_web_server(app_config.web.clone(), port, old_pid, changed).await?;
 
     Ok(())
 }
