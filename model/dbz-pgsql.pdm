@@ -4720,8 +4720,8 @@ DAT 1791624231</a:History>
 </o:Column>
 <o:Column Id="o19">
 <a:ObjectID>D51229B5-B6EA-4BE0-94D1-34595D130EC4</a:ObjectID>
-<a:Name>创建人的用户ID</a:Name>
-<a:Code>creator_id</a:Code>
+<a:Name>创建者ID</a:Name>
+<a:Code>creater_id</a:Code>
 <a:CreationDate>1791624230</a:CreationDate>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1791624230</a:ModificationDate>
@@ -4750,8 +4750,8 @@ DAT 1791624231</a:History>
 </o:Column>
 <o:Column Id="o21">
 <a:ObjectID>F94A7D25-94A3-478F-8075-BE496C287238</a:ObjectID>
-<a:Name>修改人的用户ID</a:Name>
-<a:Code>updator_id</a:Code>
+<a:Name>更新者ID</a:Name>
+<a:Code>updater_id</a:Code>
 <a:CreationDate>1791624230</a:CreationDate>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1791624230</a:ModificationDate>
@@ -4765,7 +4765,7 @@ DAT 1791624231</a:History>
 </o:Column>
 <o:Column Id="o22">
 <a:ObjectID>8F901781-3591-48D8-B435-D38F04709C24</a:ObjectID>
-<a:Name>修改时间戳</a:Name>
+<a:Name>更新时间戳</a:Name>
 <a:Code>update_ms</a:Code>
 <a:CreationDate>1791624230</a:CreationDate>
 <a:Creator>张柏子</a:Creator>

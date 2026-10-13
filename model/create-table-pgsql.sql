@@ -20,9 +20,9 @@ create table dbz_instance (
    run_status           INT2                 null,
    remark               VARCHAR(50)          null,
    enabled              BOOL                 not null default true,
-   creator_id           INT8                 not null,
+   creater_id           INT8                 not null,
    create_ms            INT8                 not null,
-   updator_id           INT8                 not null,
+   updater_id           INT8                 not null,
    update_ms            INT8                 not null,
    constraint PK_DBZ_INSTANCE primary key (id),
    constraint AK_NAME_DBZ_INSTANCE unique (name),
@@ -76,17 +76,17 @@ comment on column dbz_instance.remark is
 comment on column dbz_instance.enabled is
 '启用';
 
-comment on column dbz_instance.creator_id is
-'创建人的用户ID';
+comment on column dbz_instance.creater_id is
+'创建者ID';
 
 comment on column dbz_instance.create_ms is
 '创建时间戳';
 
-comment on column dbz_instance.updator_id is
-'修改人的用户ID';
+comment on column dbz_instance.updater_id is
+'更新者ID';
 
 comment on column dbz_instance.update_ms is
-'修改时间戳';
+'更新时间戳';
 
 /*==============================================================*/
 /* Index: dbz_instance_PK                                       */

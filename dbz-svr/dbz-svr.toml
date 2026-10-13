@@ -1,4 +1,5 @@
 # dbz-svr 配置文件
+profile = "dev"
 
 [db]
 url = "postgresql://dbz:dbz@localhost:5432/dbz"
@@ -9,7 +10,7 @@ url = "redis://:xxxxxxxx@redis:6379"
 # API 客户端配置（对应 AppConfig::api），键名即客户端编码
 [api.jobx]
 type = "MicroSvc"
-svc-name = "jobx-svr"
+svc-name = "dev-jobx-svr"
 
 # 告警配置（对应 AppConfig::alarm）
 [alarm]

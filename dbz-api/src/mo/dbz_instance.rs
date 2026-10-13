@@ -23,9 +23,9 @@ pub struct Model {
     pub run_status: Option<i16>,
     pub remark: Option<String>,
     pub enabled: bool,
-    pub creator_id: i64,
+    pub creater_id: i64,
     pub create_ms: i64,
-    pub updator_id: i64,
+    pub updater_id: i64,
     pub update_ms: i64,
 }
 

@@ -1746,8 +1746,8 @@ LABL 0 新宋体,8,N</a:FontList>
 </o:EntityAttribute>
 <o:EntityAttribute Id="o23">
 <a:ObjectID>B18B7E5C-51B3-4AF1-AE93-362A380A72A1</a:ObjectID>
-<a:Name>创建人的用户ID</a:Name>
-<a:Code>creator_id</a:Code>
+<a:Name>创建者ID</a:Name>
+<a:Code>creater_id</a:Code>
 <a:CreationDate>1791621568</a:CreationDate>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1791621577</a:ModificationDate>
@@ -1770,8 +1770,8 @@ LABL 0 新宋体,8,N</a:FontList>
 </o:EntityAttribute>
 <o:EntityAttribute Id="o25">
 <a:ObjectID>6FED0A2D-402D-4837-B11B-356F89640F29</a:ObjectID>
-<a:Name>修改人的用户ID</a:Name>
-<a:Code>updator_id</a:Code>
+<a:Name>更新者ID</a:Name>
+<a:Code>updater_id</a:Code>
 <a:CreationDate>1791621568</a:CreationDate>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1791621577</a:ModificationDate>
@@ -1782,7 +1782,7 @@ LABL 0 新宋体,8,N</a:FontList>
 </o:EntityAttribute>
 <o:EntityAttribute Id="o26">
 <a:ObjectID>F1377830-EEA6-4377-8688-873289534D98</a:ObjectID>
-<a:Name>修改时间戳</a:Name>
+<a:Name>更新时间戳</a:Name>
 <a:Code>update_ms</a:Code>
 <a:CreationDate>1791621568</a:CreationDate>
 <a:Creator>张柏子</a:Creator>
