@@ -20,9 +20,9 @@ event-code = "dbz-connector-status"
 # 告警ID（对应 alarm-svr 中的 alarm_alert.id，取消注释并填写后才会真正上报告警）
 # alert-id = 1
 
-[micro-jobx.consul]
+[micro-svc.consul]
 base-url = "http://consul:8500"
-[micro-jobx.consul.registry]
+[micro-svc.consul.registry]
 
 [web]
 port = 9006
