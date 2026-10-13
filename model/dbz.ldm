@@ -1632,10 +1632,10 @@ LABL 0 新宋体,8,N</a:FontList>
 <o:EntityAttribute Id="o15">
 <a:ObjectID>2A20877F-FD73-4192-B380-2B8A1D780A2F</a:ObjectID>
 <a:Name>Kafka Connect 地址</a:Name>
-<a:Code>Kafka Connect 地址</a:Code>
+<a:Code>kafka_connect_url</a:Code>
 <a:CreationDate>1791621666</a:CreationDate>
 <a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1791622287</a:ModificationDate>
+<a:ModificationDate>1791886775</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
 <a:DataType>VA100</a:DataType>
 <a:Length>100</a:Length>
@@ -1802,13 +1802,13 @@ LABL 0 新宋体,8,N</a:FontList>
 <a:Code>dbz-pgsql</a:Code>
 <a:CreationDate>1791624231</a:CreationDate>
 <a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1791875146</a:ModificationDate>
+<a:ModificationDate>1791886798</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
 <a:GlobalObjectID/>
 <a:TargetModelURL>file:///%[PRJ_ROOT_DIR]%/dbz-pgsql.pdm</a:TargetModelURL>
 <a:TargetModelID>521107B8-D267-4B1E-8DE8-FF22198A7A29</a:TargetModelID>
 <a:TargetModelClassID>CDE44E21-9669-11D1-9914-006097355D9B</a:TargetModelClassID>
-<a:TargetModelLastModificationDate>1791875146</a:TargetModelLastModificationDate>
+<a:TargetModelLastModificationDate>1791886798</a:TargetModelLastModificationDate>
 <c:SessionShortcuts>
 <o:Shortcut Ref="o3"/>
 </c:SessionShortcuts>
