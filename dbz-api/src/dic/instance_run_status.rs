@@ -18,37 +18,39 @@ use utoipa::ToSchema;
 )]
 #[strum(serialize_all = "kebab-case")]
 pub enum InstanceRunStatus {
+    /// 无状态（刚添加记录）
+    None = 0,
     /// 运行中
-    Running = 0,
+    Running = 1,
     /// 已禁用
-    Disabled = 1,
+    Disabled = 2,
     /// 连接 KafkaConnect 失败
-    KafkaConnectFailed = 2,
+    KafkaConnectFailed = 3,
     /// 注册下游连接器失败
-    RegisterSinkFailed = 3,
+    RegisterSinkFailed = 4,
     /// 检测下游连接器失败
-    CheckSinkFailed = 4,
+    CheckSinkFailed = 5,
     /// 检测下游连接器异常
-    CheckSinkError = 5,
+    CheckSinkError = 6,
     /// 检测下游连接器状态失败
-    CheckSinkStatusFailed = 6,
+    CheckSinkStatusFailed = 7,
     /// 检测下游连接器状态异常
-    CheckSinkStatusError = 7,
+    CheckSinkStatusError = 8,
     /// 注册上游连接器失败
-    RegisterSourceFailed = 8,
+    RegisterSourceFailed = 9,
     /// 检测上游连接器失败
-    CheckSourceFailed = 9,
+    CheckSourceFailed = 10,
     /// 检测上游连接器异常
-    CheckSourceError = 10,
+    CheckSourceError = 11,
     /// 检测上游连接器状态失败
-    CheckSourceStatusFailed = 11,
+    CheckSourceStatusFailed = 12,
     /// 检测上游连接器状态异常
-    CheckSourceStatusError = 12,
+    CheckSourceStatusError = 13,
 }
 
 impl Default for InstanceRunStatus {
     fn default() -> Self {
-        Self::Disabled
+        Self::None
     }
 }
 
@@ -86,19 +88,20 @@ impl InstanceRunStatus {
 
     pub fn from_i16(value: i16) -> Option<Self> {
         match value {
-            0 => Some(InstanceRunStatus::Running),
-            1 => Some(InstanceRunStatus::Disabled),
-            2 => Some(InstanceRunStatus::KafkaConnectFailed),
-            3 => Some(InstanceRunStatus::RegisterSinkFailed),
-            4 => Some(InstanceRunStatus::CheckSinkFailed),
-            5 => Some(InstanceRunStatus::CheckSinkError),
-            6 => Some(InstanceRunStatus::CheckSinkStatusFailed),
-            7 => Some(InstanceRunStatus::CheckSinkStatusError),
-            8 => Some(InstanceRunStatus::RegisterSourceFailed),
-            9 => Some(InstanceRunStatus::CheckSourceFailed),
-            10 => Some(InstanceRunStatus::CheckSourceError),
-            11 => Some(InstanceRunStatus::CheckSourceStatusFailed),
-            12 => Some(InstanceRunStatus::CheckSourceStatusError),
+            0 => Some(InstanceRunStatus::None),
+            1 => Some(InstanceRunStatus::Running),
+            2 => Some(InstanceRunStatus::Disabled),
+            3 => Some(InstanceRunStatus::KafkaConnectFailed),
+            4 => Some(InstanceRunStatus::RegisterSinkFailed),
+            5 => Some(InstanceRunStatus::CheckSinkFailed),
+            6 => Some(InstanceRunStatus::CheckSinkError),
+            7 => Some(InstanceRunStatus::CheckSinkStatusFailed),
+            8 => Some(InstanceRunStatus::CheckSinkStatusError),
+            9 => Some(InstanceRunStatus::RegisterSourceFailed),
+            10 => Some(InstanceRunStatus::CheckSourceFailed),
+            11 => Some(InstanceRunStatus::CheckSourceError),
+            12 => Some(InstanceRunStatus::CheckSourceStatusFailed),
+            13 => Some(InstanceRunStatus::CheckSourceStatusError),
             _ => None,
         }
     }

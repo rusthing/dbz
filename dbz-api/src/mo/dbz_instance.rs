@@ -20,7 +20,7 @@ pub struct Model {
     pub sink_connector_name: String,
     #[sea_orm(column_type = "Text")]
     pub sink_connector_config: String,
-    pub run_status: Option<i16>,
+    pub run_status: i16,
     pub remark: Option<String>,
     pub enabled: bool,
     pub creater_id: i64,

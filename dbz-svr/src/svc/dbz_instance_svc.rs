@@ -107,9 +107,11 @@ impl DbzInstanceSvc {
             base_url,
             &instance.sink_connector_name,
             &instance.sink_connector_config,
+            InstanceRunStatus::CheckSinkFailed,
             InstanceRunStatus::RegisterSinkFailed,
             InstanceRunStatus::CheckSinkStatusFailed,
             InstanceRunStatus::CheckSinkStatusError,
+            InstanceRunStatus::CheckSinkError,
         )
         .await
         {
@@ -124,9 +126,11 @@ impl DbzInstanceSvc {
             base_url,
             &instance.source_connector_name,
             &instance.source_connector_config,
+            InstanceRunStatus::CheckSourceFailed,
             InstanceRunStatus::RegisterSourceFailed,
             InstanceRunStatus::CheckSourceStatusFailed,
             InstanceRunStatus::CheckSourceStatusError,
+            InstanceRunStatus::CheckSourceError,
         )
         .await
         {
@@ -143,16 +147,18 @@ impl DbzInstanceSvc {
     /// # 确保连接器已注册并检查其运行状态
     ///
     /// 先检查连接器是否存在，不存在则部署；然后查询其运行状态。
-    /// 若部署失败或状态异常，返回对应的错误状态。
+    /// 若检查失败、部署失败或状态异常，返回对应的错误状态。
     ///
     /// ## 参数
     /// * `instance` - 实例信息
     /// * `base_url` - Kafka Connect 地址
     /// * `connector_name` - 连接器名称
     /// * `connector_config` - 连接器配置
-    /// * `register_failed_status` - 注册失败时对应的运行状态
+    /// * `check_failed_status` - 检查连接器是否存在失败时对应的运行状态
+    /// * `register_failed_status` - 部署连接器失败时对应的运行状态
     /// * `status_failed_status` - 状态查询失败时对应的运行状态
-    /// * `status_error_status` - 状态异常（非 Running）时对应的运行状态
+    /// * `status_error_status` - 状态已知异常（Failed/Paused/Destroyed）时对应的运行状态
+    /// * `check_error_status` - 状态未知/无法识别（Unassigned）时对应的运行状态
     ///
     /// ## 返回值
     /// * `Ok(ConnectorStatus)` - 连接器正常运行
@@ -162,9 +168,11 @@ impl DbzInstanceSvc {
         base_url: &str,
         connector_name: &str,
         connector_config: &str,
+        check_failed_status: InstanceRunStatus,
         register_failed_status: InstanceRunStatus,
         status_failed_status: InstanceRunStatus,
         status_error_status: InstanceRunStatus,
+        check_error_status: InstanceRunStatus,
     ) -> Result<ConnectorStatus, InstanceRunStatus> {
         // 检查连接器是否存在，不存在则部署
         let exists = DbzConnectorUtils::connector_exists(base_url, connector_name)
@@ -174,7 +182,7 @@ impl DbzInstanceSvc {
                     "实例<{}>: 检查连接器<{}>是否存在失败: {e}",
                     instance.name, connector_name
                 );
-                register_failed_status
+                check_failed_status
             })?;
 
         if !exists {
@@ -209,6 +217,13 @@ impl DbzInstanceSvc {
             })?;
 
         if status != ConnectorStatus::Running {
+            if status == ConnectorStatus::Unassigned {
+                warn!(
+                    "实例<{}>: 连接器<{}>返回未知状态: {}",
+                    instance.name, connector_name, status
+                );
+                return Err(check_error_status);
+            }
             warn!(
                 "实例<{}>: 连接器<{}>状态异常: {}",
                 instance.name, connector_name, status

@@ -1,6 +1,6 @@
 /*==============================================================*/
 /* DBMS name:      PostgreSQL 9.x                               */
-/* Created on:     2026/10/13 18:21:05                          */
+/* Created on:     2026/10/14 17:37:29                          */
 /*==============================================================*/
 
 
@@ -15,7 +15,7 @@ create table dbz_instance (
    source_connector_config TEXT                 not null,
    sink_connector_name  VARCHAR(50)          not null,
    sink_connector_config TEXT                 not null,
-   run_status           INT2                 null,
+   run_status           INT2                 not null,
    remark               VARCHAR(50)          null,
    enabled              BOOL                 not null default true,
    creater_id           INT8                 not null,
@@ -54,19 +54,20 @@ comment on column dbz_instance.sink_connector_config is
 
 comment on column dbz_instance.run_status is
 '运行状态
-0-运行中
-1-已禁用
-2-连接KafkaConnect失败
-3-注册下游连接器失败
-4-检测下游连接器失败
-5-检测下游连接器异常
-6-检测下游连接器状态失败
-7-检测下游连接器状态异常
-8-注册上游连接器失败
-9-检测上游连接器失败
-10-检测上游连接器异常
-11-检测上游连接器状态失败
-12-检测上游连接器状态异常';
+0-无状态(刚添加记录)
+1-运行中
+2-已禁用
+3-连接KafkaConnect失败
+4-注册下游连接器失败
+5-检测下游连接器失败
+6-检测下游连接器异常
+7-检测下游连接器状态失败
+8-检测下游连接器状态异常
+9-注册上游连接器失败
+10-检测上游连接器失败
+11-检测上游连接器异常
+12-检测上游连接器状态失败
+13-检测上游连接器状态异常';
 
 comment on column dbz_instance.remark is
 '备注';
