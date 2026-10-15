@@ -1,21 +1,8 @@
-use serde::{Deserialize, Serialize};
+use robotech::macros::dic;
 use strum::{AsRefStr, Display, EnumString};
-use utoipa::ToSchema;
 
-#[derive(
-    Debug,
-    Clone,
-    Copy,
-    PartialEq,
-    Eq,
-    Hash,
-    AsRefStr,
-    Display,
-    EnumString,
-    Serialize,
-    Deserialize,
-    ToSchema,
-)]
+#[dic]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, AsRefStr, Display, EnumString)]
 #[strum(serialize_all = "kebab-case")]
 pub enum InstanceRunStatus {
     /// 无状态（刚添加记录）
