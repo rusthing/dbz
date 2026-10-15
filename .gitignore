@@ -11,3 +11,4 @@ logs/
 *.pdb
 *.pjb
 *.ldb
+.DS_Store
