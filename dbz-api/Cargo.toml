@@ -19,7 +19,7 @@ utoipa = { workspace = true }
 derive_setters = { workspace = true }
 typed-builder = { workspace = true }
 wheel-rs = { workspace = true }
-robotech = { workspace = true, features = ["macros", "db"] }
+robotech = { workspace = true, features = ["macros", "db", "openapi"] }
 
 # Server-side dependencies
 sea-orm = { workspace = true, optional = true }
@@ -27,4 +27,4 @@ o2o = { workspace = true, optional = true }
 validator = { workspace = true, optional = true, features = ["derive"] }
 
 [features]
-server = ["sea-orm", "o2o", "validator", "robotech/macros"]
+server = ["sea-orm", "o2o", "validator", "robotech/macros", "robotech/orm"]
