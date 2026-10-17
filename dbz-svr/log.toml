@@ -1,11 +1,12 @@
-[log]
-level = "info"
+level = "debug"
 
-[log.file]
-enabled = true
-path = "logs/dbz-svr.log"
-max-size = "10MB"
-max-files = 10
+[modules]
+"h2::codec" = "info"
+"h2::proto" = "info"
+"tower::buffer" = "info"
+"hyper_util::client" = "info"
+"reqwest::connect" = "info"
+"robotech::cfg::cfg_utils" = "error"
+"robotech::micro_svc::hub_client::hub_client" = "error"
+"robotech::web::server::web_server_utils" = "warn"
 
-[log.console]
-enabled = true

@@ -3,5 +3,5 @@ use robotech::macros::api_client;
 
 #[api_client]
 pub struct DbzApiClient {
-    pub instance_client: DbzInstanceApiClient,
+    pub instance: DbzInstanceApiClient,
 }
