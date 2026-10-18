@@ -9,7 +9,7 @@ use crate::config::get_app_config;
 use crate::dic::InstanceRunStatus;
 use crate::vo::DbzInstanceVo;
 use alarm_api::dto::AlarmEventLogAddDto;
-use alarm_api_client::api_client::AlarmEventLogApiClient;
+use alarm_api_client::AlarmEventLogApiClient;
 use robotech::api::U64;
 use robotech::api_client::ApiClientConfig;
 use robotech::micro_svc::FeignApiClient;

@@ -3,7 +3,7 @@ use config::Value;
 use dbz_svr::config::{AppConfig, setup_app_config};
 use dbz_svr::utils::setup_dbz_config;
 use idworker::setup_id_worker;
-use jobx_api_client::api_client::setup_jobx_api_client;
+use jobx_api_client::setup_jobx_api_client;
 use robotech::db::setup_db_conn;
 use robotech::macros::{bootstrap, db_migrate, log_call};
 use robotech::redis::setup_redis_conn;

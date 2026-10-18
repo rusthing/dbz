@@ -4,7 +4,7 @@ use anyhow::bail;
 use async_trait::async_trait;
 use config::Value;
 use jobx_api::vo::JobxTaskVo;
-use jobx_api_client::api_client::get_jobx_api_client;
+use jobx_api_client::get_jobx_api_client;
 use jobx_wkr::{JobxTaskHandler, init_jobx_executor, set_jobx_executor_config};
 use robotech::api::RO_CODE_WARNING_DUPLICATE_KEY;
 use std::collections::HashMap;

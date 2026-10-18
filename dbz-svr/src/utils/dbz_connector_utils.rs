@@ -153,22 +153,27 @@ impl DbzConnectorUtils {
         Ok(())
     }
 
-    /// # 查询连接器状态
+    /// # 查询连接器状态（含任务状态）
     ///
-    /// 调用 `GET /connectors/{name}/status`，将 Kafka Connect 返回的状态字符串
-    /// 映射为 [`ConnectorStatus`]。
+    /// 调用 `GET /connectors/{name}/status`，把连接器与任务的状态一起读回来。
+    ///
+    /// Kafka Connect 里**任务失败不会改变 `connector.state`**：任务全挂了，连接器
+    /// 仍然报 `RUNNING`。只看连接器状态会把「连接器在跑、任务全挂」判成正常，
+    /// 所以这里必须同时检查 `tasks`。
     ///
     /// ## 参数
     /// * `base_url` - Kafka Connect 地址
     /// * `connector_name` - 连接器名称
     ///
     /// ## 返回值
-    /// * `Ok(ConnectorStatus)` - 连接器状态
+    /// * `Ok((ConnectorStatus, Vec<u32>))` - 连接器状态 + 异常任务ID列表。
+    ///   任务有 `FAILED` / `UNASSIGNED` 时，状态返回 `Failed` 且列表非空；
+    ///   连接器自身非 `RUNNING` 时以连接器状态为准，列表为空
     /// * `Err(ConnectorError)` - 查询失败，可通过错误类型区分具体原因
     pub async fn fetch_connector_status(
         base_url: &str,
         connector_name: &str,
-    ) -> Result<ConnectorStatus, ConnectorError> {
+    ) -> Result<(ConnectorStatus, Vec<u32>), ConnectorError> {
         let url = format!(
             "{}/connectors/{}/status",
             base_url.trim_end_matches('/'),
@@ -189,7 +194,31 @@ impl DbzConnectorUtils {
         let status_resp: ConnectorStatusResponse = resp.json().await.map_err(|e| {
             ConnectorError::Parse(format!("解析连接器<{connector_name}>状态响应失败: {e}"))
         })?;
-        Ok(parse_connector_state(&status_resp.connector.state))
+
+        // 连接器自身不正常时以它为准（任务状态这时没有额外信息）
+        let connector_state = parse_connector_state(&status_resp.connector.state);
+        if connector_state != ConnectorStatus::Running {
+            return Ok((connector_state, Vec::new()));
+        }
+
+        // 连接器 RUNNING 但任务可能挂了：FAILED / UNASSIGNED 都算异常。
+        // 只重启这几个任务，比重启整个连接器影响小。
+        let failed_task_ids: Vec<u32> = status_resp
+            .tasks
+            .iter()
+            .filter(|task| is_task_abnormal(parse_connector_state(&task.state)))
+            .map(|task| task.id)
+            .collect();
+
+        if failed_task_ids.is_empty() {
+            Ok((ConnectorStatus::Running, failed_task_ids))
+        } else {
+            warn!(
+                "连接器<{connector_name}>自身为 RUNNING，但有 {} 个任务异常: {failed_task_ids:?}",
+                failed_task_ids.len()
+            );
+            Ok((ConnectorStatus::Failed, failed_task_ids))
+        }
     }
 
     /// # 检查连接器是否存在
@@ -312,6 +341,7 @@ impl DbzConnectorUtils {
                     };
                     let state = Self::fetch_connector_status(base_url, name)
                         .await
+                        .map(|(state, _)| state)
                         .unwrap_or(ConnectorStatus::Unassigned);
                     connectors.push(ConnectorVo {
                         name: name.to_string(),
@@ -433,6 +463,9 @@ impl DbzConnectorUtils {
 struct ConnectorStatusResponse {
     /// 连接器状态
     connector: ConnectorState,
+    /// 任务状态列表
+    #[serde(default)]
+    tasks: Vec<ConnectorTaskState>,
 }
 
 /// # Kafka Connect 连接器状态
@@ -510,13 +543,13 @@ fn parse_expanded_connector(name: &str, value: Value) -> Result<ConnectorVo, Con
         .as_ref()
         .and_then(|info| info.connector_type.clone())
         .unwrap_or_default();
-    let state = expanded
+    let connector_state = expanded
         .status
         .as_ref()
         .and_then(|status| status.connector.as_ref())
         .map(|connector| parse_connector_state(&connector.state))
         .unwrap_or(ConnectorStatus::Unassigned);
-    let tasks = expanded
+    let tasks: Vec<ConnectorTaskVo> = expanded
         .status
         .map(|status| {
             status
@@ -532,6 +565,16 @@ fn parse_expanded_connector(name: &str, value: Value) -> Result<ConnectorVo, Con
         })
         .unwrap_or_default();
 
+    // 与检查任务用同一套判定：任务挂了连接器仍报 RUNNING，
+    // 列表里也不能显示成「运行中」，否则同一时刻两处说法不一致。
+    let state = if connector_state == ConnectorStatus::Running
+        && tasks.iter().any(|task| is_task_abnormal(task.state))
+    {
+        ConnectorStatus::Failed
+    } else {
+        connector_state
+    };
+
     Ok(ConnectorVo {
         name: name.to_string(),
         connector_class,
@@ -545,6 +588,16 @@ fn parse_expanded_connector(name: &str, value: Value) -> Result<ConnectorVo, Con
 fn parse_config(connector_config: &str) -> Result<Value, ConnectorError> {
     serde_json::from_str(connector_config)
         .map_err(|e| ConnectorError::Parse(format!("连接器配置不是合法的 JSON: {e}")))
+}
+
+/// # 任务状态是否算异常
+///
+/// 只有 `FAILED` / `UNASSIGNED` 需要处理（重启任务）；`PAUSED` 通常是人工操作，
+/// `RUNNING` 正常。
+///
+/// 状态查询与连接器列表共用这一处判定，保证两边对「健康」的说法一致。
+fn is_task_abnormal(state: ConnectorStatus) -> bool {
+    matches!(state, ConnectorStatus::Failed | ConnectorStatus::Unassigned)
 }
 
 /// # 将 Kafka Connect 状态字符串映射为 [`ConnectorStatus`]
