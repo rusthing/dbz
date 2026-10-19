@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, Eq, DeriveEntityModel, Serialize, Deserialize, Default)]
-#[sea_orm(table_name = "dbz_instance")]
+#[sea_orm(table_name = "dbz_source_connector")]
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false, unique)]
     pub id: i64,
@@ -13,13 +13,9 @@ pub struct Model {
     pub name: String,
     pub kafka_connect_url: String,
     #[sea_orm(unique)]
-    pub source_connector_name: String,
+    pub connector_name: String,
     #[sea_orm(column_type = "Text")]
-    pub source_connector_config: String,
-    #[sea_orm(unique)]
-    pub sink_connector_name: String,
-    #[sea_orm(column_type = "Text")]
-    pub sink_connector_config: String,
+    pub connector_config: String,
     pub run_status: i16,
     pub remark: Option<String>,
     pub enabled: bool,
@@ -27,6 +23,8 @@ pub struct Model {
     pub create_ms: i64,
     pub updater_id: i64,
     pub update_ms: i64,
+    #[sea_orm(has_many)]
+    pub dbz_sink_connectors: HasMany<super::dbz_sink_connector::Entity>,
 }
 
 impl ActiveModelBehavior for ActiveModel {}

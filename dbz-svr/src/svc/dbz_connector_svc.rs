@@ -5,16 +5,16 @@
 //!
 //! 与实体服务不同，本服务没有对应的数据库实体，因此不使用 `#[svc]` 宏，
 //! 而是手写 `impl` 块；目标 Kafka Connect 通过 DTO 中的
-//! `kafkaConnectUrl` 或 `instanceId` 定位（见 `DbzConnectorQueryDto` 的说明）。
+//! `kafkaConnectUrl` 或 `sourceConnectorId` 定位（见 `DbzConnectorQueryDto` 的说明）。
+//! 下游连接器不保存 Kafka Connect 地址，因此同样按上游连接器定位。
 
 use crate::dto::{DbzConnectorQueryDto, DbzConnectorRestartDto, DbzConnectorTaskRestartDto};
-use crate::svc::DbzInstanceSvc;
+use crate::svc::DbzSourceConnectorSvc;
 use crate::utils::{ConnectorError, DbzConnectorUtils};
 use crate::vo::{ConnectorPluginVo, ConnectorVo};
 use anyhow::anyhow;
 use robotech::api::{Ro, U64};
 use robotech::macros::log_call;
-use sea_orm::DatabaseConnection;
 use tracing::info;
 
 /// # 连接器服务
@@ -36,7 +36,8 @@ impl DbzConnectorSvc {
         dto: DbzConnectorQueryDto,
     ) -> Result<Ro<Vec<ConnectorPluginVo>>, anyhow::Error> {
         let base_url =
-            Self::resolve_base_url(dto.instance_id, dto.kafka_connect_url.as_deref()).await?;
+            Self::resolve_base_url(dto.source_connector_id, dto.kafka_connect_url.as_deref())
+                .await?;
         let plugins = DbzConnectorUtils::list_connector_plugins(&base_url).await?;
         Ok(
             Ro::success(format!("查询连接器插件成功，共 {} 个", plugins.len()))
@@ -47,7 +48,7 @@ impl DbzConnectorSvc {
     /// # 查看所有连接器
     ///
     /// 查询目标 Kafka Connect 上的全部连接器，包含连接器与各任务的运行状态，
-    /// 便于发现未被 dbz 实例纳管的连接器以及定位失败的任务。
+    /// 便于发现未被 dbz 纳管的连接器以及定位失败的任务。
     ///
     /// ## 参数
     /// * `dto` - 目标 Kafka Connect 的定位参数
@@ -60,7 +61,8 @@ impl DbzConnectorSvc {
         dto: DbzConnectorQueryDto,
     ) -> Result<Ro<Vec<ConnectorVo>>, anyhow::Error> {
         let base_url =
-            Self::resolve_base_url(dto.instance_id, dto.kafka_connect_url.as_deref()).await?;
+            Self::resolve_base_url(dto.source_connector_id, dto.kafka_connect_url.as_deref())
+                .await?;
         let connectors = DbzConnectorUtils::list_connectors(&base_url).await?;
         Ok(
             Ro::success(format!("查询连接器成功，共 {} 个", connectors.len()))
@@ -83,7 +85,8 @@ impl DbzConnectorSvc {
     pub async fn restart_connector(dto: DbzConnectorRestartDto) -> Result<Ro<()>, anyhow::Error> {
         let connector_name = Self::check_connector_name(&dto.connector_name)?;
         let base_url =
-            Self::resolve_base_url(dto.instance_id, dto.kafka_connect_url.as_deref()).await?;
+            Self::resolve_base_url(dto.source_connector_id, dto.kafka_connect_url.as_deref())
+                .await?;
 
         DbzConnectorUtils::restart_connector(
             &base_url,
@@ -123,7 +126,8 @@ impl DbzConnectorSvc {
     ) -> Result<Ro<()>, anyhow::Error> {
         let connector_name = Self::check_connector_name(&dto.connector_name)?;
         let base_url =
-            Self::resolve_base_url(dto.instance_id, dto.kafka_connect_url.as_deref()).await?;
+            Self::resolve_base_url(dto.source_connector_id, dto.kafka_connect_url.as_deref())
+                .await?;
 
         DbzConnectorUtils::restart_connector_task(&base_url, connector_name, dto.task_id)
             .await
@@ -146,18 +150,19 @@ impl DbzConnectorSvc {
 
     /// # 定位目标 Kafka Connect 地址
     ///
-    /// 优先使用显式传入的 `kafkaConnectUrl`；未提供时按 `instanceId` 查询实例，
-    /// 取其配置的 Kafka Connect 地址。
+    /// 优先使用显式传入的 `kafkaConnectUrl`；未提供时按 `sourceConnectorId` 查询
+    /// 上游连接器，取其配置的 Kafka Connect 地址 —— 下游连接器不保存地址，
+    /// 同样按上游连接器定位。
     ///
     /// ## 参数
-    /// * `instance_id` - 实例ID（可选）
+    /// * `source_connector_id` - 上游连接器ID（可选）
     /// * `kafka_connect_url` - Kafka Connect 地址（可选，优先）
     ///
     /// ## 返回值
     /// * `Ok(String)` - 去掉末尾 `/` 的 Kafka Connect 地址
-    /// * `Err(anyhow::Error)` - 两者都未提供、实例不存在或实例未配置地址
+    /// * `Err(anyhow::Error)` - 两者都未提供、上游连接器不存在或未配置地址
     async fn resolve_base_url(
-        instance_id: Option<U64>,
+        source_connector_id: Option<U64>,
         kafka_connect_url: Option<&str>,
     ) -> Result<String, anyhow::Error> {
         if let Some(url) = kafka_connect_url
@@ -167,22 +172,13 @@ impl DbzConnectorSvc {
             return Ok(url.trim_end_matches('/').to_string());
         }
 
-        let Some(id) = instance_id else {
-            return Err(anyhow!("必须提供 kafkaConnectUrl 或 instanceId 之一"));
+        let Some(id) = source_connector_id else {
+            return Err(anyhow!(
+                "必须提供 kafkaConnectUrl 或 sourceConnectorId 之一"
+            ));
         };
 
-        let ro = DbzInstanceSvc::get_by_id::<DatabaseConnection>(id, None)
-            .await
-            .map_err(|e| anyhow!("查询实例<{}>失败: {e}", id.value()))?;
-        let instance = ro
-            .extra
-            .ok_or_else(|| anyhow!("实例<{}>不存在", id.value()))?;
-
-        let url = instance.kafka_connect_url.trim().trim_end_matches('/');
-        if url.is_empty() {
-            return Err(anyhow!("实例<{}>未配置 Kafka Connect 地址", instance.name));
-        }
-        Ok(url.to_string())
+        DbzSourceConnectorSvc::kafka_connect_url(id).await
     }
 
     /// # 校验连接器名称

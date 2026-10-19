@@ -1,5 +1,5 @@
 use crate::config::{DBZ_CONFIG_KEY, DbzConfig, set_dbz_config};
-use crate::svc::DbzInstanceSvc;
+use crate::svc::DbzSourceConnectorSvc;
 use anyhow::bail;
 use async_trait::async_trait;
 use config::Value;
@@ -17,7 +17,7 @@ struct HealthCheckHandler;
 #[async_trait]
 impl JobxTaskHandler for HealthCheckHandler {
     async fn handle(&self, _task: &JobxTaskVo) -> anyhow::Result<String> {
-        DbzInstanceSvc::check_all_connectors().await
+        DbzSourceConnectorSvc::check_all_connectors().await
     }
 }
 

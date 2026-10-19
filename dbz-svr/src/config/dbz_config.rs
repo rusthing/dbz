@@ -1,4 +1,4 @@
-//! # Debezium 实例配置
+//! # Debezium 服务配置
 //!
 //! 定义 dbz 服务自身相关的配置项，包括连接器状态检查间隔与 jobx 执行器编码。
 //! 该配置作为 [`crate::config::AppConfig`] 的一个配置段被读取。
@@ -23,7 +23,7 @@ pub fn set_dbz_config(config: &DbzConfig) {
     DBZ_CONFIG.store(Some(Arc::new(config.clone())));
 }
 
-/// # Debezium 实例配置
+/// # Debezium 服务配置
 ///
 /// 对应配置文件中的 `[dbz]` 配置段。
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]

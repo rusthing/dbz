@@ -1,7 +1,9 @@
-use crate::api_client::dbz_instance_api_client::DbzInstanceApiClient;
+use crate::api_client::dbz_sink_connector_api_client::DbzSinkConnectorApiClient;
+use crate::api_client::dbz_source_connector_api_client::DbzSourceConnectorApiClient;
 use robotech::macros::api_client;
 
 #[api_client]
 pub struct DbzApiClient {
-    pub instance: DbzInstanceApiClient,
+    pub source_connector: DbzSourceConnectorApiClient,
+    pub sink_connector: DbzSinkConnectorApiClient,
 }

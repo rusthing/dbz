@@ -65,7 +65,7 @@ pub struct AppConfig {
 
 /// # 告警配置
 ///
-/// 对应配置文件中的 `[alarm]` 配置段，用于向 alarm-svr 上报实例连接器异常事件。
+/// 对应配置文件中的 `[alarm]` 配置段，用于向 alarm-svr 上报连接器异常事件。
 #[derive(Debug, Default, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct AlarmConfig {

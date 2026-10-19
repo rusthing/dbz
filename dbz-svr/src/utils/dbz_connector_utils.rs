@@ -1,7 +1,7 @@
 //! # Kafka Connect 工具
 //!
 //! 封装对 Kafka Connect REST API 的调用，提供连接器（Connector）的部署（注册/更新）、
-//! 删除以及状态查询能力，供 Debezium 实例的业务层复用。
+//! 删除以及状态查询能力，供 Debezium 连接器的业务层复用。
 //!
 //! 涉及的 Kafka Connect 接口：
 //! - `GET  /connectors`                 连通性探测
@@ -261,7 +261,7 @@ impl DbzConnectorUtils {
     /// # 查看连接器插件
     ///
     /// 调用 `GET /connector-plugins`，返回 Kafka Connect 已安装的全部连接器插件。
-    /// 常用于在新建实例前确认目标环境是否已安装对应的 Debezium 插件。
+    /// 常用于在新建连接器前确认目标环境是否已安装对应的 Debezium 插件。
     ///
     /// ## 参数
     /// * `base_url` - Kafka Connect 地址

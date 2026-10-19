@@ -1,24 +1,20 @@
-use crate::dic::InstanceRunStatus;
+use crate::dic::ConnectorRunStatus;
 use robotech::macros::vo;
 
 #[vo]
-pub struct DbzInstanceVo {
+pub struct DbzSourceConnectorVo {
     /// ID
     pub id: u64,
-    /// 实例名称
+    /// 名称
     pub name: String,
     /// Kafka Connect 地址
     pub kafka_connect_url: String,
-    /// 上游连接器名称
-    pub source_connector_name: String,
-    /// 上游连接器配置（JSON）
-    pub source_connector_config: String,
-    /// 下游连接器名称
-    pub sink_connector_name: String,
-    /// 下游连接器配置（JSON）
-    pub sink_connector_config: String,
+    /// 连接器名称
+    pub connector_name: String,
+    /// 连接器配置（JSON）
+    pub connector_config: String,
     /// 运行状态
-    pub run_status: InstanceRunStatus,
+    pub run_status: ConnectorRunStatus,
     /// 备注
     pub remark: Option<String>,
     /// 启用

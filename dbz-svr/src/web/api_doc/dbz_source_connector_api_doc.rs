@@ -11,4 +11,4 @@ use robotech::macros::api_doc;
     list_by_query_dto,
     page_by_query_dto
 )]
-pub struct DbzInstanceApiDoc;
+pub struct DbzSourceConnectorApiDoc;

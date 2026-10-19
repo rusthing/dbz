@@ -1,14 +1,14 @@
 use crate::dto::*;
-use crate::vo::{DbzInstanceExVo, DbzInstanceVo};
+use crate::vo::{DbzSinkConnectorExVo, DbzSinkConnectorVo};
 use robotech::macros::feign;
 use robotech::micro_svc::FeignApiClient;
 
 #[feign]
-pub struct DbzInstanceApiClient {
+pub struct DbzSinkConnectorApiClient {
     client: FeignApiClient,
 }
 
-impl DbzInstanceApiClient {
+impl DbzSinkConnectorApiClient {
     pub fn new(client: FeignApiClient) -> Self {
         Self { client }
     }
