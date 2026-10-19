@@ -29,5 +29,4 @@ port = 9006
 
 [id-worker]
 epoch = 1758108749211
-machine-id = 1
-node-id = 1
+node = 1
