@@ -21,8 +21,8 @@ use robotech::web::CtrlError;
 /// 查询目标 Kafka Connect 已安装的连接器插件，用于确认 Debezium 插件是否就绪。
 ///
 /// ## 查询参数
-/// * `sourceConnectorId` - 上游连接器ID（与 `kafkaConnectUrl` 二选一）
-/// * `kafkaConnectUrl` - Kafka Connect 地址（优先于 `sourceConnectorId`）
+/// * `kafkaConnectId` - Kafka Connect ID（与 `kafkaConnectUrl` 二选一）
+/// * `kafkaConnectUrl` - Kafka Connect 地址（优先于 `kafkaConnectId`）
 ///
 /// ## 返回值
 /// * 成功时返回插件列表（类名、类型、版本）
@@ -47,8 +47,8 @@ pub async fn list_connector_plugins(
 /// 查询目标 Kafka Connect 上的全部连接器，含连接器与各任务的运行状态。
 ///
 /// ## 查询参数
-/// * `sourceConnectorId` - 上游连接器ID（与 `kafkaConnectUrl` 二选一）
-/// * `kafkaConnectUrl` - Kafka Connect 地址（优先于 `sourceConnectorId`）
+/// * `kafkaConnectId` - Kafka Connect ID（与 `kafkaConnectUrl` 二选一）
+/// * `kafkaConnectUrl` - Kafka Connect 地址（优先于 `kafkaConnectId`）
 ///
 /// ## 返回值
 /// * 成功时返回连接器列表（名称、类名、类型、状态、任务列表）

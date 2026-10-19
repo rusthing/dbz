@@ -25,6 +25,14 @@ use tracing::{info, warn};
 /// 复用的 HTTP 客户端
 static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
 
+/// # 归一化 Kafka Connect 地址
+///
+/// 去掉首尾空白与末尾 `/`。既用作请求基地址，也用于判断两个地址是否指向同一台
+/// 集群（改地址前要先确认「是否真的换了集群」）。
+pub fn normalize_url(url: &str) -> String {
+    url.trim().trim_end_matches('/').to_string()
+}
+
 /// # 连接器操作错误
 ///
 /// 用于区分 Kafka Connect 调用失败的具体原因，便于业务层映射为不同的运行状态。

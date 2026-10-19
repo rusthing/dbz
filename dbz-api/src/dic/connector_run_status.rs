@@ -8,6 +8,9 @@ use strum::{AsRefStr, Display, EnumString};
 /// Kafka Connect REST API 返回的**实时**状态，不落库；本枚举是检查任务得出的**结论**，
 /// 会回写到数据库。
 ///
+/// Kafka Connect 集群自身另有 [`KafkaConnectStatus`](crate::dic::KafkaConnectStatus)：
+/// 集群只关心是否可达，没有「注册连接器失败」这类取值，故不共用本枚举。
+///
 /// 被 `DbzSourceConnectorVo` / `DbzSinkConnectorVo` 用作字段，所以必须声明 `default`。
 #[dic(default = None)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, AsRefStr, Display, EnumString)]

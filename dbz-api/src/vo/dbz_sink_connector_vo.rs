@@ -7,6 +7,8 @@ pub struct DbzSinkConnectorVo {
     pub id: u64,
     /// 上游连接器ID
     pub source_connector_id: u64,
+    /// Kafka Connect ID
+    pub kafka_connect_id: u64,
     /// 名称
     pub name: String,
     /// 连接器名称

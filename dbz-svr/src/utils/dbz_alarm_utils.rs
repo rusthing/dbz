@@ -3,14 +3,16 @@
 //! 通过 alarm-api-client 向 alarm-svr 上报 Debezium 连接器异常事件。
 //!
 //! 上游、下游连接器各自独立告警：`business_id` 分别是 `dbz_source_connector.id`
-//! 与 `dbz_sink_connector.id`；下游的告警文案里带上其上游连接器名称，便于定位。
+//! 与 `dbz_sink_connector.id`；文案里带上连接器名称、所属 Kafka Connect 名称与
+//! 地址，便于定位。Kafka Connect 本身不单独作为告警主体 —— 一台集群不可达时，
+//! 由挂在它下面的连接器告警表达，避免同一个根因换一个 business_id 再报一遍。
 //!
 //! 需要先在 alarm-svr 中配置好事件来源、事件策略与告警，并将对应的
 //! `event-code` 与 `alert-id` 写入 `[alarm]` 配置段，否则将跳过告警上报并打印告警日志。
 
 use crate::config::get_app_config;
 use crate::dic::ConnectorRunStatus;
-use crate::vo::{DbzSinkConnectorVo, DbzSourceConnectorVo};
+use crate::vo::{DbzKafkaConnectVo, DbzSinkConnectorVo, DbzSourceConnectorVo};
 use alarm_api::dto::AlarmEventLogAddDto;
 use alarm_api_client::AlarmEventLogApiClient;
 use robotech::api::U64;
@@ -30,6 +32,7 @@ impl DbzAlarmUtils {
     ///
     /// ## 参数
     /// * `source` - 发生异常的上游连接器
+    /// * `kafka_connect` - 运行该连接器的 Kafka Connect
     /// * `run_status` - 该连接器当前的运行状态
     ///
     /// ## 返回值
@@ -37,16 +40,18 @@ impl DbzAlarmUtils {
     /// * `Err(anyhow::Error)` - 上报失败
     pub async fn send_source_connector_alarm(
         source: &DbzSourceConnectorVo,
+        kafka_connect: &DbzKafkaConnectVo,
         run_status: ConnectorRunStatus,
     ) -> Result<(), anyhow::Error> {
         let title = format!("Debezium 上游连接器<{}>异常", source.name);
         let content = format!(
-            "上游连接器<{}>运行状态异常: {} ({}), 连接器<{}>, Kafka Connect: {}",
+            "上游连接器<{}>运行状态异常: {} ({}), 连接器<{}>, Kafka Connect<{}>: {}",
             source.name,
             run_status,
             run_status.value(),
             source.connector_name,
-            source.kafka_connect_url,
+            kafka_connect.name,
+            kafka_connect.url,
         );
         Self::send(title, content, source.id).await
     }
@@ -58,7 +63,8 @@ impl DbzAlarmUtils {
     ///
     /// ## 参数
     /// * `sink` - 发生异常的下游连接器
-    /// * `source` - 该下游连接器所属的上游连接器（提供 Kafka Connect 地址用于定位）
+    /// * `source_name` - 该下游连接器所属上游连接器的名称（仅用于文案定位）
+    /// * `kafka_connect` - 运行该连接器的 Kafka Connect
     /// * `run_status` - 该连接器当前的运行状态
     ///
     /// ## 返回值
@@ -66,18 +72,20 @@ impl DbzAlarmUtils {
     /// * `Err(anyhow::Error)` - 上报失败
     pub async fn send_sink_connector_alarm(
         sink: &DbzSinkConnectorVo,
-        source: &DbzSourceConnectorVo,
+        source_name: &str,
+        kafka_connect: &DbzKafkaConnectVo,
         run_status: ConnectorRunStatus,
     ) -> Result<(), anyhow::Error> {
         let title = format!("Debezium 下游连接器<{}>异常", sink.name);
         let content = format!(
-            "下游连接器<{}>运行状态异常: {} ({}), 连接器<{}>, 上游连接器<{}>, Kafka Connect: {}",
+            "下游连接器<{}>运行状态异常: {} ({}), 连接器<{}>, 上游连接器<{}>, Kafka Connect<{}>: {}",
             sink.name,
             run_status,
             run_status.value(),
             sink.connector_name,
-            source.name,
-            source.kafka_connect_url,
+            source_name,
+            kafka_connect.name,
+            kafka_connect.url,
         );
         Self::send(title, content, sink.id).await
     }

@@ -9,9 +9,9 @@ use serde::{Deserialize, Serialize};
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false, unique)]
     pub id: i64,
+    pub kafka_connect_id: i64,
     #[sea_orm(unique)]
     pub name: String,
-    pub kafka_connect_url: String,
     #[sea_orm(unique)]
     pub connector_name: String,
     #[sea_orm(column_type = "Text")]
@@ -23,6 +23,14 @@ pub struct Model {
     pub create_ms: i64,
     pub updater_id: i64,
     pub update_ms: i64,
+    #[sea_orm(
+        belongs_to,
+        from = "kafka_connect_id",
+        to = "id",
+        on_update = "Restrict",
+        on_delete = "Restrict"
+    )]
+    pub dbz_kafka_connect: BelongsTo<super::dbz_kafka_connect::Entity>,
     #[sea_orm(has_many)]
     pub dbz_sink_connectors: HasMany<super::dbz_sink_connector::Entity>,
 }

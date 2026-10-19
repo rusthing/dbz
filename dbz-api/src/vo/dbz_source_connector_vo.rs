@@ -5,10 +5,10 @@ use robotech::macros::vo;
 pub struct DbzSourceConnectorVo {
     /// ID
     pub id: u64,
+    /// Kafka Connect ID
+    pub kafka_connect_id: u64,
     /// 名称
     pub name: String,
-    /// Kafka Connect 地址
-    pub kafka_connect_url: String,
     /// 连接器名称
     pub connector_name: String,
     /// 连接器配置（JSON）

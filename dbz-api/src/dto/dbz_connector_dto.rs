@@ -3,10 +3,10 @@
 //! 定义 Kafka Connect 连接器运维接口的入参：查询目标 Kafka Connect、重启连接器、
 //! 重启单个任务。
 //!
-//! 目标 Kafka Connect 通过 `kafkaConnectUrl` 或 `sourceConnectorId` 二者之一定位：
-//! - `kafkaConnectUrl` - 直接指定地址，适合排查未被任何连接器纳管的连接器；
-//! - `sourceConnectorId` - 取该上游连接器配置的 Kafka Connect 地址，适合从上游
-//!   连接器列表发起操作（下游连接器不保存地址，同样按上游定位）。
+//! 目标 Kafka Connect 通过 `kafkaConnectUrl` 或 `kafkaConnectId` 二者之一定位：
+//! - `kafkaConnectUrl` - 直接指定地址，适合排查未被任何记录纳管的集群；
+//! - `kafkaConnectId` - 取 `dbz_kafka_connect` 记录上的地址，适合从 Kafka Connect
+//!   或连接器列表发起操作。
 //!
 //! 同时提供时以 `kafkaConnectUrl` 为准。
 
@@ -20,9 +20,9 @@ use utoipa::{IntoParams, ToSchema};
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema, IntoParams)]
 #[serde(default, rename_all = "camelCase")]
 pub struct DbzConnectorQueryDto {
-    /// 上游连接器ID（未提供 kafkaConnectUrl 时必填）
-    pub source_connector_id: Option<U64>,
-    /// Kafka Connect 地址（优先于 sourceConnectorId）
+    /// Kafka Connect ID（未提供 kafkaConnectUrl 时必填）
+    pub kafka_connect_id: Option<U64>,
+    /// Kafka Connect 地址（优先于 kafkaConnectId）
     pub kafka_connect_url: Option<String>,
 }
 
@@ -30,10 +30,10 @@ pub struct DbzConnectorQueryDto {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DbzConnectorRestartDto {
-    /// 上游连接器ID（未提供 kafkaConnectUrl 时必填）
+    /// Kafka Connect ID（未提供 kafkaConnectUrl 时必填）
     #[serde(default)]
-    pub source_connector_id: Option<U64>,
-    /// Kafka Connect 地址（优先于 sourceConnectorId）
+    pub kafka_connect_id: Option<U64>,
+    /// Kafka Connect 地址（优先于 kafkaConnectId）
     #[serde(default)]
     pub kafka_connect_url: Option<String>,
     /// 连接器名称
@@ -50,10 +50,10 @@ pub struct DbzConnectorRestartDto {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct DbzConnectorTaskRestartDto {
-    /// 上游连接器ID（未提供 kafkaConnectUrl 时必填）
+    /// Kafka Connect ID（未提供 kafkaConnectUrl 时必填）
     #[serde(default)]
-    pub source_connector_id: Option<U64>,
-    /// Kafka Connect 地址（优先于 sourceConnectorId）
+    pub kafka_connect_id: Option<U64>,
+    /// Kafka Connect 地址（优先于 kafkaConnectId）
     #[serde(default)]
     pub kafka_connect_url: Option<String>,
     /// 连接器名称
