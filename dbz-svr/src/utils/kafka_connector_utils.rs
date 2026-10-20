@@ -1,7 +1,10 @@
-//! # Kafka Connect 工具
+//! # Kafka 连接器工具（Kafka Connect REST）
 //!
 //! 封装对 Kafka Connect REST API 的调用，提供连接器（Connector）的部署（注册/更新）、
-//! 删除以及状态查询能力，供 Debezium 连接器的业务层复用。
+//! 删除以及状态查询能力，供上层业务复用。
+//!
+//! 命名上 `kafka_` 指「远端集群上的连接器」，与库记录 `dbz_*` 区分：本模块不发 SQL、
+//! 只发 HTTP。
 //!
 //! 涉及的 Kafka Connect 接口：
 //! - `GET  /connectors`                 连通性探测
@@ -13,8 +16,8 @@
 //! - `POST /connectors/{name}/restart`  重启连接器（可连同其任务）
 //! - `POST /connectors/{name}/tasks/{id}/restart` 重启单个任务
 
-use crate::dic::ConnectorStatus;
-use crate::vo::{ConnectorPluginVo, ConnectorTaskVo, ConnectorVo};
+use crate::dic::KafkaConnectorStatus;
+use crate::vo::{KafkaConnectorPluginVo, KafkaConnectorTaskVo, KafkaConnectorVo};
 use anyhow::anyhow;
 use serde::Deserialize;
 use serde_json::Value;
@@ -37,7 +40,7 @@ pub fn normalize_url(url: &str) -> String {
 ///
 /// 用于区分 Kafka Connect 调用失败的具体原因，便于业务层映射为不同的运行状态。
 #[derive(Debug)]
-pub enum ConnectorError {
+pub enum KafkaConnectorError {
     /// 请求失败（网络异常或返回非 2xx 状态码）
     Request(String),
     /// 连接器不存在（HTTP 404）
@@ -46,22 +49,22 @@ pub enum ConnectorError {
     Parse(String),
 }
 
-impl std::fmt::Display for ConnectorError {
+impl std::fmt::Display for KafkaConnectorError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ConnectorError::Request(msg) => write!(f, "请求失败: {msg}"),
-            ConnectorError::NotFound => write!(f, "连接器不存在"),
-            ConnectorError::Parse(msg) => write!(f, "响应解析失败: {msg}"),
+            KafkaConnectorError::Request(msg) => write!(f, "请求失败: {msg}"),
+            KafkaConnectorError::NotFound => write!(f, "连接器不存在"),
+            KafkaConnectorError::Parse(msg) => write!(f, "响应解析失败: {msg}"),
         }
     }
 }
 
-impl std::error::Error for ConnectorError {}
+impl std::error::Error for KafkaConnectorError {}
 
-/// # Kafka Connect 工具
-pub struct DbzConnectorUtils;
+/// # Kafka 连接器工具
+pub struct KafkaConnectorUtils;
 
-impl DbzConnectorUtils {
+impl KafkaConnectorUtils {
     /// # 探测 Kafka Connect 连通性
     ///
     /// 请求 `GET /connectors`，用于在注册连接器前确认目标 Kafka Connect 可用。
@@ -97,12 +100,12 @@ impl DbzConnectorUtils {
     ///
     /// ## 返回值
     /// * `Ok(())` - 部署成功
-    /// * `Err(ConnectorError)` - 部署失败
+    /// * `Err(KafkaConnectorError)` - 部署失败
     pub async fn deploy_connector(
         base_url: &str,
         connector_name: &str,
         connector_config: &str,
-    ) -> Result<(), ConnectorError> {
+    ) -> Result<(), KafkaConnectorError> {
         let config = parse_config(connector_config)?;
         let url = format!(
             "{}/connectors/{}/config",
@@ -115,11 +118,11 @@ impl DbzConnectorUtils {
             .send()
             .await
             .map_err(|e| {
-                ConnectorError::Request(format!("部署连接器<{connector_name}>失败: {e}"))
+                KafkaConnectorError::Request(format!("部署连接器<{connector_name}>失败: {e}"))
             })?;
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(ConnectorError::Request(format!(
+            return Err(KafkaConnectorError::Request(format!(
                 "部署连接器<{connector_name}>失败: {body}"
             )));
         }
@@ -174,38 +177,38 @@ impl DbzConnectorUtils {
     /// * `connector_name` - 连接器名称
     ///
     /// ## 返回值
-    /// * `Ok((ConnectorStatus, Vec<u32>))` - 连接器状态 + 异常任务ID列表。
+    /// * `Ok((KafkaConnectorStatus, Vec<u32>))` - 连接器状态 + 异常任务ID列表。
     ///   任务有 `FAILED` / `UNASSIGNED` 时，状态返回 `Failed` 且列表非空；
     ///   连接器自身非 `RUNNING` 时以连接器状态为准，列表为空
-    /// * `Err(ConnectorError)` - 查询失败，可通过错误类型区分具体原因
+    /// * `Err(KafkaConnectorError)` - 查询失败，可通过错误类型区分具体原因
     pub async fn fetch_connector_status(
         base_url: &str,
         connector_name: &str,
-    ) -> Result<(ConnectorStatus, Vec<u32>), ConnectorError> {
+    ) -> Result<(KafkaConnectorStatus, Vec<u32>), KafkaConnectorError> {
         let url = format!(
             "{}/connectors/{}/status",
             base_url.trim_end_matches('/'),
             connector_name
         );
         let resp = HTTP_CLIENT.get(&url).send().await.map_err(|e| {
-            ConnectorError::Request(format!("查询连接器<{connector_name}>状态失败: {e}"))
+            KafkaConnectorError::Request(format!("查询连接器<{connector_name}>状态失败: {e}"))
         })?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            return Err(ConnectorError::NotFound);
+            return Err(KafkaConnectorError::NotFound);
         }
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(ConnectorError::Request(format!(
+            return Err(KafkaConnectorError::Request(format!(
                 "查询连接器<{connector_name}>状态失败: {body}"
             )));
         }
         let status_resp: ConnectorStatusResponse = resp.json().await.map_err(|e| {
-            ConnectorError::Parse(format!("解析连接器<{connector_name}>状态响应失败: {e}"))
+            KafkaConnectorError::Parse(format!("解析连接器<{connector_name}>状态响应失败: {e}"))
         })?;
 
         // 连接器自身不正常时以它为准（任务状态这时没有额外信息）
         let connector_state = parse_connector_state(&status_resp.connector.state);
-        if connector_state != ConnectorStatus::Running {
+        if connector_state != KafkaConnectorStatus::Running {
             return Ok((connector_state, Vec::new()));
         }
 
@@ -219,13 +222,13 @@ impl DbzConnectorUtils {
             .collect();
 
         if failed_task_ids.is_empty() {
-            Ok((ConnectorStatus::Running, failed_task_ids))
+            Ok((KafkaConnectorStatus::Running, failed_task_ids))
         } else {
             warn!(
                 "连接器<{connector_name}>自身为 RUNNING，但有 {} 个任务异常: {failed_task_ids:?}",
                 failed_task_ids.len()
             );
-            Ok((ConnectorStatus::Failed, failed_task_ids))
+            Ok((KafkaConnectorStatus::Failed, failed_task_ids))
         }
     }
 
@@ -241,25 +244,25 @@ impl DbzConnectorUtils {
     /// ## 返回值
     /// * `Ok(true)` - 连接器存在
     /// * `Ok(false)` - 连接器不存在
-    /// * `Err(ConnectorError)` - 请求失败
+    /// * `Err(KafkaConnectorError)` - 请求失败
     pub async fn connector_exists(
         base_url: &str,
         connector_name: &str,
-    ) -> Result<bool, ConnectorError> {
+    ) -> Result<bool, KafkaConnectorError> {
         let url = format!(
             "{}/connectors/{}",
             base_url.trim_end_matches('/'),
             connector_name
         );
         let resp = HTTP_CLIENT.get(&url).send().await.map_err(|e| {
-            ConnectorError::Request(format!("检查连接器<{connector_name}>是否存在失败: {e}"))
+            KafkaConnectorError::Request(format!("检查连接器<{connector_name}>是否存在失败: {e}"))
         })?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
             return Ok(false);
         }
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(ConnectorError::Request(format!(
+            return Err(KafkaConnectorError::Request(format!(
                 "检查连接器<{connector_name}>是否存在失败: {body}"
             )));
         }
@@ -275,27 +278,27 @@ impl DbzConnectorUtils {
     /// * `base_url` - Kafka Connect 地址
     ///
     /// ## 返回值
-    /// * `Ok(Vec<ConnectorPluginVo>)` - 插件列表，未安装任何插件时为空 Vec
-    /// * `Err(ConnectorError)` - 请求失败或响应解析失败
+    /// * `Ok(Vec<KafkaConnectorPluginVo>)` - 插件列表，未安装任何插件时为空 Vec
+    /// * `Err(KafkaConnectorError)` - 请求失败或响应解析失败
     pub async fn list_connector_plugins(
         base_url: &str,
-    ) -> Result<Vec<ConnectorPluginVo>, ConnectorError> {
+    ) -> Result<Vec<KafkaConnectorPluginVo>, KafkaConnectorError> {
         let url = format!("{}/connector-plugins", base_url.trim_end_matches('/'));
         let resp = HTTP_CLIENT
             .get(&url)
             .send()
             .await
-            .map_err(|e| ConnectorError::Request(format!("查询连接器插件失败: {e}")))?;
+            .map_err(|e| KafkaConnectorError::Request(format!("查询连接器插件失败: {e}")))?;
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(ConnectorError::Request(format!(
+            return Err(KafkaConnectorError::Request(format!(
                 "查询连接器插件失败: {body}"
             )));
         }
-        let plugins: Vec<ConnectorPluginVo> = resp
+        let plugins: Vec<KafkaConnectorPluginVo> = resp
             .json()
             .await
-            .map_err(|e| ConnectorError::Parse(format!("解析连接器插件响应失败: {e}")))?;
+            .map_err(|e| KafkaConnectorError::Parse(format!("解析连接器插件响应失败: {e}")))?;
         info!("查询到 {} 个连接器插件", plugins.len());
         Ok(plugins)
     }
@@ -313,26 +316,28 @@ impl DbzConnectorUtils {
     /// * `base_url` - Kafka Connect 地址
     ///
     /// ## 返回值
-    /// * `Ok(Vec<ConnectorVo>)` - 连接器列表，无连接器时为空 Vec
-    /// * `Err(ConnectorError)` - 请求失败或响应解析失败
-    pub async fn list_connectors(base_url: &str) -> Result<Vec<ConnectorVo>, ConnectorError> {
+    /// * `Ok(Vec<KafkaConnectorVo>)` - 连接器列表，无连接器时为空 Vec
+    /// * `Err(KafkaConnectorError)` - 请求失败或响应解析失败
+    pub async fn list_connectors(
+        base_url: &str,
+    ) -> Result<Vec<KafkaConnectorVo>, KafkaConnectorError> {
         let url = format!("{}/connectors", base_url.trim_end_matches('/'));
         let resp = HTTP_CLIENT
             .get(&url)
             .query(&[("expand", "info"), ("expand", "status")])
             .send()
             .await
-            .map_err(|e| ConnectorError::Request(format!("查询连接器列表失败: {e}")))?;
+            .map_err(|e| KafkaConnectorError::Request(format!("查询连接器列表失败: {e}")))?;
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(ConnectorError::Request(format!(
+            return Err(KafkaConnectorError::Request(format!(
                 "查询连接器列表失败: {body}"
             )));
         }
         let value: Value = resp
             .json()
             .await
-            .map_err(|e| ConnectorError::Parse(format!("解析连接器列表响应失败: {e}")))?;
+            .map_err(|e| KafkaConnectorError::Parse(format!("解析连接器列表响应失败: {e}")))?;
 
         let connectors = match value {
             // 支持 expand 的版本：{ "<name>": { "info": {...}, "status": {...} } }
@@ -350,8 +355,8 @@ impl DbzConnectorUtils {
                     let state = Self::fetch_connector_status(base_url, name)
                         .await
                         .map(|(state, _)| state)
-                        .unwrap_or(ConnectorStatus::Unassigned);
-                    connectors.push(ConnectorVo {
+                        .unwrap_or(KafkaConnectorStatus::Unassigned);
+                    connectors.push(KafkaConnectorVo {
                         name: name.to_string(),
                         connector_class: String::new(),
                         connector_type: String::new(),
@@ -363,7 +368,7 @@ impl DbzConnectorUtils {
                 connectors
             }
             _ => {
-                return Err(ConnectorError::Parse(
+                return Err(KafkaConnectorError::Parse(
                     "连接器列表响应格式不符合预期".to_string(),
                 ));
             }
@@ -388,13 +393,13 @@ impl DbzConnectorUtils {
     ///
     /// ## 返回值
     /// * `Ok(())` - 重启请求已被接受
-    /// * `Err(ConnectorError)` - 连接器不存在或请求失败
+    /// * `Err(KafkaConnectorError)` - 连接器不存在或请求失败
     pub async fn restart_connector(
         base_url: &str,
         connector_name: &str,
         include_tasks: bool,
         only_failed: bool,
-    ) -> Result<(), ConnectorError> {
+    ) -> Result<(), KafkaConnectorError> {
         let url = format!(
             "{}/connectors/{}/restart",
             base_url.trim_end_matches('/'),
@@ -406,14 +411,14 @@ impl DbzConnectorUtils {
             .send()
             .await
             .map_err(|e| {
-                ConnectorError::Request(format!("重启连接器<{connector_name}>失败: {e}"))
+                KafkaConnectorError::Request(format!("重启连接器<{connector_name}>失败: {e}"))
             })?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            return Err(ConnectorError::NotFound);
+            return Err(KafkaConnectorError::NotFound);
         }
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(ConnectorError::Request(format!(
+            return Err(KafkaConnectorError::Request(format!(
                 "重启连接器<{connector_name}>失败: {body}"
             )));
         }
@@ -435,12 +440,12 @@ impl DbzConnectorUtils {
     ///
     /// ## 返回值
     /// * `Ok(())` - 重启请求已被接受
-    /// * `Err(ConnectorError)` - 连接器或任务不存在、请求失败
+    /// * `Err(KafkaConnectorError)` - 连接器或任务不存在、请求失败
     pub async fn restart_connector_task(
         base_url: &str,
         connector_name: &str,
         task_id: u32,
-    ) -> Result<(), ConnectorError> {
+    ) -> Result<(), KafkaConnectorError> {
         let url = format!(
             "{}/connectors/{}/tasks/{}/restart",
             base_url.trim_end_matches('/'),
@@ -448,16 +453,16 @@ impl DbzConnectorUtils {
             task_id
         );
         let resp = HTTP_CLIENT.post(&url).send().await.map_err(|e| {
-            ConnectorError::Request(format!(
+            KafkaConnectorError::Request(format!(
                 "重启连接器<{connector_name}>的任务<{task_id}>失败: {e}"
             ))
         })?;
         if resp.status() == reqwest::StatusCode::NOT_FOUND {
-            return Err(ConnectorError::NotFound);
+            return Err(KafkaConnectorError::NotFound);
         }
         if !resp.status().is_success() {
             let body = resp.text().await.unwrap_or_default();
-            return Err(ConnectorError::Request(format!(
+            return Err(KafkaConnectorError::Request(format!(
                 "重启连接器<{connector_name}>的任务<{task_id}>失败: {body}"
             )));
         }
@@ -536,10 +541,13 @@ struct ConnectorTaskState {
     trace: Option<String>,
 }
 
-/// # 将 expand 响应中的单个连接器转换为 [`ConnectorVo`]
-fn parse_expanded_connector(name: &str, value: Value) -> Result<ConnectorVo, ConnectorError> {
+/// # 将 expand 响应中的单个连接器转换为 [`KafkaConnectorVo`]
+fn parse_expanded_connector(
+    name: &str,
+    value: Value,
+) -> Result<KafkaConnectorVo, KafkaConnectorError> {
     let expanded: ExpandedConnector = serde_json::from_value(value)
-        .map_err(|e| ConnectorError::Parse(format!("解析连接器<{name}>信息失败: {e}")))?;
+        .map_err(|e| KafkaConnectorError::Parse(format!("解析连接器<{name}>信息失败: {e}")))?;
 
     let connector_class = expanded
         .info
@@ -556,14 +564,14 @@ fn parse_expanded_connector(name: &str, value: Value) -> Result<ConnectorVo, Con
         .as_ref()
         .and_then(|status| status.connector.as_ref())
         .map(|connector| parse_connector_state(&connector.state))
-        .unwrap_or(ConnectorStatus::Unassigned);
-    let tasks: Vec<ConnectorTaskVo> = expanded
+        .unwrap_or(KafkaConnectorStatus::Unassigned);
+    let tasks: Vec<KafkaConnectorTaskVo> = expanded
         .status
         .map(|status| {
             status
                 .tasks
                 .into_iter()
-                .map(|task| ConnectorTaskVo {
+                .map(|task| KafkaConnectorTaskVo {
                     id: task.id,
                     state: parse_connector_state(&task.state),
                     worker_id: task.worker_id,
@@ -575,15 +583,15 @@ fn parse_expanded_connector(name: &str, value: Value) -> Result<ConnectorVo, Con
 
     // 与检查任务用同一套判定：任务挂了连接器仍报 RUNNING，
     // 列表里也不能显示成「运行中」，否则同一时刻两处说法不一致。
-    let state = if connector_state == ConnectorStatus::Running
+    let state = if connector_state == KafkaConnectorStatus::Running
         && tasks.iter().any(|task| is_task_abnormal(task.state))
     {
-        ConnectorStatus::Failed
+        KafkaConnectorStatus::Failed
     } else {
         connector_state
     };
 
-    Ok(ConnectorVo {
+    Ok(KafkaConnectorVo {
         name: name.to_string(),
         connector_class,
         connector_type,
@@ -593,9 +601,9 @@ fn parse_expanded_connector(name: &str, value: Value) -> Result<ConnectorVo, Con
 }
 
 /// # 将连接器配置字符串解析为 JSON
-fn parse_config(connector_config: &str) -> Result<Value, ConnectorError> {
+fn parse_config(connector_config: &str) -> Result<Value, KafkaConnectorError> {
     serde_json::from_str(connector_config)
-        .map_err(|e| ConnectorError::Parse(format!("连接器配置不是合法的 JSON: {e}")))
+        .map_err(|e| KafkaConnectorError::Parse(format!("连接器配置不是合法的 JSON: {e}")))
 }
 
 /// # 任务状态是否算异常
@@ -604,17 +612,20 @@ fn parse_config(connector_config: &str) -> Result<Value, ConnectorError> {
 /// `RUNNING` 正常。
 ///
 /// 状态查询与连接器列表共用这一处判定，保证两边对「健康」的说法一致。
-fn is_task_abnormal(state: ConnectorStatus) -> bool {
-    matches!(state, ConnectorStatus::Failed | ConnectorStatus::Unassigned)
+fn is_task_abnormal(state: KafkaConnectorStatus) -> bool {
+    matches!(
+        state,
+        KafkaConnectorStatus::Failed | KafkaConnectorStatus::Unassigned
+    )
 }
 
-/// # 将 Kafka Connect 状态字符串映射为 [`ConnectorStatus`]
-fn parse_connector_state(state: &str) -> ConnectorStatus {
+/// # 将 Kafka Connect 状态字符串映射为 [`KafkaConnectorStatus`]
+fn parse_connector_state(state: &str) -> KafkaConnectorStatus {
     match state.to_uppercase().as_str() {
-        "RUNNING" => ConnectorStatus::Running,
-        "FAILED" => ConnectorStatus::Failed,
-        "PAUSED" => ConnectorStatus::Paused,
-        "DESTROYED" => ConnectorStatus::Destroyed,
-        _ => ConnectorStatus::Unassigned,
+        "RUNNING" => KafkaConnectorStatus::Running,
+        "FAILED" => KafkaConnectorStatus::Failed,
+        "PAUSED" => KafkaConnectorStatus::Paused,
+        "DESTROYED" => KafkaConnectorStatus::Destroyed,
+        _ => KafkaConnectorStatus::Unassigned,
     }
 }

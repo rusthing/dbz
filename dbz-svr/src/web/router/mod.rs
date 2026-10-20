@@ -1,4 +1,4 @@
-mod dbz_connector_router;
 mod dbz_kafka_connect_router;
+mod dbz_kafka_connector_router;
 mod dbz_sink_connector_router;
 mod dbz_source_connector_router;

@@ -12,7 +12,7 @@
 use crate::dic::ConnectorRunStatus;
 use crate::dto::DbzSinkConnectorQueryDto;
 use crate::svc::{DbzKafkaConnectSvc, DbzSinkConnectorSvc};
-use crate::utils::{DbzConnectorUtils, normalize_url};
+use crate::utils::{KafkaConnectorUtils, normalize_url};
 use anyhow::anyhow;
 use robotech::macros::svc;
 use sea_orm::DatabaseConnection;
@@ -119,7 +119,7 @@ impl DbzSourceConnectorSvc {
                 old.id.value(),
                 old.connector_name
             );
-            DbzConnectorUtils::delete_connector(&old_url, &old.connector_name).await?;
+            KafkaConnectorUtils::delete_connector(&old_url, &old.connector_name).await?;
         }
 
         // 配置改动或换位置后主动下发一次，避免等下一轮检查（最长一个检查间隔）。
@@ -134,7 +134,7 @@ impl DbzSourceConnectorSvc {
                 old.name,
                 old.id.value()
             );
-            DbzConnectorUtils::deploy_connector(&new_url, &new_name, &config)
+            KafkaConnectorUtils::deploy_connector(&new_url, &new_name, &config)
                 .await
                 .map_err(|e| anyhow!("下发上游连接器<{}>配置失败: {e}", old.name))?;
         }
@@ -219,7 +219,7 @@ impl DbzSourceConnectorSvc {
                     one.id.value(),
                     one.connector_name
                 );
-                DbzConnectorUtils::delete_connector(&url, &one.connector_name).await?;
+                KafkaConnectorUtils::delete_connector(&url, &one.connector_name).await?;
             }
             Err(e) => warn!(
                 "上游连接器<{}>(id={}): 取不到集群地址，跳过注销: {e}",

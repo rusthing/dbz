@@ -4,7 +4,7 @@ use strum::{AsRefStr, Display, EnumString};
 /// 连接器记录的运行状态，对应 `dbz_source_connector.run_status` /
 /// `dbz_sink_connector.run_status` 两列（两表语义一致，故共用一个枚举）。
 ///
-/// 与 [`ConnectorStatus`](crate::dic::ConnectorStatus) 的区别：`ConnectorStatus` 是
+/// 与 [`KafkaConnectorStatus`](crate::dic::KafkaConnectorStatus) 的区别：`KafkaConnectorStatus` 是
 /// Kafka Connect REST API 返回的**实时**状态，不落库；本枚举是检查任务得出的**结论**，
 /// 会回写到数据库。
 ///

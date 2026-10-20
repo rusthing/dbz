@@ -22,10 +22,10 @@
 //! 逐个集群探测连通性 → 检查它下面的每条已启用上游连接器 → 检查它下面的每条
 //! 已启用下游连接器，各自回写各自的运行状态、各自告警。
 
-use crate::dic::{ConnectorRunStatus, ConnectorStatus, KafkaConnectStatus};
+use crate::dic::{ConnectorRunStatus, KafkaConnectStatus, KafkaConnectorStatus};
 use crate::dto::{DbzSinkConnectorQueryDto, DbzSourceConnectorQueryDto};
 use crate::svc::{DbzSinkConnectorSvc, DbzSourceConnectorSvc};
-use crate::utils::{ConnectorError, DbzAlarmUtils, DbzConnectorUtils, normalize_url};
+use crate::utils::{DbzAlarmUtils, KafkaConnectorError, KafkaConnectorUtils, normalize_url};
 use crate::vo::{DbzSinkConnectorVo, DbzSourceConnectorVo};
 use anyhow::anyhow;
 use robotech::db::get_db_conn;
@@ -67,7 +67,7 @@ enum RepairAction {
 ///
 /// 上游与下游连接器的检查流程完全一致，差别只在身份（日志里的标签）与地址，
 /// 因此抽成同一组入参。
-struct ConnectorCheck<'a> {
+struct KafkaConnectorCheck<'a> {
     /// 日志里标识这个连接器，如 `上游连接器<mysql-src>(id=1)`
     label: &'a str,
     /// Kafka Connect 地址
@@ -378,7 +378,7 @@ impl DbzKafkaConnectSvc {
             warn!("{kc_label}: 未配置地址，按连接失败处理");
             false
         } else {
-            match DbzConnectorUtils::check_connect(&url).await {
+            match KafkaConnectorUtils::check_connect(&url).await {
                 Ok(()) => true,
                 Err(e) => {
                     warn!("{kc_label}: 连接失败: {e}");
@@ -427,7 +427,7 @@ impl DbzKafkaConnectSvc {
         // 上游连接器
         for source in &enabled_sources {
             let label = format!("上游连接器<{}>(id={})", source.name, source.id.value());
-            let check = ConnectorCheck {
+            let check = KafkaConnectorCheck {
                 label: &label,
                 base_url: &url,
                 connector_name: &source.connector_name,
@@ -460,7 +460,7 @@ impl DbzKafkaConnectSvc {
                 sink.id.value(),
                 source_name
             );
-            let check = ConnectorCheck {
+            let check = KafkaConnectorCheck {
                 label: &label,
                 base_url: &url,
                 connector_name: &sink.connector_name,
@@ -524,12 +524,12 @@ impl DbzKafkaConnectSvc {
     /// 若检查失败、部署失败或状态异常，返回对应的错误状态和修复动作。
     ///
     /// ## 返回值
-    /// * `Ok(ConnectorStatus)` - 连接器及其任务都正常运行
+    /// * `Ok(KafkaConnectorStatus)` - 连接器及其任务都正常运行
     /// * `Err((ConnectorRunStatus, RepairAction))` - 连接器异常，返回对应的运行状态与修复动作
     async fn ensure_and_check_connector(
-        check: &ConnectorCheck<'_>,
-    ) -> Result<ConnectorStatus, (ConnectorRunStatus, RepairAction)> {
-        let ConnectorCheck {
+        check: &KafkaConnectorCheck<'_>,
+    ) -> Result<KafkaConnectorStatus, (ConnectorRunStatus, RepairAction)> {
+        let KafkaConnectorCheck {
             label,
             base_url,
             connector_name,
@@ -537,7 +537,7 @@ impl DbzKafkaConnectSvc {
         } = *check;
 
         // 检查连接器是否存在，不存在则部署
-        let exists = DbzConnectorUtils::connector_exists(base_url, connector_name)
+        let exists = KafkaConnectorUtils::connector_exists(base_url, connector_name)
             .await
             .map_err(|e| {
                 warn!("{label}: 检查连接器<{connector_name}>是否存在失败: {e}");
@@ -546,7 +546,7 @@ impl DbzKafkaConnectSvc {
 
         if !exists {
             info!("{label}: 连接器<{connector_name}>不存在，开始部署...");
-            DbzConnectorUtils::deploy_connector(base_url, connector_name, connector_config)
+            KafkaConnectorUtils::deploy_connector(base_url, connector_name, connector_config)
                 .await
                 .map_err(|e| {
                     warn!("{label}: 部署连接器<{connector_name}>失败: {e}");
@@ -565,7 +565,7 @@ impl DbzKafkaConnectSvc {
                     (ConnectorRunStatus::CheckStatusFailed, RepairAction::None)
                 })?;
 
-        if status != ConnectorStatus::Running {
+        if status != KafkaConnectorStatus::Running {
             // 连接器自身 RUNNING、任务挂了：只重启这几个任务
             if !failed_task_ids.is_empty() {
                 warn!(
@@ -578,7 +578,7 @@ impl DbzKafkaConnectSvc {
                     RepairAction::RestartTasks(failed_task_ids),
                 ));
             }
-            if status == ConnectorStatus::Unassigned {
+            if status == KafkaConnectorStatus::Unassigned {
                 warn!("{label}: 连接器<{connector_name}>返回未知状态: {status}");
                 return Err((
                     ConnectorRunStatus::CheckError,
@@ -587,7 +587,7 @@ impl DbzKafkaConnectSvc {
             }
             warn!("{label}: 连接器<{connector_name}>状态异常: {status}");
             // 只有 failed 有确定的修复动作；paused 多为人工维护、destroyed 只能重建，都不动
-            let action = if status == ConnectorStatus::Failed {
+            let action = if status == KafkaConnectorStatus::Failed {
                 RepairAction::RestartConnector
             } else {
                 RepairAction::None
@@ -614,20 +614,20 @@ impl DbzKafkaConnectSvc {
         connector_name: &str,
         label: &str,
         just_deployed: bool,
-    ) -> Result<(ConnectorStatus, Vec<u32>), ConnectorError> {
+    ) -> Result<(KafkaConnectorStatus, Vec<u32>), KafkaConnectorError> {
         let mut result =
-            DbzConnectorUtils::fetch_connector_status(base_url, connector_name).await?;
+            KafkaConnectorUtils::fetch_connector_status(base_url, connector_name).await?;
         if !just_deployed {
             return Ok(result);
         }
 
         for _ in 0..DEPLOY_STATUS_RETRIES {
-            if result.0 != ConnectorStatus::Unassigned {
+            if result.0 != KafkaConnectorStatus::Unassigned {
                 break;
             }
             info!("{label}: 连接器<{connector_name}>刚部署，等待状态就绪...");
             tokio::time::sleep(Duration::from_millis(DEPLOY_STATUS_INTERVAL_MS)).await;
-            result = DbzConnectorUtils::fetch_connector_status(base_url, connector_name).await?;
+            result = KafkaConnectorUtils::fetch_connector_status(base_url, connector_name).await?;
         }
         Ok(result)
     }
@@ -651,7 +651,7 @@ impl DbzKafkaConnectSvc {
                 info!("连接器<{connector_name}>状态异常，自动重启连接器");
                 // 连接器自身异常，连任务一起重启
                 if let Err(e) =
-                    DbzConnectorUtils::restart_connector(base_url, connector_name, true, false)
+                    KafkaConnectorUtils::restart_connector(base_url, connector_name, true, false)
                         .await
                 {
                     warn!("连接器<{connector_name}>自动重启失败: {e}");
@@ -663,9 +663,12 @@ impl DbzKafkaConnectSvc {
                     task_ids.len()
                 );
                 for task_id in task_ids {
-                    if let Err(e) =
-                        DbzConnectorUtils::restart_connector_task(base_url, connector_name, task_id)
-                            .await
+                    if let Err(e) = KafkaConnectorUtils::restart_connector_task(
+                        base_url,
+                        connector_name,
+                        task_id,
+                    )
+                    .await
                     {
                         warn!("连接器<{connector_name}>的任务<{task_id}>自动重启失败: {e}");
                     }
@@ -737,7 +740,7 @@ impl DbzKafkaConnectSvc {
                 source.id.value(),
                 source.connector_name
             );
-            DbzConnectorUtils::delete_connector(url, &source.connector_name).await?;
+            KafkaConnectorUtils::delete_connector(url, &source.connector_name).await?;
         }
         for sink in Self::list_sinks_of(kafka_connect_id).await? {
             info!(
@@ -746,7 +749,7 @@ impl DbzKafkaConnectSvc {
                 sink.id.value(),
                 sink.connector_name
             );
-            DbzConnectorUtils::delete_connector(url, &sink.connector_name).await?;
+            KafkaConnectorUtils::delete_connector(url, &sink.connector_name).await?;
         }
         Ok(())
     }

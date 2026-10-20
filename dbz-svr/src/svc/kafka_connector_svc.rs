@@ -1,25 +1,26 @@
-//! # 连接器服务
+//! # Kafka 连接器服务
 //!
 //! 面向 Kafka Connect 的运维能力：查看连接器插件、查看所有连接器、
 //! 重启连接器（可连同其任务）与重启单个任务。
 //!
-//! 与实体服务不同，本服务没有对应的数据库实体，因此不使用 `#[svc]` 宏，
-//! 而是手写 `impl` 块；目标 Kafka Connect 通过 DTO 中的 `kafkaConnectUrl` 或
-//! `kafkaConnectId` 定位（见 `DbzConnectorQueryDto` 的说明）。
+//! 与实体服务（`dbz_*`）不同，本服务没有对应的数据库实体，因此不使用 `#[svc]`
+//! 宏，而是手写 `impl` 块：它只把请求转发到集群、再把响应转成 VO，不读写本库。
+//! 目标 Kafka Connect 通过 DTO 中的 `kafkaConnectUrl` 或 `kafkaConnectId` 定位
+//! （见 `KafkaConnectorQueryDto` 的说明）。
 
-use crate::dto::{DbzConnectorQueryDto, DbzConnectorRestartDto, DbzConnectorTaskRestartDto};
+use crate::dto::{KafkaConnectorQueryDto, KafkaConnectorRestartDto, KafkaConnectorTaskRestartDto};
 use crate::svc::DbzKafkaConnectSvc;
-use crate::utils::{ConnectorError, DbzConnectorUtils, normalize_url};
-use crate::vo::{ConnectorPluginVo, ConnectorVo};
+use crate::utils::{KafkaConnectorError, KafkaConnectorUtils, normalize_url};
+use crate::vo::{KafkaConnectorPluginVo, KafkaConnectorVo};
 use anyhow::anyhow;
 use robotech::api::{Ro, U64};
 use robotech::macros::log_call;
 use tracing::info;
 
-/// # 连接器服务
-pub struct DbzConnectorSvc;
+/// # Kafka 连接器服务
+pub struct KafkaConnectorSvc;
 
-impl DbzConnectorSvc {
+impl KafkaConnectorSvc {
     /// # 查看连接器插件
     ///
     /// 查询目标 Kafka Connect 已安装的连接器插件，用于确认 Debezium 插件是否就绪。
@@ -28,15 +29,15 @@ impl DbzConnectorSvc {
     /// * `dto` - 目标 Kafka Connect 的定位参数
     ///
     /// ## 返回值
-    /// * `Ok(Ro<Vec<ConnectorPluginVo>>)` - 插件列表
+    /// * `Ok(Ro<Vec<KafkaConnectorPluginVo>>)` - 插件列表
     /// * `Err(anyhow::Error)` - 定位失败、Kafka Connect 不可用或响应解析失败
     #[log_call]
     pub async fn list_connector_plugins(
-        dto: DbzConnectorQueryDto,
-    ) -> Result<Ro<Vec<ConnectorPluginVo>>, anyhow::Error> {
+        dto: KafkaConnectorQueryDto,
+    ) -> Result<Ro<Vec<KafkaConnectorPluginVo>>, anyhow::Error> {
         let base_url =
             Self::resolve_base_url(dto.kafka_connect_id, dto.kafka_connect_url.as_deref()).await?;
-        let plugins = DbzConnectorUtils::list_connector_plugins(&base_url).await?;
+        let plugins = KafkaConnectorUtils::list_connector_plugins(&base_url).await?;
         Ok(
             Ro::success(format!("查询连接器插件成功，共 {} 个", plugins.len()))
                 .extra(Some(plugins)),
@@ -52,15 +53,15 @@ impl DbzConnectorSvc {
     /// * `dto` - 目标 Kafka Connect 的定位参数
     ///
     /// ## 返回值
-    /// * `Ok(Ro<Vec<ConnectorVo>>)` - 连接器列表
+    /// * `Ok(Ro<Vec<KafkaConnectorVo>>)` - 连接器列表
     /// * `Err(anyhow::Error)` - 定位失败、Kafka Connect 不可用或响应解析失败
     #[log_call]
     pub async fn list_connectors(
-        dto: DbzConnectorQueryDto,
-    ) -> Result<Ro<Vec<ConnectorVo>>, anyhow::Error> {
+        dto: KafkaConnectorQueryDto,
+    ) -> Result<Ro<Vec<KafkaConnectorVo>>, anyhow::Error> {
         let base_url =
             Self::resolve_base_url(dto.kafka_connect_id, dto.kafka_connect_url.as_deref()).await?;
-        let connectors = DbzConnectorUtils::list_connectors(&base_url).await?;
+        let connectors = KafkaConnectorUtils::list_connectors(&base_url).await?;
         Ok(
             Ro::success(format!("查询连接器成功，共 {} 个", connectors.len()))
                 .extra(Some(connectors)),
@@ -79,12 +80,12 @@ impl DbzConnectorSvc {
     /// * `Ok(Ro<()>)` - 重启请求已提交
     /// * `Err(anyhow::Error)` - 连接器不存在、定位失败或请求失败
     #[log_call]
-    pub async fn restart_connector(dto: DbzConnectorRestartDto) -> Result<Ro<()>, anyhow::Error> {
+    pub async fn restart_connector(dto: KafkaConnectorRestartDto) -> Result<Ro<()>, anyhow::Error> {
         let connector_name = Self::check_connector_name(&dto.connector_name)?;
         let base_url =
             Self::resolve_base_url(dto.kafka_connect_id, dto.kafka_connect_url.as_deref()).await?;
 
-        DbzConnectorUtils::restart_connector(
+        KafkaConnectorUtils::restart_connector(
             &base_url,
             connector_name,
             dto.include_tasks,
@@ -92,7 +93,7 @@ impl DbzConnectorSvc {
         )
         .await
         .map_err(|e| match e {
-            ConnectorError::NotFound => anyhow!("连接器<{connector_name}>不存在"),
+            KafkaConnectorError::NotFound => anyhow!("连接器<{connector_name}>不存在"),
             other => other.into(),
         })?;
 
@@ -118,16 +119,16 @@ impl DbzConnectorSvc {
     /// * `Err(anyhow::Error)` - 连接器或任务不存在、定位失败或请求失败
     #[log_call]
     pub async fn restart_connector_task(
-        dto: DbzConnectorTaskRestartDto,
+        dto: KafkaConnectorTaskRestartDto,
     ) -> Result<Ro<()>, anyhow::Error> {
         let connector_name = Self::check_connector_name(&dto.connector_name)?;
         let base_url =
             Self::resolve_base_url(dto.kafka_connect_id, dto.kafka_connect_url.as_deref()).await?;
 
-        DbzConnectorUtils::restart_connector_task(&base_url, connector_name, dto.task_id)
+        KafkaConnectorUtils::restart_connector_task(&base_url, connector_name, dto.task_id)
             .await
             .map_err(|e| match e {
-                ConnectorError::NotFound => {
+                KafkaConnectorError::NotFound => {
                     anyhow!("连接器<{connector_name}>或其任务<{}>不存在", dto.task_id)
                 }
                 other => other.into(),

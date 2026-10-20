@@ -1,14 +1,20 @@
-//! # 连接器控制器
+//! # Kafka 连接器控制器
 //!
 //! 暴露 Kafka Connect 侧的运维接口：查看连接器插件、查看所有连接器、
 //! 重启连接器（可连同其任务）与重启单个任务。
 //!
-//! 本模块没有对应的数据库实体，因此不使用 `#[ctrl]` 宏，直接手写处理器函数；
-//! 路由在 `web/router/dbz_connector_router.rs` 中通过 `routes [...]` 注册。
+//! 本模块没有对应的数据库实体，因此不使用 `#[ctrl]` 宏，直接手写处理器函数。
+//!
+//! ## 文件名为什么带 `dbz_` 前缀
+//!
+//! `#[router]` 与 `#[api_doc]` 都按「结构体名去掉后缀再加 `_ctrl`」推导 ctrl 模块，
+//! 而 `#[api_doc]` 还会把结构体名转成文档地址（`/dbz-kafka-connector/openapi.json`）。
+//! 想让文档地址保住 `/dbz` 这个服务前缀，结构体只能是 `DbzKafkaConnector*`，
+//! ctrl 文件名也就必须跟着叫 `dbz_kafka_connector_ctrl.rs`，与 router、api_doc 保持一致。
 
-use crate::dto::{DbzConnectorQueryDto, DbzConnectorRestartDto, DbzConnectorTaskRestartDto};
-use crate::svc::DbzConnectorSvc;
-use crate::vo::{ConnectorPluginVo, ConnectorVo};
+use crate::dto::{KafkaConnectorQueryDto, KafkaConnectorRestartDto, KafkaConnectorTaskRestartDto};
+use crate::svc::KafkaConnectorSvc;
+use crate::vo::{KafkaConnectorPluginVo, KafkaConnectorVo};
 use axum::debug_handler;
 use axum::extract::Query;
 use axum::response::Json;
@@ -29,16 +35,16 @@ use robotech::web::CtrlError;
 /// * 失败时返回相应的错误信息
 #[utoipa::path(
     get,
-    path = "/dbz/connector/plugins",
-    params(DbzConnectorQueryDto),
-    responses((status = OK, body = Ro<Vec<ConnectorPluginVo>>))
+    path = "/dbz/kafka-connector/plugins",
+    params(KafkaConnectorQueryDto),
+    responses((status = OK, body = Ro<Vec<KafkaConnectorPluginVo>>))
 )]
 #[debug_handler]
 #[log_call]
 pub async fn list_connector_plugins(
-    Query(dto): Query<DbzConnectorQueryDto>,
-) -> Result<Json<Ro<Vec<ConnectorPluginVo>>>, CtrlError> {
-    let ro = DbzConnectorSvc::list_connector_plugins(dto).await?;
+    Query(dto): Query<KafkaConnectorQueryDto>,
+) -> Result<Json<Ro<Vec<KafkaConnectorPluginVo>>>, CtrlError> {
+    let ro = KafkaConnectorSvc::list_connector_plugins(dto).await?;
     Ok(Json(ro))
 }
 
@@ -55,16 +61,16 @@ pub async fn list_connector_plugins(
 /// * 失败时返回相应的错误信息
 #[utoipa::path(
     get,
-    path = "/dbz/connector/list",
-    params(DbzConnectorQueryDto),
-    responses((status = OK, body = Ro<Vec<ConnectorVo>>))
+    path = "/dbz/kafka-connector/list",
+    params(KafkaConnectorQueryDto),
+    responses((status = OK, body = Ro<Vec<KafkaConnectorVo>>))
 )]
 #[debug_handler]
 #[log_call]
 pub async fn list_connectors(
-    Query(dto): Query<DbzConnectorQueryDto>,
-) -> Result<Json<Ro<Vec<ConnectorVo>>>, CtrlError> {
-    let ro = DbzConnectorSvc::list_connectors(dto).await?;
+    Query(dto): Query<KafkaConnectorQueryDto>,
+) -> Result<Json<Ro<Vec<KafkaConnectorVo>>>, CtrlError> {
+    let ro = KafkaConnectorSvc::list_connectors(dto).await?;
     Ok(Json(ro))
 }
 
@@ -74,24 +80,24 @@ pub async fn list_connectors(
 /// 接口返回成功仅代表重启请求已被接受，实际状态请稍后重新查询。
 ///
 /// ## 请求体
-/// * `DbzConnectorRestartDto` - 目标 Kafka Connect 定位参数 + 连接器名称 + 重启选项
+/// * `KafkaConnectorRestartDto` - 目标 Kafka Connect 定位参数 + 连接器名称 + 重启选项
 ///
 /// ## 返回值
 /// * 成功时返回提交结果
 /// * 失败时返回相应的错误信息
 #[utoipa::path(
     post,
-    path = "/dbz/connector/restart",
-    request_body = DbzConnectorRestartDto,
+    path = "/dbz/kafka-connector/restart",
+    request_body = KafkaConnectorRestartDto,
     // utoipa 无法解析 `Ro<()>`（空元组没有类型路径），故只描述状态码
     responses((status = OK, description = "重启请求已提交"))
 )]
 #[debug_handler]
 #[log_call]
 pub async fn restart_connector(
-    Json(dto): Json<DbzConnectorRestartDto>,
+    Json(dto): Json<KafkaConnectorRestartDto>,
 ) -> Result<Json<Ro<()>>, CtrlError> {
-    let ro = DbzConnectorSvc::restart_connector(dto).await?;
+    let ro = KafkaConnectorSvc::restart_connector(dto).await?;
     Ok(Json(ro))
 }
 
@@ -100,23 +106,23 @@ pub async fn restart_connector(
 /// 仅重启指定任务，适用于连接器本身正常、个别任务失败（FAILED）的场景。
 ///
 /// ## 请求体
-/// * `DbzConnectorTaskRestartDto` - 目标 Kafka Connect 定位参数 + 连接器名称 + 任务ID
+/// * `KafkaConnectorTaskRestartDto` - 目标 Kafka Connect 定位参数 + 连接器名称 + 任务ID
 ///
 /// ## 返回值
 /// * 成功时返回提交结果
 /// * 失败时返回相应的错误信息
 #[utoipa::path(
     post,
-    path = "/dbz/connector/task/restart",
-    request_body = DbzConnectorTaskRestartDto,
+    path = "/dbz/kafka-connector/task/restart",
+    request_body = KafkaConnectorTaskRestartDto,
     // utoipa 无法解析 `Ro<()>`（空元组没有类型路径），故只描述状态码
     responses((status = OK, description = "重启请求已提交"))
 )]
 #[debug_handler]
 #[log_call]
 pub async fn restart_connector_task(
-    Json(dto): Json<DbzConnectorTaskRestartDto>,
+    Json(dto): Json<KafkaConnectorTaskRestartDto>,
 ) -> Result<Json<Ro<()>>, CtrlError> {
-    let ro = DbzConnectorSvc::restart_connector_task(dto).await?;
+    let ro = KafkaConnectorSvc::restart_connector_task(dto).await?;
     Ok(Json(ro))
 }
