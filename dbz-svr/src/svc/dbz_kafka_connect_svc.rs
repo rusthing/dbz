@@ -1,26 +1,18 @@
 //! # Kafka Connect 服务
 //!
-//! Kafka Connect 是连接器实际运行的集群。一台集群可以挂多条上游连接器与多条
-//! 下游连接器（各为 1:N），上游/下游只保存 `kafka_connect_id`，地址、连通状态
-//! 与启用开关都收敛到 `dbz_kafka_connect`。
+//! Kafka Connect 是连接器实际运行的集群：一台集群可挂多条上游与多条下游连接器
+//! （各为 1:N），上游/下游只保存 `kafka_connect_id`，地址、启停与连通状态都收敛
+//! 到 `dbz_kafka_connect`。
 //!
-//! ## 为什么把地址从上游连接器里拆出来
-//!
-//! 拆分前地址放在上游连接器上，下游要「借」上游的地址才能定位自己的连接器：
-//!
-//! * 同一台集群上有几条上游，就要把同一个地址重复配置几遍，地址一变要逐条改；
-//! * 下游明明直接跑在某个集群上，却必须挂在一条上游下面才能被定位；
-//! * 这台集群的连通性、启停没有任何地方可以表达 —— 只能通过「某条上游挂了」间接
-//!   感知，一台集群宕机会按上游条数刷出多条告警。
-//!
-//! 拆成独立记录后，集群是一个可以单独启停、单独记状态、只探测一次的运维对象，
-//! 上游与下游通过外键各自挂到它下面，互不依赖。
+//! 拆分动机（原先地址挂在上游连接器上）：同一台集群被重复配置 N 遍；下游必须借
+//! 上游的地址才能定位自己；集群的连通性与启停无处表达；一台集群宕机按上游条数
+//! 刷告警。拆出来后，集群成为可单独启停、单独记状态、每轮只探测一次的运维对象。
 //!
 //! ## 健康检查
 //!
-//! 检查以「集群」为入口（[`check_all_connectors`](Self::check_all_connectors)）：
-//! 逐个集群探测连通性 → 检查它下面的每条已启用上游连接器 → 检查它下面的每条
-//! 已启用下游连接器，各自回写各自的运行状态、各自告警。
+//! 以集群为入口（[`check_all_connectors`](Self::check_all_connectors)）：逐个集群
+//! 探测连通性 → 检查名下每条已启用上游连接器 → 检查名下每条已启用下游连接器，
+//! 各自回写运行状态、各自告警。
 
 use crate::dic::{ConnectorRunStatus, KafkaConnectStatus, KafkaConnectorStatus};
 use crate::dto::{DbzSinkConnectorQueryDto, DbzSourceConnectorQueryDto};
@@ -96,20 +88,16 @@ impl DbzKafkaConnectSvc {
 
     /// # 修改前钩子：改地址、禁用时先清空旧集群上的连接器
     ///
-    /// 由 `#[svc]` 宏在 `modify` 写库**之前**调用。集群记录上只有地址与开关两处
-    /// 会影响到 Kafka Connect 上的实际部署：
+    /// 集群记录上只有**地址**与**开关**两处会影响 Kafka Connect 上的实际部署：
     ///
-    /// 1. **改地址**：连接器不会跟着记录搬家。旧地址上的连接器仍在跑，紧接着的
-    ///    检查会在新地址再部署一份 —— 两个连接器同时消费同一份变更，目标端要么
-    ///    重复写入，要么分区被劈成两半。所以先按旧地址把名下所有连接器注销。
-    /// 2. **禁用**：同样先注销再写库。注销失败则整个修改请求失败 —— 宁可禁用不成，
-    ///    也不允许出现「库里已禁用、连接器还在跑」。
+    /// 1. **改地址**：连接器不会跟着记录搬家，旧地址上的仍在跑；不注销的话，紧接着
+    ///    的检查会在新地址再部署一份，两边同时消费同一份变更。
+    /// 2. **禁用**：同样先注销再写库；注销失败则整个修改请求失败 —— 宁可禁用不成，
+    ///    也不允许「库里已禁用、连接器还在跑」。
     ///
-    /// 注销后**不立即在新地址部署**（与单条连接器搬家不同）：一个地址变更涉及
-    /// 该集群下的所有连接器，逐条部署时若中途失败，前面几条已经落在新地址、库里
-    /// 却仍指向旧地址，下一轮检查会在旧地址再建一份，形成真正的双写。这里把它们
-    /// 统一置为「无状态」，由下一轮检查在新地址整批部署，中间短暂的空窗期可以接受。
-    /// 重新启用同理：状态置为「无状态」，等下一轮检查重新部署。
+    /// 注销后**不立即在新地址部署**：一个地址变更牵动整台集群下的所有连接器，逐条
+    /// 部署中途失败会出现「新地址已建、库里仍指旧地址」，下一轮又在旧地址建一份，
+    /// 才是真正的双写。这里统一置「无状态」，交给下一轮检查整批部署。
     ///
     /// ## 返回值
     /// * `Ok(ModifyDto)` - 补好 `run_status` 的修改参数
@@ -136,7 +124,9 @@ impl DbzKafkaConnectSvc {
             .unwrap_or_else(|| old_url.clone());
         let url_changed = new_url != old_url;
         let disabling = modify_dto.enabled == Some(false) && old.enabled;
-        let enabling = modify_dto.enabled == Some(true) && !old.enabled;
+        let enabled_changed = modify_dto
+            .enabled
+            .is_some_and(|enabled| enabled != old.enabled);
         let enabled_after = modify_dto.enabled.unwrap_or(old.enabled);
 
         // 地址为空说明这台集群上从未部署过连接器，没有可注销的东西
@@ -146,27 +136,38 @@ impl DbzKafkaConnectSvc {
                 old.name,
                 old.id.value()
             );
-            Self::delete_all_connectors(old.id, &old_url).await?;
+            if let Err(e) = Self::delete_all_connectors(old.id, &old_url).await {
+                // 本次是「禁用」时失败必须拦下（fail-closed）；已经禁用过的集群，
+                // 连接器在禁用那一次就该注销干净了，这时多半是旧地址早就不可达，
+                // 拦住只会让错地址永远改不掉，记日志放行。
+                if old.enabled {
+                    return Err(e);
+                }
+                warn!(
+                    "Kafka Connect<{}>(id={}): 集群已禁用，注销 <{old_url}> 上的连接器失败({e})，\
+                     多为旧地址已不可达，继续修改",
+                    old.name,
+                    old.id.value()
+                );
+            }
         }
 
         if disabling {
             // 连接器已从集群上删除，状态改为「已禁用」
             Self::set_connectors_status(old.id, ConnectorRunStatus::Disabled).await?;
-        } else if enabled_after && (url_changed || enabling) {
+        } else if enabled_after && (url_changed || enabled_changed) {
             // 改地址或重新启用后，连接器要在（新）地址上重新部署，
             // 实际状态等下一轮检查确认
             Self::set_connectors_status(old.id, ConnectorRunStatus::None).await?;
         }
 
-        if let Some(enabled) = modify_dto.enabled.filter(|enabled| *enabled != old.enabled) {
-            modify_dto.run_status = Some(if enabled {
+        if enabled_changed || url_changed {
+            // 已禁用的集群保持「已禁用」：地址改了也不会去探测
+            modify_dto.run_status = Some(if enabled_after {
                 KafkaConnectStatus::None
             } else {
                 KafkaConnectStatus::Disabled
             });
-        } else if url_changed {
-            // 地址变了，连通性要重新判定
-            modify_dto.run_status = Some(KafkaConnectStatus::None);
         }
 
         Ok(modify_dto)
@@ -222,21 +223,12 @@ impl DbzKafkaConnectSvc {
 
     /// # 定时检查所有 Kafka Connect 与连接器
     ///
-    /// 由 jobx 健康检查任务定时触发。检查顺序：
-    ///
-    /// 1. 逐个集群：被禁用的集群其连接器已注销，直接把集群记录与名下连接器都标为
-    ///    「已禁用」，不做探测；启用的集群探测一次连通性，结果回写到集群记录上；
-    /// 2. 连通性失败：该集群下的所有已启用连接器都标为「连接 KafkaConnect 失败」。
-    ///    告警按根因收敛，见下方说明；
-    /// 3. 连通性正常：检查该集群下的每条已启用上游连接器，再检查每条已启用下游
-    ///    连接器，异常时回写状态、告警并按需自动修复。
+    /// 由 jobx 健康检查任务定时触发；单个连接器检查失败不会中断整体遍历，
+    /// 基础设施错误（数据库读写失败）才会中断并返回错误。
     ///
     /// 告警收敛：集群不可达时，每条已启用上游连接器各报一条（与拆分前一致）；
     /// 下游连接器只在**它的上游不在这台故障集群上**时才单独告警 —— 上游在同一台
     /// 集群时已经报过，不再为同一根因刷屏。
-    ///
-    /// 单个连接器检查失败不会中断整体遍历；基础设施错误（数据库读写失败）会中断
-    /// 并返回错误。
     ///
     /// ## 返回值
     /// * `Ok(String)` - 本次检查的执行摘要
@@ -358,6 +350,9 @@ impl DbzKafkaConnectSvc {
 
         // 集群被禁用时连接器已在禁用时注销，无需探测；把状态统一改为「已禁用」，
         // 否则会一直停留在上次检查的结论上。
+        //
+        // 这里**只改状态、不做注销**：禁用的集群按约定不再访问，探测与注销必然失败。
+        // 若有人绕过接口直接改库把集群禁用，其连接器可能仍在跑，需要人工清理。
         if !kc.enabled {
             // 记录本身也拉齐一次：禁用不一定走接口（例如直接改库），状态没变时
             // update_status 不会写库，这里只是兜底。
@@ -389,6 +384,12 @@ impl DbzKafkaConnectSvc {
 
         if !reachable {
             Self::update_status(kc, KafkaConnectStatus::ConnectFailed).await?;
+            // 集群自身也算一个异常对象：名下没有连接器时，不记这一条，整轮会汇总成
+            // 「一切正常」，可运维其实连不上这台集群。
+            errors.push(format!(
+                "{kc_label}: {}",
+                KafkaConnectStatus::ConnectFailed.value()
+            ));
             let status = ConnectorRunStatus::KafkaConnectFailed;
             // 已经在上面报过告警的上游，用来判断下游是否还需要单独告警
             let alarmed_sources: HashSet<u64> = enabled_sources
@@ -434,7 +435,7 @@ impl DbzKafkaConnectSvc {
                 connector_config: &source.connector_config,
             };
             match Self::ensure_and_check_connector(&check).await {
-                Ok(_) => {
+                Ok(()) => {
                     DbzSourceConnectorSvc::update_run_status(source, ConnectorRunStatus::Running)
                         .await?
                 }
@@ -467,7 +468,7 @@ impl DbzKafkaConnectSvc {
                 connector_config: &sink.connector_config,
             };
             match Self::ensure_and_check_connector(&check).await {
-                Ok(_) => {
+                Ok(()) => {
                     DbzSinkConnectorSvc::update_run_status(sink, ConnectorRunStatus::Running)
                         .await?
                 }
@@ -524,11 +525,11 @@ impl DbzKafkaConnectSvc {
     /// 若检查失败、部署失败或状态异常，返回对应的错误状态和修复动作。
     ///
     /// ## 返回值
-    /// * `Ok(KafkaConnectorStatus)` - 连接器及其任务都正常运行
+    /// * `Ok(())` - 连接器及其任务都正常运行
     /// * `Err((ConnectorRunStatus, RepairAction))` - 连接器异常，返回对应的运行状态与修复动作
     async fn ensure_and_check_connector(
         check: &KafkaConnectorCheck<'_>,
-    ) -> Result<KafkaConnectorStatus, (ConnectorRunStatus, RepairAction)> {
+    ) -> Result<(), (ConnectorRunStatus, RepairAction)> {
         let KafkaConnectorCheck {
             label,
             base_url,
@@ -595,7 +596,7 @@ impl DbzKafkaConnectSvc {
             return Err((ConnectorRunStatus::CheckStatusError, action));
         }
 
-        Ok(status)
+        Ok(())
     }
 
     /// # 查询连接器状态，刚部署时等待其脱离 UNASSIGNED
@@ -710,15 +711,26 @@ impl DbzKafkaConnectSvc {
 
     /// # 把某台集群名下的连接器状态统一改成指定值
     ///
-    /// 用于集群被禁用（全部标为「已禁用」）与改地址（全部标为「无状态」）。
+    /// 用于集群被禁用（全部标为「已禁用」）与改地址、重新启用（全部标为「无状态」）。
+    ///
+    /// 置「无状态」是「等下一轮检查重新部署」的意思，只对**已启用**的记录有意义：
+    /// 已禁用的记录本该停在「已禁用」，不能被顺手改成「无状态」—— 它们不进健康
+    /// 检查，改过去就再也没有机会被改回来。
     async fn set_connectors_status(
         kafka_connect_id: U64,
         run_status: ConnectorRunStatus,
     ) -> Result<(), SvcError> {
+        let only_enabled = run_status == ConnectorRunStatus::None;
         for source in Self::list_sources_of(kafka_connect_id).await? {
+            if only_enabled && !source.enabled {
+                continue;
+            }
             DbzSourceConnectorSvc::update_run_status(&source, run_status).await?;
         }
         for sink in Self::list_sinks_of(kafka_connect_id).await? {
+            if only_enabled && !sink.enabled {
+                continue;
+            }
             DbzSinkConnectorSvc::update_run_status(&sink, run_status).await?;
         }
         Ok(())

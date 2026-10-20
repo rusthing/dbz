@@ -3,9 +3,8 @@ use strum::{AsRefStr, Display, EnumString};
 
 /// Kafka Connect 集群记录的状态，对应 `dbz_kafka_connect.run_status`。
 ///
-/// 与 [`ConnectorRunStatus`](crate::dic::ConnectorRunStatus) 的区别：后者描述
-/// **连接器**（注册是否成功、任务是否正常），本枚举只描述**集群本身**是否可达，
-/// 所以没有「注册连接器失败」「检测连接器异常」那几档取值。
+/// 只描述**集群本身**是否可达，所以没有「注册连接器失败」「检测连接器异常」这类
+/// 描述连接器的取值（那些属于 [`ConnectorRunStatus`](crate::dic::ConnectorRunStatus)）。
 ///
 /// 被 `DbzKafkaConnectVo` 用作字段，所以必须声明 `default`。
 #[dic(default = None)]

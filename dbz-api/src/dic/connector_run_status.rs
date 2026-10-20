@@ -2,14 +2,11 @@ use robotech::macros::dic;
 use strum::{AsRefStr, Display, EnumString};
 
 /// 连接器记录的运行状态，对应 `dbz_source_connector.run_status` /
-/// `dbz_sink_connector.run_status` 两列（两表语义一致，故共用一个枚举）。
+/// `dbz_sink_connector.run_status` 两列（两表语义一致，共用一个枚举）。
 ///
-/// 与 [`KafkaConnectorStatus`](crate::dic::KafkaConnectorStatus) 的区别：`KafkaConnectorStatus` 是
-/// Kafka Connect REST API 返回的**实时**状态，不落库；本枚举是检查任务得出的**结论**，
-/// 会回写到数据库。
-///
-/// Kafka Connect 集群自身另有 [`KafkaConnectStatus`](crate::dic::KafkaConnectStatus)：
-/// 集群只关心是否可达，没有「注册连接器失败」这类取值，故不共用本枚举。
+/// 这是**检查任务得出的结论**，会回写库；远端集群上的实时状态是
+/// [`KafkaConnectorStatus`](crate::dic::KafkaConnectorStatus)、集群自身的可达性是
+/// [`KafkaConnectStatus`](crate::dic::KafkaConnectStatus)，三者分工见前者的文档。
 ///
 /// 被 `DbzSourceConnectorVo` / `DbzSinkConnectorVo` 用作字段，所以必须声明 `default`。
 #[dic(default = None)]
