@@ -348,14 +348,10 @@ impl DbzKafkaConnectSvc {
         let enabled_sinks: Vec<&DbzSinkConnectorVo> =
             sinks.iter().filter(|sink| sink.enabled).collect();
 
-        // 集群被禁用时连接器已在禁用时注销，无需探测；把状态统一改为「已禁用」，
-        // 否则会一直停留在上次检查的结论上。
-        //
-        // 这里**只改状态、不做注销**：禁用的集群按约定不再访问，探测与注销必然失败。
-        // 若有人绕过接口直接改库把集群禁用，其连接器可能仍在跑，需要人工清理。
+        // 集群被禁用时，连接器已在禁用那一次由钩子注销，这里不探测也不注销，只把
+        // 集群与名下连接器的状态对齐为「已禁用」，否则会停留在上次检查的结论上。
         if !kc.enabled {
-            // 记录本身也拉齐一次：禁用不一定走接口（例如直接改库），状态没变时
-            // update_status 不会写库，这里只是兜底。
+            // 幂等：状态已一致时 update_status 不写库
             Self::update_status(kc, KafkaConnectStatus::Disabled).await?;
             for source in sources {
                 DbzSourceConnectorSvc::update_run_status(source, ConnectorRunStatus::Disabled)
