@@ -1,0 +1,152 @@
+/**
+ * # 全局样式
+ */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family:
+    -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
+    'Microsoft YaHei', sans-serif;
+  background: #f4f6fa;
+  color: rgba(0, 0, 0, 0.88);
+}
+
+/* 侧边栏 */
+.dbz-sider {
+  border-right: 1px solid #eef0f4;
+}
+
+.dbz-brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 60px;
+  padding: 0 18px;
+  border-bottom: 1px solid #eef0f4;
+}
+
+.dbz-brand-logo {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: #1677ff;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.dbz-brand-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+
+.dbz-brand-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.dbz-brand-sub {
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+/* 顶栏
+   antd 的 .ant-layout-header 带 line-height: 64px，会把标题行撑出 60px 的高度被裁掉，
+   这里用双类选择器提高优先级覆盖掉 */
+.ant-layout-header.dbz-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 60px;
+  padding: 0 24px;
+  line-height: 1.4;
+  background: #fff;
+  border-bottom: 1px solid #eef0f4;
+}
+
+.dbz-header-title {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.dbz-header-desc {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.dbz-content {
+  padding: 20px 24px 32px;
+  overflow-y: auto;
+}
+
+/* 表格工具栏 */
+.dbz-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.dbz-toolbar-spacer {
+  flex: 1;
+}
+
+/* JSON 编辑器等宽字体 */
+.dbz-json-editor,
+.dbz-json-view {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace !important;
+  font-size: 12.5px !important;
+}
+
+.dbz-json-view {
+  margin: 0;
+  padding: 12px 14px;
+  background: #fafbfd;
+  border: 1px solid #eef0f4;
+  border-radius: 6px;
+  max-height: 420px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* 概览页统计卡 */
+.dbz-stat-card .ant-card-body {
+  padding: 18px 20px;
+}
+
+.dbz-stat-label {
+  font-size: 13px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.dbz-stat-value {
+  font-size: 26px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.dbz-stat-hint {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.dbz-mono {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 12.5px;
+}
