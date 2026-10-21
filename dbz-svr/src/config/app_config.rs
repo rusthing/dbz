@@ -5,6 +5,7 @@ use idworker::IdWorkerConfig;
 use robotech::api_client::ApiClientConfig;
 use robotech::cfg::CfgError;
 use robotech::db::DbConnConfig;
+use robotech::redis::RedisConfig;
 use robotech::web::WebServerConfig;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -49,6 +50,8 @@ pub struct AppConfig {
     /// id_worker
     #[serde(default = "IdWorkerConfig::default")]
     pub id_worker: IdWorkerConfig,
+    /// redis
+    pub redis: RedisConfig,
     /// dbz
     #[serde(default = "DbzConfig::default")]
     pub dbz: DbzConfig,
