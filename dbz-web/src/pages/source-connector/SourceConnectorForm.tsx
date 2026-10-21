@@ -9,7 +9,7 @@
 import { App as AntdApp, Form, Input, Modal, Select, Switch } from 'antd';
 import { useState } from 'react';
 import { sourceConnectorApi } from '../../api/source-connector';
-import type { DbzSourceConnectorVo } from '../../api/types';
+import type { DbzSourceConnectorVo, Id } from '../../api/types';
 import JsonEditor from '../../components/JsonEditor';
 import { errorMessage } from '../../utils/format';
 
@@ -17,13 +17,13 @@ interface SourceConnectorFormProps {
   open: boolean;
   record?: DbzSourceConnectorVo | null;
   /** 集群下拉选项，由页面统一提供，避免弹窗里再请求一次 */
-  clusterOptions: { value: number; label: string }[];
+  clusterOptions: { value: Id; label: string }[];
   onCancel: () => void;
   onSuccess: () => void;
 }
 
 interface FormValues {
-  kafkaConnectId: number;
+  kafkaConnectId: Id;
   name: string;
   connectorName: string;
   connectorConfig: string;

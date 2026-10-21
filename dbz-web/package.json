@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "description": "Debezium 连接器控制台（dbz-svr 的 Web 前端）",
   "type": "module",
+  "packageManager": "pnpm@12.14.0",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

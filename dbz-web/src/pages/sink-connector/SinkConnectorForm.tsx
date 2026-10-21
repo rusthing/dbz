@@ -8,22 +8,22 @@
 import { App as AntdApp, Form, Input, Modal, Select, Switch } from 'antd';
 import { useState } from 'react';
 import { sinkConnectorApi } from '../../api/sink-connector';
-import type { DbzSinkConnectorVo } from '../../api/types';
+import type { DbzSinkConnectorVo, Id } from '../../api/types';
 import JsonEditor from '../../components/JsonEditor';
 import { errorMessage } from '../../utils/format';
 
 interface SinkConnectorFormProps {
   open: boolean;
   record?: DbzSinkConnectorVo | null;
-  clusterOptions: { value: number; label: string }[];
-  sourceOptions: { value: number; label: string }[];
+  clusterOptions: { value: Id; label: string }[];
+  sourceOptions: { value: Id; label: string }[];
   onCancel: () => void;
   onSuccess: () => void;
 }
 
 interface FormValues {
-  sourceConnectorId: number;
-  kafkaConnectId: number;
+  sourceConnectorId: Id;
+  kafkaConnectId: Id;
   name: string;
   connectorName: string;
   connectorConfig: string;

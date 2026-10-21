@@ -9,6 +9,7 @@ import type {
   DbzSourceConnectorAddInput,
   DbzSourceConnectorModifyInput,
   DbzSourceConnectorVo,
+  Id,
   PageRx,
 } from './types';
 
@@ -28,5 +29,5 @@ export const sourceConnectorApi = {
   modify: (input: DbzSourceConnectorModifyInput): Promise<DbzSourceConnectorVo> => apiPut(BASE, input),
 
   /** 删除 */
-  remove: (id: number): Promise<DbzSourceConnectorVo> => apiDelete(`${BASE}/${id}`),
+  remove: (id: Id): Promise<DbzSourceConnectorVo> => apiDelete(`${BASE}/${id}`),
 };

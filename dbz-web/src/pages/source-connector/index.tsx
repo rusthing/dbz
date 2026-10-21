@@ -10,7 +10,7 @@ import type { ColumnsType } from 'antd/es/table';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useCallback, useState } from 'react';
 import { sourceConnectorApi } from '../../api/source-connector';
-import type { ConnectorRunStatus, DbzSourceConnectorVo } from '../../api/types';
+import type { ConnectorRunStatus, DbzSourceConnectorVo, Id } from '../../api/types';
 import EnabledTag from '../../components/EnabledTag';
 import StatusTag from '../../components/StatusTag';
 import { connectorRunStatusDic, dicOptions } from '../../dic';
@@ -22,7 +22,7 @@ import SourceConnectorForm from './SourceConnectorForm';
 /** 筛选草稿 */
 interface FilterDraft {
   keyword?: string;
-  kafkaConnectId?: number;
+  kafkaConnectId?: Id;
   runStatus?: ConnectorRunStatus;
   enabled?: boolean;
 }
@@ -99,7 +99,7 @@ export default function SourceConnectorPage() {
       dataIndex: 'kafkaConnectId',
       width: 130,
       ellipsis: true,
-      render: (id: number) => cluster.byId.get(id)?.name ?? `#${id}`,
+      render: (id: Id) => cluster.byId.get(id)?.name ?? `#${id}`,
     },
     {
       title: '状态',
@@ -125,7 +125,7 @@ export default function SourceConnectorPage() {
       title: '更新时间',
       dataIndex: 'updateMs',
       width: 160,
-      render: (ms: number) => formatMs(ms),
+      render: (ms: string) => formatMs(ms),
     },
     {
       title: '操作',

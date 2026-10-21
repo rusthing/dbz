@@ -7,7 +7,7 @@ import type { ColumnsType } from 'antd/es/table';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useCallback, useState } from 'react';
 import { sinkConnectorApi } from '../../api/sink-connector';
-import type { ConnectorRunStatus, DbzSinkConnectorVo } from '../../api/types';
+import type { ConnectorRunStatus, DbzSinkConnectorVo, Id } from '../../api/types';
 import EnabledTag from '../../components/EnabledTag';
 import StatusTag from '../../components/StatusTag';
 import { connectorRunStatusDic, dicOptions } from '../../dic';
@@ -19,8 +19,8 @@ import SinkConnectorForm from './SinkConnectorForm';
 /** 筛选草稿 */
 interface FilterDraft {
   keyword?: string;
-  sourceConnectorId?: number;
-  kafkaConnectId?: number;
+  sourceConnectorId?: Id;
+  kafkaConnectId?: Id;
   runStatus?: ConnectorRunStatus;
   enabled?: boolean;
 }
@@ -99,14 +99,14 @@ export default function SinkConnectorPage() {
       dataIndex: 'sourceConnectorId',
       width: 130,
       ellipsis: true,
-      render: (id: number) => source.byId.get(id)?.name ?? `#${id}`,
+      render: (id: Id) => source.byId.get(id)?.name ?? `#${id}`,
     },
     {
       title: '运行集群',
       dataIndex: 'kafkaConnectId',
       width: 120,
       ellipsis: true,
-      render: (id: number) => cluster.byId.get(id)?.name ?? `#${id}`,
+      render: (id: Id) => cluster.byId.get(id)?.name ?? `#${id}`,
     },
     {
       title: '状态',
@@ -126,7 +126,7 @@ export default function SinkConnectorPage() {
       title: '更新时间',
       dataIndex: 'updateMs',
       width: 160,
-      render: (ms: number) => formatMs(ms),
+      render: (ms: string) => formatMs(ms),
     },
     {
       title: '操作',

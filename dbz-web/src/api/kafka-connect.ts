@@ -9,6 +9,7 @@ import type {
   DbzKafkaConnectAddInput,
   DbzKafkaConnectModifyInput,
   DbzKafkaConnectVo,
+  Id,
   PageRx,
 } from './types';
 
@@ -28,5 +29,5 @@ export const kafkaConnectApi = {
   modify: (input: DbzKafkaConnectModifyInput): Promise<DbzKafkaConnectVo> => apiPut(BASE, input),
 
   /** 删除（名下仍有连接器时服务端会拒绝） */
-  remove: (id: number): Promise<DbzKafkaConnectVo> => apiDelete(`${BASE}/${id}`),
+  remove: (id: Id): Promise<DbzKafkaConnectVo> => apiDelete(`${BASE}/${id}`),
 };

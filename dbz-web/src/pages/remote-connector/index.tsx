@@ -14,6 +14,7 @@ import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { kafkaConnectorApi } from '../../api/kafka-connector';
 import type {
+  Id,
   KafkaConnectorPluginVo,
   KafkaConnectorStatus,
   KafkaConnectorTaskVo,
@@ -29,7 +30,8 @@ export default function RemoteConnectorPage() {
   const cluster = useClusterOptions();
   const [searchParams, setSearchParams] = useSearchParams();
   const raw = searchParams.get('kafkaConnectId');
-  const selectedId = raw ? Number(raw) : undefined;
+  // ID 是 u64 字符串，不能 Number()：19 位雪花 ID 转数字会丢精度，查到的就是别的集群
+  const selectedId = raw ?? undefined;
 
   return (
     <Card variant="borderless">
@@ -79,7 +81,7 @@ export default function RemoteConnectorPage() {
 }
 
 /** # 连接器列表 */
-function ConnectorsPanel({ kafkaConnectId }: { kafkaConnectId: number }) {
+function ConnectorsPanel({ kafkaConnectId }: { kafkaConnectId: Id }) {
   const { message } = AntdApp.useApp();
   const { data, loading, error, reload } = useAsync<KafkaConnectorVo[]>(
     () => kafkaConnectorApi.list(kafkaConnectId),
@@ -210,7 +212,7 @@ function TaskTable({
   connectorName,
   tasks,
 }: {
-  kafkaConnectId: number;
+  kafkaConnectId: Id;
   connectorName: string;
   tasks: KafkaConnectorTaskVo[];
 }) {
@@ -288,7 +290,7 @@ function TaskTable({
 }
 
 /** # 插件列表 */
-function PluginsPanel({ kafkaConnectId }: { kafkaConnectId: number }) {
+function PluginsPanel({ kafkaConnectId }: { kafkaConnectId: Id }) {
   const { data, loading, error, reload } = useAsync<KafkaConnectorPluginVo[]>(
     () => kafkaConnectorApi.plugins(kafkaConnectId),
     [kafkaConnectId],

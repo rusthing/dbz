@@ -20,7 +20,12 @@ import { Link } from 'react-router-dom';
 import { kafkaConnectApi } from '../api/kafka-connect';
 import { sinkConnectorApi } from '../api/sink-connector';
 import { sourceConnectorApi } from '../api/source-connector';
-import type { DbzKafkaConnectVo, DbzSinkConnectorVo, DbzSourceConnectorVo } from '../api/types';
+import type {
+  DbzKafkaConnectVo,
+  DbzSinkConnectorVo,
+  DbzSourceConnectorVo,
+  Id,
+} from '../api/types';
 import StatusTag from '../components/StatusTag';
 import type { DicItem } from '../dic';
 import { connectorRunStatusDic, kafkaConnectStatusDic } from '../dic';
@@ -35,7 +40,7 @@ interface AnomalyRow {
   cluster: string;
   status: number;
   dic: DicItem[];
-  updateMs: number;
+  updateMs: Id;
 }
 
 /** 一组统计数字 */
@@ -190,7 +195,8 @@ export default function Dashboard() {
       }
     });
 
-    return rows.sort((left, right) => right.updateMs - left.updateMs);
+    // updateMs 是 u64 字符串，减号会隐式转数字；显式写出来避免被当成字符串比较
+    return rows.sort((left, right) => Number(right.updateMs) - Number(left.updateMs));
   }, [clusters.data, sources.data, sinks.data, clusterById]);
 
   const error = clusters.error ?? sources.error ?? sinks.error;
@@ -222,7 +228,7 @@ export default function Dashboard() {
       title: '进入该状态时间',
       dataIndex: 'updateMs',
       width: 180,
-      render: (ms: number) => formatMs(ms),
+      render: (ms: Id) => formatMs(ms),
     },
   ];
 

@@ -16,6 +16,15 @@ if (!container) {
   throw new Error('找不到挂载节点 #root');
 }
 
+/**
+ * 路由前缀（basename）
+ *
+ * 直接取 Vite 的 `BASE_URL`（就是 `vite.config.ts` 里的 `base`，形如 `/dbz-web/`），
+ * 去掉末尾斜杠给 `BrowserRouter`；根路径部署时为空串，按 `/` 处理。
+ * 这样「页面挂在哪个子路径」只需要改一处 `VITE_PUBLIC_BASE`。
+ */
+const BASENAME = import.meta.env.BASE_URL.replace(/\/+$/, '') || '/';
+
 ReactDOM.createRoot(container).render(
   <React.StrictMode>
     <ConfigProvider
@@ -39,7 +48,7 @@ ReactDOM.createRoot(container).render(
       }}
     >
       <AntdApp>
-        <BrowserRouter>
+        <BrowserRouter basename={BASENAME}>
           <App />
         </BrowserRouter>
       </AntdApp>

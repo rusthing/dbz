@@ -8,16 +8,16 @@
 import { useMemo } from 'react';
 import { kafkaConnectApi } from '../api/kafka-connect';
 import { sourceConnectorApi } from '../api/source-connector';
-import type { DbzKafkaConnectVo, DbzSourceConnectorVo } from '../api/types';
+import type { DbzKafkaConnectVo, DbzSourceConnectorVo, Id } from '../api/types';
 import { useAsync } from './useAsync';
 
 /** # 集群选项集合 */
 export interface ClusterOptions {
   clusters: DbzKafkaConnectVo[];
   /** antd Select 选项 */
-  options: { value: number; label: string }[];
+  options: { value: Id; label: string }[];
   /** id → 集群 */
-  byId: Map<number, DbzKafkaConnectVo>;
+  byId: Map<Id, DbzKafkaConnectVo>;
   loading: boolean;
   reload: () => void;
 }
@@ -47,9 +47,9 @@ export function useClusterOptions(): ClusterOptions {
 export interface SourceOptions {
   sources: DbzSourceConnectorVo[];
   /** antd Select 选项 */
-  options: { value: number; label: string }[];
+  options: { value: Id; label: string }[];
   /** id → 上游连接器 */
-  byId: Map<number, DbzSourceConnectorVo>;
+  byId: Map<Id, DbzSourceConnectorVo>;
   loading: boolean;
   reload: () => void;
 }

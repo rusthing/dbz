@@ -9,6 +9,7 @@ import type {
   DbzSinkConnectorAddInput,
   DbzSinkConnectorModifyInput,
   DbzSinkConnectorVo,
+  Id,
   PageRx,
 } from './types';
 
@@ -28,5 +29,5 @@ export const sinkConnectorApi = {
   modify: (input: DbzSinkConnectorModifyInput): Promise<DbzSinkConnectorVo> => apiPut(BASE, input),
 
   /** 删除 */
-  remove: (id: number): Promise<DbzSinkConnectorVo> => apiDelete(`${BASE}/${id}`),
+  remove: (id: Id): Promise<DbzSinkConnectorVo> => apiDelete(`${BASE}/${id}`),
 };

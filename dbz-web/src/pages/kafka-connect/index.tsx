@@ -115,7 +115,7 @@ export default function KafkaConnectPage() {
       title: '更新时间',
       dataIndex: 'updateMs',
       width: 160,
-      render: (ms: number) => formatMs(ms),
+      render: (ms: string) => formatMs(ms),
     },
     {
       title: '操作',

@@ -7,13 +7,16 @@ import dayjs from 'dayjs';
 /**
  * # 毫秒时间戳转本地时间
  *
- * 服务端的 `create_ms` / `update_ms` 是 u64 毫秒时间戳。
+ * 服务端的 `create_ms` / `update_ms` 是 `u64`，线上是**字符串**（`"1760000000000"`）。
+ * 必须先用 `Number()` 转成数字再交给 dayjs：`dayjs("1760000000000")` 会把它当日期字符串解析，
+ * 得到 1759 年这种荒唐结果。毫秒时间戳约 `1.7e12`，远小于 `2^53`，转数字不会丢精度。
  */
-export function formatMs(ms?: number | null): string {
-  if (!ms) {
+export function formatMs(ms?: string | number | null): string {
+  const value = Number(ms);
+  if (!ms || Number.isNaN(value)) {
     return '-';
   }
-  return dayjs(ms).format('YYYY-MM-DD HH:mm:ss');
+  return dayjs(value).format('YYYY-MM-DD HH:mm:ss');
 }
 
 /** # 空值兜底 */
