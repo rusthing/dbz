@@ -21,9 +21,9 @@ pub struct Model {
     pub updater_id: i64,
     pub update_ms: i64,
     #[sea_orm(has_many)]
-    pub dbz_source_connectors: HasMany<super::dbz_source_connector::Entity>,
-    #[sea_orm(has_many)]
     pub dbz_sink_connectors: HasMany<super::dbz_sink_connector::Entity>,
+    #[sea_orm(has_many)]
+    pub dbz_source_connectors: HasMany<super::dbz_source_connector::Entity>,
 }
 
 impl ActiveModelBehavior for ActiveModel {}

@@ -1,6 +1,6 @@
 /*==============================================================*/
 /* DBMS name:      PostgreSQL 9.x                               */
-/* Created on:     2026/10/19 22:30:00                          */
+/* Created on:     2026/10/21 9:41:44                           */
 /*==============================================================*/
 
 
@@ -68,26 +68,12 @@ id
 );
 
 /*==============================================================*/
-/* Index: dbz_kafka_connect_AK                                  */
-/*==============================================================*/
-create unique index dbz_kafka_connect_AK on dbz_kafka_connect (
-name
-);
-
-/*==============================================================*/
-/* Index: dbz_kafka_connect_AK2                                 */
-/*==============================================================*/
-create unique index dbz_kafka_connect_AK2 on dbz_kafka_connect (
-url
-);
-
-/*==============================================================*/
 /* Table: dbz_sink_connector                                    */
 /*==============================================================*/
 create table dbz_sink_connector (
    id                   INT8                 not null,
-   source_connector_id  INT8                 not null,
    kafka_connect_id     INT8                 not null,
+   source_connector_id  INT8                 not null,
    name                 VARCHAR(50)          not null,
    connector_name       VARCHAR(50)          not null,
    connector_config     TEXT                 not null,
@@ -109,11 +95,11 @@ comment on table dbz_sink_connector is
 comment on column dbz_sink_connector.id is
 'ID';
 
-comment on column dbz_sink_connector.source_connector_id is
-'上游连接器ID';
-
 comment on column dbz_sink_connector.kafka_connect_id is
 'Kafka Connect ID';
+
+comment on column dbz_sink_connector.source_connector_id is
+'上游连接器ID';
 
 comment on column dbz_sink_connector.name is
 '名称';
@@ -127,9 +113,14 @@ comment on column dbz_sink_connector.connector_config is
 comment on column dbz_sink_connector.run_status is
 '运行状态
 0-无状态(刚添加记录)
-1-正常
+1-运行中
 2-已禁用
-3-连接失败';
+3-连接KafkaConnect失败
+4-注册连接器失败
+5-检测连接器失败
+6-检测连接器异常
+7-检测连接器状态失败
+8-检测连接器状态异常';
 
 comment on column dbz_sink_connector.remark is
 '备注';
@@ -164,24 +155,10 @@ source_connector_id
 );
 
 /*==============================================================*/
-/* Index: fk_kafka_connect_id                                   */
+/* Index: Relationship_3_FK                                     */
 /*==============================================================*/
-create  index fk_kafka_connect_id on dbz_sink_connector (
+create  index Relationship_3_FK on dbz_sink_connector (
 kafka_connect_id
-);
-
-/*==============================================================*/
-/* Index: dbz_sink_connector_AK                                 */
-/*==============================================================*/
-create unique index dbz_sink_connector_AK on dbz_sink_connector (
-name
-);
-
-/*==============================================================*/
-/* Index: dbz_sink_connector_AK2                                */
-/*==============================================================*/
-create unique index dbz_sink_connector_AK2 on dbz_sink_connector (
-connector_name
 );
 
 /*==============================================================*/
@@ -226,9 +203,14 @@ comment on column dbz_source_connector.connector_config is
 comment on column dbz_source_connector.run_status is
 '运行状态
 0-无状态(刚添加记录)
-1-正常
+1-运行中
 2-已禁用
-3-连接失败';
+3-连接KafkaConnect失败
+4-注册连接器失败
+5-检测连接器失败
+6-检测连接器异常
+7-检测连接器状态失败
+8-检测连接器状态异常';
 
 comment on column dbz_source_connector.remark is
 '备注';
@@ -256,24 +238,10 @@ id
 );
 
 /*==============================================================*/
-/* Index: fk_kafka_connect_id                                   */
+/* Index: Relationship_2_FK                                     */
 /*==============================================================*/
-create  index fk_kafka_connect_id on dbz_source_connector (
+create  index Relationship_2_FK on dbz_source_connector (
 kafka_connect_id
-);
-
-/*==============================================================*/
-/* Index: dbz_source_connector_AK                               */
-/*==============================================================*/
-create unique index dbz_source_connector_AK on dbz_source_connector (
-name
-);
-
-/*==============================================================*/
-/* Index: dbz_source_connector_AK2                              */
-/*==============================================================*/
-create unique index dbz_source_connector_AK2 on dbz_source_connector (
-connector_name
 );
 
 alter table dbz_sink_connector
@@ -290,3 +258,6 @@ alter table dbz_source_connector
    add constraint fk_kafka_connect_id__from__dbz_kafka_connect foreign key (kafka_connect_id)
       references dbz_kafka_connect (id)
       on delete restrict on update restrict;
+
+
+

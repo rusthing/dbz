@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false, unique)]
     pub id: i64,
-    pub source_connector_id: i64,
     pub kafka_connect_id: i64,
+    pub source_connector_id: i64,
     #[sea_orm(unique)]
     pub name: String,
     #[sea_orm(unique)]
@@ -26,20 +26,20 @@ pub struct Model {
     pub update_ms: i64,
     #[sea_orm(
         belongs_to,
-        from = "source_connector_id",
-        to = "id",
-        on_update = "Restrict",
-        on_delete = "Restrict"
-    )]
-    pub dbz_source_connector: BelongsTo<super::dbz_source_connector::Entity>,
-    #[sea_orm(
-        belongs_to,
         from = "kafka_connect_id",
         to = "id",
         on_update = "Restrict",
         on_delete = "Restrict"
     )]
     pub dbz_kafka_connect: BelongsTo<super::dbz_kafka_connect::Entity>,
+    #[sea_orm(
+        belongs_to,
+        from = "source_connector_id",
+        to = "id",
+        on_update = "Restrict",
+        on_delete = "Restrict"
+    )]
+    pub dbz_source_connector: BelongsTo<super::dbz_source_connector::Entity>,
 }
 
 impl ActiveModelBehavior for ActiveModel {}
