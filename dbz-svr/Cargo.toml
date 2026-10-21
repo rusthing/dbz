@@ -40,7 +40,7 @@ async-trait = { workspace = true }
 
 wheel-rs = { workspace = true }
 idworker = { workspace = true, features = ["utils"] }
-robotech = { workspace = true, features = ["db", "config-center", "registry-center", "macros", "redis"] }
+robotech = { workspace = true, features = ["db", "config-center", "registry-center", "macros"] }
 dbz-api = { workspace = true, features = ["server"] }
 jobx-api = { workspace = true }
 jobx-api-client = { workspace = true }

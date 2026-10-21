@@ -6,7 +6,6 @@ use jobx_api_client::setup_jobx_api_client;
 use robotech::app::setup_id_worker;
 use robotech::db::setup_db_conn;
 use robotech::macros::{bootstrap, db_migrate, log_call};
-use robotech::redis::setup_redis_conn;
 use robotech::web::setup_web_server;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -25,7 +24,6 @@ async fn setup(
 
     setup_app_config(app_config.as_ref().clone(), changed);
     setup_id_worker(app_config.id_worker.clone(), changed).await?;
-    setup_redis_conn(app_config.redis.clone(), changed).await?;
     setup_db_conn(app_config.db.clone(), changed).await?;
     setup_jobx_api_client(app_config.api.clone(), changed).await?;
     setup_web_server(app_config.web.clone(), port, old_pid, changed).await?;

@@ -30,7 +30,7 @@ strum = "0.28.0"
 utoipa = "6.0.0"
 utoipa-swagger-ui = "10.0.1"
 humantime = "2.4.0"
-redis = "1.7.1"
+
 
 dbz-api = { version = "1.0.0", path = "./dbz-api" }
 dbz-api-client = { version = "1.0.0", path = "./dbz-api-client" }
