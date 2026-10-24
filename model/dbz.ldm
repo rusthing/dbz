@@ -1733,6 +1733,8 @@ LABL 0 新宋体,8,N</a:FontList>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1791624377</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
+<a:Comment>名称
+@len 1..=50</a:Comment>
 <a:DataType>VA50</a:DataType>
 <a:Length>50</a:Length>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
@@ -1746,6 +1748,8 @@ LABL 0 新宋体,8,N</a:FontList>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1792402262</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
+<a:Comment>连接器名称
+@len 1..=50</a:Comment>
 <a:DataType>VA50</a:DataType>
 <a:Length>50</a:Length>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
@@ -1759,7 +1763,8 @@ LABL 0 新宋体,8,N</a:FontList>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1792402262</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
-<a:Comment>连接器配置(JSON)</a:Comment>
+<a:Comment>连接器配置(JSON)
+@len 1..</a:Comment>
 <a:DataType>TXT</a:DataType>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
 <a:GlobalObjectID/>
@@ -1773,15 +1778,7 @@ LABL 0 新宋体,8,N</a:FontList>
 <a:ModificationDate>1792402262</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
 <a:Comment>运行状态
-0-无状态(刚添加记录)
-1-运行中
-2-已禁用
-3-连接KafkaConnect失败
-4-注册连接器失败
-5-检测连接器失败
-6-检测连接器异常
-7-检测连接器状态失败
-8-检测连接器状态异常</a:Comment>
+@enum ConnectorRunStatus default=None 0=None:无状态（刚添加记录）, 1=Running:运行中, 2=Disabled:已禁用, 3=KafkaConnectFailed:连接 KafkaConnect 失败, 4=RegisterFailed:注册连接器失败, 5=CheckFailed:检测连接器失败, 6=CheckError:检测连接器异常, 7=CheckStatusFailed:检测连接器状态失败, 8=CheckStatusError:检测连接器状态异常</a:Comment>
 <a:DefaultValue>0</a:DefaultValue>
 <a:DataType>BT</a:DataType>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
@@ -1795,6 +1792,8 @@ LABL 0 新宋体,8,N</a:FontList>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1791621577</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
+<a:Comment>备注
+@len 0..=50</a:Comment>
 <a:DataType>VA50</a:DataType>
 <a:Length>50</a:Length>
 <a:GlobalObjectID/>
@@ -1961,6 +1960,8 @@ LABL 0 新宋体,8,N</a:FontList>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1792402386</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
+<a:Comment>名称
+@len 1..=50</a:Comment>
 <a:DataType>VA50</a:DataType>
 <a:Length>50</a:Length>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
@@ -1974,6 +1975,8 @@ LABL 0 新宋体,8,N</a:FontList>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1792402399</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
+<a:Comment>连接器名称
+@len 1..=50</a:Comment>
 <a:DataType>VA50</a:DataType>
 <a:Length>50</a:Length>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
@@ -1987,7 +1990,8 @@ LABL 0 新宋体,8,N</a:FontList>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1792402260</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
-<a:Comment>连接器配置(JSON)</a:Comment>
+<a:Comment>连接器配置(JSON)
+@len 1..</a:Comment>
 <a:DataType>TXT</a:DataType>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
 <a:GlobalObjectID/>
@@ -2001,15 +2005,7 @@ LABL 0 新宋体,8,N</a:FontList>
 <a:ModificationDate>1792402260</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
 <a:Comment>运行状态
-0-无状态(刚添加记录)
-1-运行中
-2-已禁用
-3-连接KafkaConnect失败
-4-注册连接器失败
-5-检测连接器失败
-6-检测连接器异常
-7-检测连接器状态失败
-8-检测连接器状态异常</a:Comment>
+@enum ConnectorRunStatus default=None 0=None:无状态（刚添加记录）, 1=Running:运行中, 2=Disabled:已禁用, 3=KafkaConnectFailed:连接 KafkaConnect 失败, 4=RegisterFailed:注册连接器失败, 5=CheckFailed:检测连接器失败, 6=CheckError:检测连接器异常, 7=CheckStatusFailed:检测连接器状态失败, 8=CheckStatusError:检测连接器状态异常</a:Comment>
 <a:DefaultValue>0</a:DefaultValue>
 <a:DataType>BT</a:DataType>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
@@ -2023,6 +2019,8 @@ LABL 0 新宋体,8,N</a:FontList>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1792402030</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
+<a:Comment>备注
+@len 0..=50</a:Comment>
 <a:DataType>VA50</a:DataType>
 <a:Length>50</a:Length>
 <a:GlobalObjectID/>
@@ -2164,6 +2162,8 @@ LABL 0 新宋体,8,N</a:FontList>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1792403300</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
+<a:Comment>名称
+@len 1..=50</a:Comment>
 <a:DataType>VA50</a:DataType>
 <a:Length>50</a:Length>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
@@ -2177,6 +2177,8 @@ LABL 0 新宋体,8,N</a:FontList>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1792403300</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
+<a:Comment>地址
+@len 1..=100</a:Comment>
 <a:DataType>VA100</a:DataType>
 <a:Length>100</a:Length>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
@@ -2191,10 +2193,7 @@ LABL 0 新宋体,8,N</a:FontList>
 <a:ModificationDate>1792403300</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
 <a:Comment>状态
-0-无状态(刚添加记录)
-1-正常
-2-已禁用
-3-连接失败</a:Comment>
+@enum KafkaConnectStatus default=None 0=None:无状态（刚添加记录，或刚改过地址/重新启用，等待下一轮检查）, 1=Normal:正常, 2=Disabled:已禁用, 3=ConnectFailed:连接失败</a:Comment>
 <a:DefaultValue>0</a:DefaultValue>
 <a:DataType>BT</a:DataType>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
@@ -2208,6 +2207,8 @@ LABL 0 新宋体,8,N</a:FontList>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1792546876</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
+<a:Comment>备注
+@len 0..=50</a:Comment>
 <a:DataType>VA50</a:DataType>
 <a:Length>50</a:Length>
 <a:GlobalObjectID/>

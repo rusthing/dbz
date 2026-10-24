@@ -4704,6 +4704,8 @@ DAT 1792403300</a:History>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1791624230</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
+<a:Comment>名称
+@len 1..=50</a:Comment>
 <a:History>ORG {46E7CE47-B49B-47B7-95B7-2549666A9894}
 DAT 1791624231</a:History>
 <a:DataType>VARCHAR(50)</a:DataType>
@@ -4719,6 +4721,8 @@ DAT 1791624231</a:History>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1792402500</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
+<a:Comment>连接器名称
+@len 1..=50</a:Comment>
 <a:History>ORG {C703538A-6963-46B4-990B-17311BFD33EF}
 DAT 1791624231</a:History>
 <a:DataType>VARCHAR(50)</a:DataType>
@@ -4734,7 +4738,8 @@ DAT 1791624231</a:History>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1792402500</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
-<a:Comment>连接器配置(JSON)</a:Comment>
+<a:Comment>连接器配置(JSON)
+@len 1..</a:Comment>
 <a:History>ORG {98D926D8-A56A-46FB-8C9C-863669CA1DAE}
 DAT 1791624231</a:History>
 <a:DataType>TEXT</a:DataType>
@@ -4750,15 +4755,7 @@ DAT 1791624231</a:History>
 <a:ModificationDate>1792402500</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
 <a:Comment>运行状态
-0-无状态(刚添加记录)
-1-运行中
-2-已禁用
-3-连接KafkaConnect失败
-4-注册连接器失败
-5-检测连接器失败
-6-检测连接器异常
-7-检测连接器状态失败
-8-检测连接器状态异常</a:Comment>
+@enum ConnectorRunStatus default=None 0=None:无状态（刚添加记录）, 1=Running:运行中, 2=Disabled:已禁用, 3=KafkaConnectFailed:连接 KafkaConnect 失败, 4=RegisterFailed:注册连接器失败, 5=CheckFailed:检测连接器失败, 6=CheckError:检测连接器异常, 7=CheckStatusFailed:检测连接器状态失败, 8=CheckStatusError:检测连接器状态异常</a:Comment>
 <a:History>ORG {94223522-51E5-47AB-93E5-F45111D0BEEB}
 DAT 1791624231</a:History>
 <a:DefaultValue>0</a:DefaultValue>
@@ -4775,6 +4772,8 @@ DAT 1791624231</a:History>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1791624230</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
+<a:Comment>备注
+@len 0..=50</a:Comment>
 <a:History>ORG {7E42EB07-50CC-44FD-80AC-2A89D746C41C}
 DAT 1791624231</a:History>
 <a:DataType>VARCHAR(50)</a:DataType>
@@ -5098,6 +5097,8 @@ DAT 1792402491</a:History>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1792402500</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
+<a:Comment>名称
+@len 1..=50</a:Comment>
 <a:History>ORG {31482CA0-AF50-4F72-A2DE-627A50C440C0}
 DAT 1792402491</a:History>
 <a:DataType>VARCHAR(50)</a:DataType>
@@ -5113,6 +5114,8 @@ DAT 1792402491</a:History>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1792402500</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
+<a:Comment>连接器名称
+@len 1..=50</a:Comment>
 <a:History>ORG {B12073DB-BDB4-415B-A6D3-C0A8E40C9856}
 DAT 1792402491</a:History>
 <a:DataType>VARCHAR(50)</a:DataType>
@@ -5128,7 +5131,8 @@ DAT 1792402491</a:History>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1792402500</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
-<a:Comment>连接器配置(JSON)</a:Comment>
+<a:Comment>连接器配置(JSON)
+@len 1..</a:Comment>
 <a:History>ORG {042647EB-EBE9-4286-A616-93CEA98B0419}
 DAT 1792402491</a:History>
 <a:DataType>TEXT</a:DataType>
@@ -5144,15 +5148,7 @@ DAT 1792402491</a:History>
 <a:ModificationDate>1792402500</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
 <a:Comment>运行状态
-0-无状态(刚添加记录)
-1-运行中
-2-已禁用
-3-连接KafkaConnect失败
-4-注册连接器失败
-5-检测连接器失败
-6-检测连接器异常
-7-检测连接器状态失败
-8-检测连接器状态异常</a:Comment>
+@enum ConnectorRunStatus default=None 0=None:无状态（刚添加记录）, 1=Running:运行中, 2=Disabled:已禁用, 3=KafkaConnectFailed:连接 KafkaConnect 失败, 4=RegisterFailed:注册连接器失败, 5=CheckFailed:检测连接器失败, 6=CheckError:检测连接器异常, 7=CheckStatusFailed:检测连接器状态失败, 8=CheckStatusError:检测连接器状态异常</a:Comment>
 <a:History>ORG {CD4CE6E4-009C-4B47-95F2-00ED8F1B9CE9}
 DAT 1792402491</a:History>
 <a:DefaultValue>0</a:DefaultValue>
@@ -5169,6 +5165,8 @@ DAT 1792402491</a:History>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1792402500</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
+<a:Comment>备注
+@len 0..=50</a:Comment>
 <a:History>ORG {E513AA43-4381-4FD3-990E-D285CBEDB25E}
 DAT 1792402491</a:History>
 <a:DataType>VARCHAR(50)</a:DataType>
@@ -5490,6 +5488,8 @@ DAT 1792403300</a:History>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1792546374</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
+<a:Comment>名称
+@len 1..=50</a:Comment>
 <a:History>ORG {4DD9E5E8-97BF-4085-8D29-4440AFE576C0}
 DAT 1792403300</a:History>
 <a:DataType>VARCHAR(50)</a:DataType>
@@ -5505,6 +5505,8 @@ DAT 1792403300</a:History>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1792546374</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
+<a:Comment>地址
+@len 1..=100</a:Comment>
 <a:History>ORG {0D03BB25-24FE-4F50-9411-86A6CB906EF6}
 DAT 1792403300</a:History>
 <a:DataType>VARCHAR(100)</a:DataType>
@@ -5521,10 +5523,7 @@ DAT 1792403300</a:History>
 <a:ModificationDate>1792546374</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
 <a:Comment>状态
-0-无状态(刚添加记录)
-1-正常
-2-已禁用
-3-连接失败</a:Comment>
+@enum KafkaConnectStatus default=None 0=None:无状态（刚添加记录，或刚改过地址/重新启用，等待下一轮检查）, 1=Normal:正常, 2=Disabled:已禁用, 3=ConnectFailed:连接失败</a:Comment>
 <a:History>ORG {88F6941A-4CB3-4D03-BC0C-018A35EE6998}
 DAT 1792403300</a:History>
 <a:DefaultValue>0</a:DefaultValue>
@@ -5541,6 +5540,8 @@ DAT 1792403300</a:History>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1792546896</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
+<a:Comment>备注
+@len 0..=50</a:Comment>
 <a:History>ORG {AC446542-4CDA-44E2-AE09-31B32DAC7B8B}
 DAT 1792403300</a:History>
 <a:DataType>VARCHAR(50)</a:DataType>

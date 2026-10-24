@@ -30,20 +30,20 @@ comment on column dbz_kafka_connect.id is
 'ID';
 
 comment on column dbz_kafka_connect.name is
-'名称';
+'名称
+@len 1..=50';
 
 comment on column dbz_kafka_connect.url is
-'地址';
+'地址
+@len 1..=100';
 
 comment on column dbz_kafka_connect.run_status is
 '状态
-0-无状态(刚添加记录)
-1-正常
-2-已禁用
-3-连接失败';
+@enum KafkaConnectStatus default=None 0=None:无状态（刚添加记录，或刚改过地址/重新启用，等待下一轮检查）, 1=Normal:正常, 2=Disabled:已禁用, 3=ConnectFailed:连接失败';
 
 comment on column dbz_kafka_connect.remark is
-'备注';
+'备注
+@len 0..=50';
 
 comment on column dbz_kafka_connect.enabled is
 '启用';
@@ -102,28 +102,24 @@ comment on column dbz_sink_connector.source_connector_id is
 '上游连接器ID';
 
 comment on column dbz_sink_connector.name is
-'名称';
+'名称
+@len 1..=50';
 
 comment on column dbz_sink_connector.connector_name is
-'连接器名称';
+'连接器名称
+@len 1..=50';
 
 comment on column dbz_sink_connector.connector_config is
-'连接器配置(JSON)';
+'连接器配置(JSON)
+@len 1..';
 
 comment on column dbz_sink_connector.run_status is
 '运行状态
-0-无状态(刚添加记录)
-1-运行中
-2-已禁用
-3-连接KafkaConnect失败
-4-注册连接器失败
-5-检测连接器失败
-6-检测连接器异常
-7-检测连接器状态失败
-8-检测连接器状态异常';
+@enum ConnectorRunStatus default=None 0=None:无状态（刚添加记录）, 1=Running:运行中, 2=Disabled:已禁用, 3=KafkaConnectFailed:连接 KafkaConnect 失败, 4=RegisterFailed:注册连接器失败, 5=CheckFailed:检测连接器失败, 6=CheckError:检测连接器异常, 7=CheckStatusFailed:检测连接器状态失败, 8=CheckStatusError:检测连接器状态异常';
 
 comment on column dbz_sink_connector.remark is
-'备注';
+'备注
+@len 0..=50';
 
 comment on column dbz_sink_connector.enabled is
 '启用';
@@ -192,28 +188,24 @@ comment on column dbz_source_connector.kafka_connect_id is
 'Kafka Connect ID';
 
 comment on column dbz_source_connector.name is
-'名称';
+'名称
+@len 1..=50';
 
 comment on column dbz_source_connector.connector_name is
-'连接器名称';
+'连接器名称
+@len 1..=50';
 
 comment on column dbz_source_connector.connector_config is
-'连接器配置(JSON)';
+'连接器配置(JSON)
+@len 1..';
 
 comment on column dbz_source_connector.run_status is
 '运行状态
-0-无状态(刚添加记录)
-1-运行中
-2-已禁用
-3-连接KafkaConnect失败
-4-注册连接器失败
-5-检测连接器失败
-6-检测连接器异常
-7-检测连接器状态失败
-8-检测连接器状态异常';
+@enum ConnectorRunStatus default=None 0=None:无状态（刚添加记录）, 1=Running:运行中, 2=Disabled:已禁用, 3=KafkaConnectFailed:连接 KafkaConnect 失败, 4=RegisterFailed:注册连接器失败, 5=CheckFailed:检测连接器失败, 6=CheckError:检测连接器异常, 7=CheckStatusFailed:检测连接器状态失败, 8=CheckStatusError:检测连接器状态异常';
 
 comment on column dbz_source_connector.remark is
-'备注';
+'备注
+@len 0..=50';
 
 comment on column dbz_source_connector.enabled is
 '启用';
