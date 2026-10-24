@@ -12,15 +12,19 @@ pub struct DbzSourceConnectorDto {
     /// Kafka Connect ID
     pub kafka_connect_id: u64,
     /// 名称
+    /// @len 1..=50
     pub name: String,
     /// 连接器名称
+    /// @len 1..=50
     pub connector_name: String,
     /// 连接器配置（JSON）
+    /// @len 1..
     pub connector_config: String,
     /// 运行状态
     #[db_default]
     pub run_status: ConnectorRunStatus,
     /// 备注
+    /// @len 0..=50
     pub remark: Option<String>,
     /// 启用
     #[db_default]

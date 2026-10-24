@@ -32,6 +32,7 @@ pub struct KafkaConnectorQueryDto {
     /// Kafka Connect ID（未提供 kafkaConnectUrl 时必填）
     pub kafka_connect_id: Option<U64>,
     /// Kafka Connect 地址（优先于 kafkaConnectId）
+    /// @len 0..
     pub kafka_connect_url: Option<String>,
 }
 
@@ -43,9 +44,11 @@ pub struct KafkaConnectorRestartDto {
     #[serde(default)]
     pub kafka_connect_id: Option<U64>,
     /// Kafka Connect 地址（优先于 kafkaConnectId）
+    /// @len 0..
     #[serde(default)]
     pub kafka_connect_url: Option<String>,
     /// 连接器名称
+    /// @len 1..
     pub connector_name: String,
     /// 是否同时重启该连接器的任务（默认 `true`）
     #[serde(default = "default_include_tasks")]
@@ -63,9 +66,11 @@ pub struct KafkaConnectorTaskRestartDto {
     #[serde(default)]
     pub kafka_connect_id: Option<U64>,
     /// Kafka Connect 地址（优先于 kafkaConnectId）
+    /// @len 0..
     #[serde(default)]
     pub kafka_connect_url: Option<String>,
     /// 连接器名称
+    /// @len 1..
     pub connector_name: String,
     /// 任务ID（可先从「查看所有连接器」接口的 `tasks` 中获取）
     pub task_id: u32,

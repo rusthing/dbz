@@ -10,13 +10,16 @@ use robotech::macros::crud_dto;
 #[crud_dto]
 pub struct DbzKafkaConnectDto {
     /// 名称
+    /// @len 1..=50
     pub name: String,
     /// 地址
+    /// @len 1..=100
     pub url: String,
     /// 状态
     #[db_default]
     pub run_status: KafkaConnectStatus,
     /// 备注
+    /// @len 0..=50
     pub remark: Option<String>,
     /// 启用
     #[db_default]
