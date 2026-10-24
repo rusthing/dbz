@@ -2,12 +2,28 @@
  * # 远端连接器
  *
  * 这一页操作的是**集群上真实运行的连接器**（Kafka Connect REST API），不是库里的记录：
- * 因此能看到未经 dbz 纳管的连接器（有人在集群上手工建的），也能直接重启它们。
+ * 因此能看到未经 dbz 纳管的连接器（有人在集群上手工建的），也能直接重启或删除它们。
+ *
+ * 删除只动集群、不动库：删掉的连接器若仍被 dbz 纳管，下一轮健康检查会按记录重新部署
+ * 回来；要彻底停掉请去对应的上游/下游连接器列表把启用开关关掉。
  *
  * 定位目标集群用 `?kafkaConnectId=`：从「Kafka Connect」页点「连接器」跳过来时自动带上。
  */
 
-import { App as AntdApp, Alert, Button, Card, Empty, Popconfirm, Select, Table, Tabs, Tag, Typography } from 'antd';
+import {
+  App as AntdApp,
+  Alert,
+  Button,
+  Card,
+  Empty,
+  Popconfirm,
+  Select,
+  Space,
+  Table,
+  Tabs,
+  Tag,
+  Typography,
+} from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { ReloadOutlined } from '@ant-design/icons';
 import { useState } from 'react';
@@ -51,7 +67,7 @@ export default function RemoteConnectorPage() {
         </Button>
         <span className="dbz-toolbar-spacer" />
         <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-          这里的操作直接发往 Kafka Connect，不落库；重启是异步的，状态请稍后重新查询
+          这里的操作直接发往 Kafka Connect，不落库；重启是异步的，状态请稍后重新查询。删除只注销集群上的连接器，库里的记录需另行处理
         </Typography.Text>
       </div>
 
@@ -89,6 +105,7 @@ function ConnectorsPanel({ kafkaConnectId }: { kafkaConnectId: Id }) {
     [],
   );
   const [restarting, setRestarting] = useState<string | null>(null);
+  const [removing, setRemoving] = useState<string | null>(null);
 
   const handleRestart = async (connectorName: string) => {
     setRestarting(connectorName);
@@ -104,6 +121,19 @@ function ConnectorsPanel({ kafkaConnectId }: { kafkaConnectId: Id }) {
       message.error(errorMessage(reason));
     } finally {
       setRestarting(null);
+    }
+  };
+
+  const handleRemove = async (connectorName: string) => {
+    setRemoving(connectorName);
+    try {
+      await kafkaConnectorApi.remove({ kafkaConnectId, connectorName });
+      message.success(`已删除：${connectorName}`);
+      reload();
+    } catch (reason) {
+      message.error(errorMessage(reason));
+    } finally {
+      setRemoving(null);
     }
   };
 
@@ -144,19 +174,33 @@ function ConnectorsPanel({ kafkaConnectId }: { kafkaConnectId: Id }) {
     {
       title: '操作',
       key: 'actions',
-      width: 120,
+      width: 150,
       render: (_, record) => (
-        <Popconfirm
-          title={`重启连接器「${record.name}」？`}
-          description="将连同其任务一起重启，异步生效。"
-          okText="重启"
-          cancelText="取消"
-          onConfirm={() => handleRestart(record.name)}
-        >
-          <Button type="link" size="small" loading={restarting === record.name}>
-            重启
-          </Button>
-        </Popconfirm>
+        <Space size={4}>
+          <Popconfirm
+            title={`重启连接器「${record.name}」？`}
+            description="将连同其任务一起重启，异步生效。"
+            okText="重启"
+            cancelText="取消"
+            onConfirm={() => handleRestart(record.name)}
+          >
+            <Button type="link" size="small" loading={restarting === record.name}>
+              重启
+            </Button>
+          </Popconfirm>
+          <Popconfirm
+            title={`从集群上删除「${record.name}」？`}
+            description="连接器与其任务会从集群上注销，库里的记录不受影响；若它仍被 dbz 纳管，下一轮检查会重新部署回来。"
+            okText="删除"
+            okButtonProps={{ danger: true }}
+            cancelText="取消"
+            onConfirm={() => handleRemove(record.name)}
+          >
+            <Button type="link" size="small" danger loading={removing === record.name}>
+              删除
+            </Button>
+          </Popconfirm>
+        </Space>
       ),
     },
   ];

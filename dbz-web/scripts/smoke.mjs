@@ -208,7 +208,14 @@ await page.route('**/dbz/**', async (route) => {
   const path = new URL(request.url()).pathname;
 
   if (request.method() !== 'GET') {
-    posted.push({ method: request.method(), path, headers: request.headers(), body: request.postDataJSON() });
+    posted.push({
+      method: request.method(),
+      path,
+      query: new URL(request.url()).search,
+      headers: request.headers(),
+      // DELETE 不带请求体，postDataJSON() 在没有 body 时会抛错
+      body: request.postData() ? request.postDataJSON() : null,
+    });
     await route.fulfill({ json: { result: 1, msg: '成功', timestamp: Date.now() } });
     return;
   }
@@ -249,12 +256,28 @@ try {
   await layoutCheck(page, '集群');
   await page.screenshot({ path: `${SHOTS}/02-kafka-connect.png`, fullPage: true });
 
+  /* 2b. 启用列本身就是开关：关掉要确认，只提交 id + enabled */
+  const enabledSwitch = page.locator('tbody tr.ant-table-row').first().getByRole('switch');
+  check('启用列渲染为开关', (await enabledSwitch.getAttribute('aria-checked')) === 'true');
+  await enabledSwitch.click();
+  await page.waitForSelector('.ant-modal-confirm');
+  await page.click('.ant-modal-confirm .ant-btn-primary');
+  await page.waitForTimeout(400);
+  const toggleCall = posted.find((item) => item.method === 'PUT' && item.path === '/dbz/kafka-connect');
+  check(
+    '禁用只提交 id 与 enabled',
+    toggleCall?.body?.id === '101' && toggleCall?.body?.enabled === false && Object.keys(toggleCall.body).length === 2,
+    JSON.stringify(toggleCall?.body),
+  );
+
   /* 3. 新增：默认值、请求头、请求体、提交后关闭 */
   await page.click('button:has-text("新增集群")');
   await page.waitForSelector('.ant-modal-wrap', { state: 'visible' });
   await page.waitForTimeout(450);
-  const switchChecked = await page.getByRole('switch').getAttribute('aria-checked');
-  check('新增表单默认启用', switchChecked === 'true', String(switchChecked));
+  check(
+    '新增弹窗不再有启用开关',
+    (await page.locator('.ant-modal').getByRole('switch').count()) === 0,
+  );
 
   await page.fill('#name', '冒烟测试集群');
   await page.fill('#url', 'http://127.0.0.1:8083');
@@ -271,13 +294,18 @@ try {
     createCall?.body?.name === '冒烟测试集群' && createCall?.body?.url === 'http://127.0.0.1:8083',
     JSON.stringify(createCall?.body),
   );
+  // 启用/禁用移到列表后，新增一律先建成启用
+  check('新增请求体默认启用', createCall?.body?.enabled === true, JSON.stringify(createCall?.body));
 
   /* 3b. 编辑回填 */
   await page.locator('tbody tr.ant-table-row').first().locator('.ant-btn-link').first().click();
   await page.waitForSelector('.ant-modal-wrap', { state: 'visible' });
   await page.waitForTimeout(450);
   check('编辑表单回填名称', (await page.inputValue('#name')) === '生产集群-华东', await page.inputValue('#name'));
-  check('编辑表单回填启用', (await page.getByRole('switch').getAttribute('aria-checked')) === 'true');
+  check(
+    '编辑弹窗不再有启用开关',
+    (await page.locator('.ant-modal').getByRole('switch').count()) === 0,
+  );
   await page.screenshot({ path: `${SHOTS}/09-edit.png` });
   await page.locator('.ant-modal-footer .ant-btn').first().click();
   await page.waitForSelector('.ant-modal-wrap', { state: 'hidden', timeout: 5000 });
@@ -315,6 +343,24 @@ try {
   await page.waitForTimeout(600);
   const taskRestart = posted.find((item) => item.path === '/dbz/kafka-connector/task/restart');
   check('重启任务发出 POST', Boolean(taskRestart), JSON.stringify(taskRestart?.body));
+
+  /* 6b. 删除：只发 DELETE，定位参数走查询串 */
+  await page.locator('tbody tr.ant-table-row').first().locator('button:has-text("删除")').click();
+  // 上一步的重启确认框还留在 DOM 里（隐藏），这里按标题挑出删除那个
+  const removePopconfirm = page.locator('.ant-popconfirm', { hasText: '从集群上删除' });
+  await removePopconfirm.waitFor();
+  await removePopconfirm.locator('.ant-btn-primary').click();
+  await page.waitForTimeout(600);
+  const removeCall = posted.find(
+    (item) => item.method === 'DELETE' && item.path === '/dbz/kafka-connector',
+  );
+  const removeQuery = new URLSearchParams(removeCall?.query ?? '');
+  check(
+    '删除远端连接器发出 DELETE 且带集群与连接器名',
+    removeQuery.get('kafkaConnectId') === '101' &&
+      removeQuery.get('connectorName') === 'mysql-orders-source',
+    String(removeCall?.query),
+  );
 
   /* 7. 插件 */
   await page.click('.ant-tabs-tab:has-text("插件")');

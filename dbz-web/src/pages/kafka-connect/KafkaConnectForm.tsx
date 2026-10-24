@@ -3,11 +3,14 @@
  *
  * 新增与编辑共用一个弹窗：有 `record` 就是编辑，没有就是新增。
  *
- * 地址（`url`）是集群的唯一业务标识，也是健康检查的探测目标；服务端在**改地址或禁用**时
+ * 地址（`url`）是集群的唯一业务标识，也是健康检查的探测目标；服务端在**改地址**时
  * 会先把旧地址上的连接器全部注销，所以这里给出明确提示，避免运维误以为只是换个字符串。
+ *
+ * 「启用」不在这里：它在列表的启用列上切换（见 `EnabledSwitch`），因为禁用会连带
+ * 注销集群上的连接器，不适合混在「改个名字、改个地址」的表单里一起提交。
  */
 
-import { App as AntdApp, Form, Input, Modal, Switch } from 'antd';
+import { App as AntdApp, Form, Input, Modal } from 'antd';
 import { useState } from 'react';
 import { kafkaConnectApi } from '../../api/kafka-connect';
 import type { DbzKafkaConnectVo } from '../../api/types';
@@ -25,7 +28,6 @@ interface FormValues {
   name: string;
   url: string;
   remark?: string;
-  enabled: boolean;
 }
 
 export default function KafkaConnectForm({
@@ -55,10 +57,8 @@ export default function KafkaConnectForm({
         name: record.name,
         url: record.url,
         remark: record.remark ?? '',
-        enabled: record.enabled,
       });
     } else {
-      // 回到 initialValues（enabled: true）
       form.resetFields();
     }
   };
@@ -76,12 +76,13 @@ export default function KafkaConnectForm({
         url: values.url.trim(),
         // 传空串而不是 undefined：ModifyDto 用 Option<Option<String>> 区分「不改」与「清空」
         remark: values.remark?.trim() ?? '',
-        enabled: values.enabled,
       };
       if (record) {
+        // 不带 enabled：没传的字段不会被写回，不会把列表上刚切换的开关覆盖掉
         await kafkaConnectApi.modify({ ...payload, id: record.id });
       } else {
-        await kafkaConnectApi.add(payload);
+        // 新增一律先建成启用，之后在列表的启用列里切换（与服务端库默认值一致）
+        await kafkaConnectApi.add({ ...payload, enabled: true });
       }
       message.success(isEdit ? '修改成功' : '新增成功');
       onSuccess();
@@ -104,7 +105,7 @@ export default function KafkaConnectForm({
       afterOpenChange={syncForm}
       width={560}
     >
-      <Form form={form} layout="vertical" initialValues={{ enabled: true }} style={{ marginTop: 12 }}>
+      <Form form={form} layout="vertical" style={{ marginTop: 12 }}>
         <Form.Item
           name="name"
           label="名称"
@@ -130,15 +131,6 @@ export default function KafkaConnectForm({
 
         <Form.Item name="remark" label="备注">
           <Input.TextArea rows={2} maxLength={255} showCount placeholder="选填" />
-        </Form.Item>
-
-        <Form.Item
-          name="enabled"
-          label="启用"
-          valuePropName="checked"
-          extra="禁用后该集群不参与健康检查，名下连接器也会从集群上注销。"
-        >
-          <Switch checkedChildren="启用" unCheckedChildren="禁用" />
         </Form.Item>
       </Form>
     </Modal>

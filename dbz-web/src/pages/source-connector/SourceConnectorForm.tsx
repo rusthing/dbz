@@ -4,9 +4,12 @@
  * 上游连接器的 `connectorConfig` 就是 Debezium 原样的 JSON：检查任务发现连接器不存在时，
  * 直接拿这段文本去 `POST /connectors` 部署。所以它必须是合法 JSON，且 `connector.class`
  * 等关键项要齐全——这里只做格式校验，语义正确性由集群的部署结果反馈。
+ *
+ * 「启用」不在这里：它在列表的启用列上切换（见 `EnabledSwitch`），因为禁用会连带注销
+ * 集群上的连接器，不适合混在改配置的表单里一起提交。
  */
 
-import { App as AntdApp, Form, Input, Modal, Select, Switch } from 'antd';
+import { App as AntdApp, Form, Input, Modal, Select } from 'antd';
 import { useState } from 'react';
 import { sourceConnectorApi } from '../../api/source-connector';
 import type { DbzSourceConnectorVo, Id } from '../../api/types';
@@ -28,7 +31,6 @@ interface FormValues {
   connectorName: string;
   connectorConfig: string;
   remark?: string;
-  enabled: boolean;
 }
 
 /** 校验连接器配置是否为合法 JSON */
@@ -73,7 +75,6 @@ export default function SourceConnectorForm({
         connectorName: record.connectorName,
         connectorConfig: record.connectorConfig,
         remark: record.remark ?? '',
-        enabled: record.enabled,
       });
     } else {
       form.resetFields();
@@ -94,12 +95,13 @@ export default function SourceConnectorForm({
         connectorName: values.connectorName.trim(),
         connectorConfig: values.connectorConfig,
         remark: values.remark?.trim() ?? '',
-        enabled: values.enabled,
       };
       if (record) {
+        // 不带 enabled：没传的字段不会被写回，不会把列表上刚切换的开关覆盖掉
         await sourceConnectorApi.modify({ ...payload, id: record.id });
       } else {
-        await sourceConnectorApi.add(payload);
+        // 新增一律先建成启用，之后在列表的启用列里切换（与服务端库默认值一致）
+        await sourceConnectorApi.add({ ...payload, enabled: true });
       }
       message.success(isEdit ? '修改成功' : '新增成功');
       onSuccess();
@@ -122,7 +124,7 @@ export default function SourceConnectorForm({
       afterOpenChange={syncForm}
       width={720}
     >
-      <Form form={form} layout="vertical" initialValues={{ enabled: true }} style={{ marginTop: 12 }}>
+      <Form form={form} layout="vertical" style={{ marginTop: 12 }}>
         <Form.Item
           name="kafkaConnectId"
           label="Kafka Connect 集群"
@@ -170,15 +172,6 @@ export default function SourceConnectorForm({
 
         <Form.Item name="remark" label="备注">
           <Input.TextArea rows={2} maxLength={255} showCount placeholder="选填" />
-        </Form.Item>
-
-        <Form.Item
-          name="enabled"
-          label="启用"
-          valuePropName="checked"
-          extra="禁用后不参与健康检查，已部署的连接器不会被自动删除。"
-        >
-          <Switch checkedChildren="启用" unCheckedChildren="禁用" />
         </Form.Item>
       </Form>
     </Modal>

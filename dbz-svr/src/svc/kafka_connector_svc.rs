@@ -1,14 +1,17 @@
 //! # Kafka 连接器服务
 //!
 //! 面向 Kafka Connect 的运维能力：查看连接器插件、查看所有连接器、
-//! 重启连接器（可连同其任务）与重启单个任务。
+//! 重启连接器（可连同其任务）、重启单个任务，以及删除连接器。
 //!
 //! 与实体服务（`dbz_*`）不同，本服务没有对应的数据库实体，因此不使用 `#[svc]`
 //! 宏，而是手写 `impl` 块：它只把请求转发到集群、再把响应转成 VO，不读写本库。
 //! 目标 Kafka Connect 通过 DTO 中的 `kafkaConnectUrl` 或 `kafkaConnectId` 定位
 //! （见 `KafkaConnectorQueryDto` 的说明）。
 
-use crate::dto::{KafkaConnectorQueryDto, KafkaConnectorRestartDto, KafkaConnectorTaskRestartDto};
+use crate::dto::{
+    KafkaConnectorDeleteDto, KafkaConnectorQueryDto, KafkaConnectorRestartDto,
+    KafkaConnectorTaskRestartDto,
+};
 use crate::svc::DbzKafkaConnectSvc;
 use crate::utils::{KafkaConnectorError, KafkaConnectorUtils, normalize_url};
 use crate::vo::{KafkaConnectorPluginVo, KafkaConnectorVo};
@@ -141,6 +144,34 @@ impl KafkaConnectorSvc {
         Ok(Ro::success(format!(
             "连接器<{connector_name}>的任务<{}>重启请求已提交",
             dto.task_id
+        )))
+    }
+
+    /// # 删除连接器
+    ///
+    /// 把连接器从目标集群上注销（`DELETE /connectors/{name}`）。只动集群、不动库：
+    /// 删掉的连接器若仍被 dbz 纳管，下一轮健康检查会按记录重新部署；要彻底停掉
+    /// 请禁用对应记录，那条路会先注销再改库。
+    ///
+    /// 连接器本就不存在（HTTP 404）视为删除成功 —— 目的是「让它不在集群上」。
+    ///
+    /// ## 参数
+    /// * `dto` - 目标 Kafka Connect 的定位参数 + 连接器名称
+    ///
+    /// ## 返回值
+    /// * `Ok(Ro<()>)` - 连接器已从集群上删除
+    /// * `Err(anyhow::Error)` - 名称为空、定位失败或请求失败
+    #[log_call]
+    pub async fn delete_connector(dto: KafkaConnectorDeleteDto) -> Result<Ro<()>, anyhow::Error> {
+        let connector_name = Self::check_connector_name(&dto.connector_name)?;
+        let base_url =
+            Self::resolve_base_url(dto.kafka_connect_id, dto.kafka_connect_url.as_deref()).await?;
+
+        KafkaConnectorUtils::delete_connector(&base_url, connector_name).await?;
+
+        info!("连接器<{connector_name}>已从 <{base_url}> 删除");
+        Ok(Ro::success(format!(
+            "连接器<{connector_name}>已从集群上删除"
         )))
     }
 

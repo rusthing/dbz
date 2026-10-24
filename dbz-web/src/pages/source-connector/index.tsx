@@ -11,7 +11,7 @@ import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useCallback, useState } from 'react';
 import { sourceConnectorApi } from '../../api/source-connector';
 import type { ConnectorRunStatus, DbzSourceConnectorVo, Id } from '../../api/types';
-import EnabledTag from '../../components/EnabledTag';
+import EnabledSwitch from '../../components/EnabledSwitch';
 import StatusTag from '../../components/StatusTag';
 import { connectorRunStatusDic, dicOptions } from '../../dic';
 import { useClusterOptions } from '../../hooks/useOptions';
@@ -112,8 +112,18 @@ export default function SourceConnectorPage() {
     {
       title: '启用',
       dataIndex: 'enabled',
-      width: 70,
-      render: (enabled: boolean) => <EnabledTag enabled={enabled} />,
+      width: 90,
+      render: (enabled: boolean, record) => (
+        <EnabledSwitch
+          enabled={enabled}
+          name={record.name}
+          confirmContent="禁用后该连接器不参与健康检查，并会先从集群上注销；重新启用后由下一轮检查重新部署。"
+          onToggle={async (next) => {
+            await sourceConnectorApi.modify({ id: record.id, enabled: next });
+            reload();
+          }}
+        />
+      ),
     },
     {
       title: '备注',

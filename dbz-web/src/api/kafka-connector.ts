@@ -1,15 +1,16 @@
 /**
  * # 远端连接器运维接口
  *
- * 对应 `DbzKafkaConnectorRouter` 手写的四个接口，路径前缀 `/dbz/kafka-connector`。
+ * 对应 `DbzKafkaConnectorRouter` 手写的五个接口，路径前缀 `/dbz/kafka-connector`。
  *
  * 这些接口操作的是**集群上真实运行的连接器**，不是库里的记录：调用即向 Kafka Connect
  * 发 HTTP 请求，因此不需要也不应该落库。
  */
 
-import { apiGet, apiPost } from './client';
+import { apiDelete, apiGet, apiPost } from './client';
 import type {
   Id,
+  KafkaConnectorDeleteInput,
   KafkaConnectorPluginVo,
   KafkaConnectorRestartInput,
   KafkaConnectorTaskRestartInput,
@@ -33,4 +34,11 @@ export const kafkaConnectorApi = {
   /** 重启单个任务 */
   restartTask: (input: KafkaConnectorTaskRestartInput): Promise<void> =>
     apiPost(BASE + '/task/restart', input),
+
+  /** 从集群上删除连接器（不删库里的记录；连接器本就不存在也算成功） */
+  remove: (input: KafkaConnectorDeleteInput): Promise<void> =>
+    apiDelete(BASE, {
+      kafkaConnectId: input.kafkaConnectId,
+      connectorName: input.connectorName,
+    }),
 };

@@ -2,8 +2,8 @@
  * # Kafka Connect 集群管理
  *
  * 集群是连接器实际运行的地方，也是健康检查的入口：每轮检查逐台探测连通性，再检查名下
- * 已启用的上游/下游连接器。因此「地址」与「启用」这两个字段的改动会牵动集群上的部署，
- * 相关提示写在表单里。
+ * 已启用的上游/下游连接器。因此「地址」的改动会牵动集群上的部署，提示写在表单里；
+ * 「启用」是一个会注销集群上连接器的动作，放在列表的开关里做，关之前先确认。
  */
 
 import { App as AntdApp, Alert, Button, Card, Input, Select, Space, Table, Tooltip } from 'antd';
@@ -13,7 +13,7 @@ import { useCallback, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { kafkaConnectApi } from '../../api/kafka-connect';
 import type { DbzKafkaConnectVo, KafkaConnectStatus } from '../../api/types';
-import EnabledTag from '../../components/EnabledTag';
+import EnabledSwitch from '../../components/EnabledSwitch';
 import StatusTag from '../../components/StatusTag';
 import { dicOptions, kafkaConnectStatusDic } from '../../dic';
 import { usePagedQuery } from '../../hooks/usePagedQuery';
@@ -102,8 +102,18 @@ export default function KafkaConnectPage() {
     {
       title: '启用',
       dataIndex: 'enabled',
-      width: 70,
-      render: (enabled: boolean) => <EnabledTag enabled={enabled} />,
+      width: 90,
+      render: (enabled: boolean, record) => (
+        <EnabledSwitch
+          enabled={enabled}
+          name={record.name}
+          confirmContent="禁用后这台集群不参与健康检查，名下连接器会先从集群上注销；重新启用后由下一轮检查重新部署。"
+          onToggle={async (next) => {
+            await kafkaConnectApi.modify({ id: record.id, enabled: next });
+            reload();
+          }}
+        />
+      ),
     },
     {
       title: '备注',

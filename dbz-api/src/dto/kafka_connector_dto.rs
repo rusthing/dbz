@@ -1,7 +1,7 @@
 //! # Kafka 连接器请求 DTO
 //!
 //! 定义面向 Kafka Connect 的运维接口入参：查看插件、查看所有连接器、重启连接器、
-//! 重启单个任务。
+//! 重启单个任务、删除连接器。
 //!
 //! ## 命名
 //!
@@ -74,6 +74,27 @@ pub struct KafkaConnectorTaskRestartDto {
     pub connector_name: String,
     /// 任务ID（可先从「查看所有连接器」接口的 `tasks` 中获取）
     pub task_id: u32,
+}
+
+/// # 删除连接器 DTO
+///
+/// 把指定连接器从目标集群上注销。它只发 `DELETE /connectors/{name}`、不动库里的记录：
+/// 删掉一个仍被 dbz 纳管的连接器，下一轮健康检查会按记录把它重新部署回来；要彻底
+/// 停掉请禁用对应记录。
+///
+/// 走查询参数（DELETE 不带请求体），字段与 [`KafkaConnectorQueryDto`] 一致，
+/// 只多一个必填的连接器名称。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema, IntoParams)]
+#[serde(default, rename_all = "camelCase")]
+pub struct KafkaConnectorDeleteDto {
+    /// Kafka Connect ID（未提供 kafkaConnectUrl 时必填）
+    pub kafka_connect_id: Option<U64>,
+    /// Kafka Connect 地址（优先于 kafkaConnectId）
+    /// @len 0..
+    pub kafka_connect_url: Option<String>,
+    /// 连接器名称
+    /// @len 1..
+    pub connector_name: String,
 }
 
 /// `includeTasks` 的默认值：重启连接器时默认连同其任务一起重启

@@ -114,8 +114,13 @@ export interface DbzKafkaConnectAddInput {
   enabled: boolean;
 }
 
-/** # 修改集群的请求体 */
-export interface DbzKafkaConnectModifyInput extends DbzKafkaConnectAddInput {
+/**
+ * # 修改集群的请求体
+ *
+ * 字段全部可选：服务端 ModifyDto 的每个字段都是 `Option`，**没传的字段不会写回**。
+ * 列表上的启用开关就靠这一点，只提交 `{ id, enabled }`，不必把整条记录带回来。
+ */
+export interface DbzKafkaConnectModifyInput extends Partial<DbzKafkaConnectAddInput> {
   id: Id;
 }
 
@@ -129,8 +134,8 @@ export interface DbzSourceConnectorAddInput {
   enabled: boolean;
 }
 
-/** # 修改上游连接器的请求体 */
-export interface DbzSourceConnectorModifyInput extends DbzSourceConnectorAddInput {
+/** # 修改上游连接器的请求体（字段可选，只提交要改的） */
+export interface DbzSourceConnectorModifyInput extends Partial<DbzSourceConnectorAddInput> {
   id: Id;
 }
 
@@ -139,8 +144,8 @@ export interface DbzSinkConnectorAddInput extends DbzSourceConnectorAddInput {
   sourceConnectorId: Id;
 }
 
-/** # 修改下游连接器的请求体 */
-export interface DbzSinkConnectorModifyInput extends DbzSinkConnectorAddInput {
+/** # 修改下游连接器的请求体（字段可选，只提交要改的） */
+export interface DbzSinkConnectorModifyInput extends Partial<DbzSinkConnectorAddInput> {
   id: Id;
 }
 
@@ -188,4 +193,14 @@ export interface KafkaConnectorTaskRestartInput {
   kafkaConnectId: Id;
   connectorName: string;
   taskId: number;
+}
+
+/**
+ * # 删除远端连接器的参数
+ *
+ * 走查询参数（DELETE 不带请求体）：只把连接器从集群上注销，不删库里的记录。
+ */
+export interface KafkaConnectorDeleteInput {
+  kafkaConnectId: Id;
+  connectorName: string;
 }

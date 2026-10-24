@@ -10,7 +10,7 @@
 //! `crate::web::ctrl::dbz_kafka_connector_ctrl`。
 //!
 //! `#[router]` 宏生成的代码会一次性导入 axum 的四个路由构造器
-//! （`delete` / `get` / `post` / `put`），本模块只用到 `get` 与 `post`，
+//! （`delete` / `get` / `post` / `put`），本模块只用到 `delete`、`get` 与 `post`，
 //! 因此在模块级屏蔽未使用导入的告警。
 #![allow(unused_imports)]
 
@@ -21,5 +21,6 @@ use robotech::macros::router;
     ("/dbz/kafka-connector/list", get(list_connectors)),
     ("/dbz/kafka-connector/restart", post(restart_connector)),
     ("/dbz/kafka-connector/task/restart", post(restart_connector_task)),
+    ("/dbz/kafka-connector", delete(delete_connector)),
 ])]
 struct DbzKafkaConnectorRouter;
