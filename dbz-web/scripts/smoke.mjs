@@ -67,6 +67,21 @@ const brokers = [
     updaterId: '1',
     updateMs: '1760000700000',
   },
+  {
+    // 禁用 + 没有任何 worker 指向它：用来验证「禁用中的集群不算异常」与「未挂载提示」
+    id: '403',
+    name: '归档消息集群',
+    bootstrapServers: '10.0.2.41:9092',
+    securityProtocol: 0,
+    saslMechanism: 0,
+    saslUsername: null,
+    runStatus: 2,
+    enabled: false,
+    createrId: '1',
+    createMs: '1759990000000',
+    updaterId: '1',
+    updateMs: '1760000800000',
+  },
 ];
 
 const clusters = [
@@ -246,6 +261,14 @@ async function layoutCheck(target, label) {
   check(`${label}工具栏单行`, Boolean(tops) && Math.abs(tops.search - tops.button) < 6, JSON.stringify(tops));
 }
 
+/**
+ * # 只对可见弹窗操作
+ *
+ * antd 关掉的 Modal 在退出动画期间还留在 DOM 里，`text=` 这类选择器照样能匹配到隐藏元素，
+ * 于是「下游表单里没有 database.include.list」这种断言会被上游的残留节点骗过去。
+ */
+const visibleModal = () => page.locator('.ant-modal-wrap:visible');
+
 /* ---------------------------------------------------------------- 跑起来 */
 
 const server = await createServer({
@@ -315,14 +338,34 @@ try {
   await page.waitForSelector('.ant-card-head-title:has-text("异常清单")');
   check('总览渲染异常清单', await page.locator('.ant-card-head-title:has-text("异常清单")').first().isVisible());
   const anomalyRows = await page.locator('tbody tr.ant-table-row').count();
-  check('异常清单 3 行（集群/上游/下游各 1）', anomalyRows === 3, `实际 ${anomalyRows}`);
+  check('异常清单 4 行（消息集群/集群/上游/下游各 1）', anomalyRows === 4, `实际 ${anomalyRows}`);
+  check('异常清单含消息集群', (await page.locator('tbody .ant-tag:has-text("消息集群")').count()) === 1);
+
+  // 五张卡片：Kafka 集群 / Connect 集群 / 上游 / 下游 / 异常对象
+  const statCards = page.locator('.dbz-stat-card');
+  check('总览 5 张统计卡片', (await statCards.count()) === 5, `实际 ${await statCards.count()}`);
+  const brokerCard = statCards.filter({ hasText: 'Kafka 集群' }).first();
+  check(
+    'Kafka 集群卡片统计到 3 台',
+    (await brokerCard.locator('.dbz-stat-value').textContent()) === '3',
+    String(await brokerCard.locator('.dbz-stat-value').textContent()),
+  );
+  check(
+    '禁用中的集群计入禁用而不是异常',
+    (await brokerCard.locator('.ant-tag:has-text("禁用 1")').count()) === 1 &&
+      (await brokerCard.locator('.ant-tag:has-text("异常 1")').count()) === 1,
+  );
+  check(
+    '链路速查提示没人用的 Kafka 集群',
+    (await page.locator('text=其中 1 个还没有 worker 指向它').count()) > 0,
+  );
   await page.screenshot({ path: `${SHOTS}/01-dashboard.png`, fullPage: true });
 
   /* 1b. Kafka 集群（broker）：列表、检测、SASL 字段联动 */
   await page.click('.ant-menu-item:has-text("Kafka 集群")');
   await page.waitForSelector('text=订单消息集群');
   const brokerRows = await page.locator('tbody tr.ant-table-row').count();
-  check('Kafka 集群列表 2 行', brokerRows === 2, `实际 ${brokerRows}`);
+  check('Kafka 集群列表 3 行', brokerRows === 3, `实际 ${brokerRows}`);
   check('broker 地址原样展示', (await page.locator('text=10.0.0.21:9092,10.0.0.22:9092').count()) > 0);
   check('broker 状态标签渲染', (await page.locator('text=连接失败').count()) > 0);
   await layoutCheck(page, 'Kafka 集群');
@@ -447,42 +490,78 @@ try {
   await layoutCheck(page, '上游');
   await page.screenshot({ path: `${SHOTS}/04-source.png`, fullPage: true });
 
-  /* 4b. 配置编辑器：图形化与 JSON 是同一份数据 */
+  /* 4b. 配置编辑器：图形化与 JSON 是同一份数据，换库要真的换过来 */
   await page.click('button:has-text("新增上游连接器")');
   await page.waitForSelector('.ant-modal-wrap', { state: 'visible' });
   await page.waitForTimeout(450);
-  check('默认进入图形化模式', (await page.locator('.ant-segmented-item-selected:has-text("图形化")').count()) === 1);
-  check('图形化按组列出配置项', (await page.locator('.dbz-config-group').count()) === 5);
-  // 套模板只补空键，随后切到 JSON 应该能看到刚补上的值
-  await page.click('button:has-text("套用MySQL 模板")');
+  check('默认进入图形化模式', (await visibleModal().locator('.ant-segmented-item-selected:has-text("图形化")').count()) === 1);
+  check('上游图形化按组列出配置项', (await visibleModal().locator('.dbz-config-group').count()) === 6);
+
+  await visibleModal().getByRole('button', { name: '套用 MySQL 模板' }).click();
   await page.waitForTimeout(200);
-  await page.click('.ant-segmented-item:has-text("JSON")');
-  await page.waitForSelector('.dbz-json-editor');
-  const configText = await page.locator('.dbz-json-editor').inputValue();
+  check('套用模板后说明改了什么', (await visibleModal().locator('text=已套用 MySQL 模板').count()) === 1);
+  // 认得出方言后，只显示这家库的捕获范围（按 label 的 for 定位，避免命中帮助文字里的同名字段）
   check(
-    '模板写入后 JSON 里能看到',
-    configText.includes('MySqlConnector') && configText.includes('"database.port": 3306'),
-    configText.slice(0, 120),
+    'MySQL 方言下只显示 MySQL 的捕获范围',
+    (await visibleModal().locator('label[for="database.include.list"]').count()) === 1 &&
+      (await visibleModal().locator('label[for="schema.include.list"]').count()) === 0,
+  );
+  check('MySQL 方言下不显示复制插件', (await visibleModal().locator('label[for="plugin.name"]').count()) === 0);
+
+  // 先填一个 MySQL 专属键，再换 PostgreSQL：它必须跟着消失，否则就是无效参数
+  await page.fill('[id="database.include.list"]', 'orders');
+  await page.waitForTimeout(150);
+
+  await visibleModal().getByRole('button', { name: '套用 PostgreSQL 模板' }).click();
+  await page.waitForTimeout(250);
+  check(
+    '换库后方言字段跟着换',
+    (await visibleModal().locator('label[for="schema.include.list"]').count()) === 1 &&
+      (await visibleModal().locator('label[for="plugin.name"]').count()) === 1 &&
+      (await visibleModal().locator('label[for="database.include.list"]').count()) === 0,
   );
   await page.screenshot({ path: `${SHOTS}/04b-config-editor.png` });
-  await page.locator('.ant-modal-footer .ant-btn').first().click();
+
+  await visibleModal().locator('.ant-segmented-item:has-text("JSON")').click();
+  await visibleModal().locator('.dbz-json-editor').waitFor();
+  const configJson = JSON.parse(await visibleModal().locator('.dbz-json-editor').inputValue());
+  check(
+    '换库后连接器类改成 PostgreSQL',
+    configJson['connector.class'] === 'io.debezium.connector.postgresql.PostgresConnector',
+    String(configJson['connector.class']),
+  );
+  check('换库后端口跟着换', configJson['database.port'] === 5432, String(configJson['database.port']));
+  check(
+    '换库后补上复制插件与模式',
+    configJson['plugin.name'] === 'pgoutput' && configJson['schema.include.list'] === 'public',
+    JSON.stringify({ plugin: configJson['plugin.name'], schema: configJson['schema.include.list'] }),
+  );
+  check(
+    '换库后清掉 MySQL 专属键',
+    !('database.include.list' in configJson),
+    JSON.stringify(Object.keys(configJson)),
+  );
+  await visibleModal().locator('.ant-segmented-item:has-text("图形化")').click();
+  await page.waitForTimeout(150);
+  await visibleModal().locator('.ant-modal-footer .ant-btn').first().click();
   await page.waitForSelector('.ant-modal-wrap', { state: 'hidden', timeout: 5000 });
+  // 关掉的弹窗在退出动画期间还挂在 DOM 里，等它退干净再去点列表，否则后面按文本找元素会命中它
+  await page.waitForTimeout(400);
 
   /* 4c. 重新同步：两条通道可选，切换会重新预检，提交带 channel */
   await page.locator('tbody tr.ant-table-row').first().locator('button:has-text("重新同步")').click();
-  await page.waitForSelector('text=信号表');
-  check('预检默认走源库信号表', (await page.locator('text=orders.debezium_signal').count()) > 0);
+  await visibleModal().locator('text=信号表').first().waitFor();
+  check('预检默认走源库信号表', (await visibleModal().locator('text=orders.debezium_signal').count()) > 0);
   check(
     '两条通道都能用时给出单选',
-    (await page.locator('.ant-modal .ant-radio-wrapper:has-text("源库信号表")').count()) === 1 &&
-      (await page.locator('.ant-modal .ant-radio-wrapper:has-text("Kafka 信号 topic")').count()) === 1,
+    (await visibleModal().locator('.ant-radio-wrapper:has-text("源库信号表")').count()) === 1 &&
+      (await visibleModal().locator('.ant-radio-wrapper:has-text("Kafka 信号 topic")').count()) === 1,
   );
-  await page.locator('.ant-modal .ant-radio-wrapper:has-text("Kafka 信号 topic")').click();
+  await visibleModal().locator('.ant-radio-wrapper:has-text("Kafka 信号 topic")').click();
   await page.waitForTimeout(500);
-  check('切到 Kafka 通道后展示落点', (await page.locator('text=dbz-signal').count()) > 0);
+  check('切到 Kafka 通道后展示落点', (await visibleModal().locator('text=dbz-signal').count()) > 0);
   await page.screenshot({ path: `${SHOTS}/04c-snapshot.png` });
-  // 关掉的弹窗仍留在 DOM 里（display:none），所以 footer 要按可见的 wrap 挑
-  await page.click('.ant-modal-wrap:visible .ant-modal-footer .ant-btn-primary');
+  await visibleModal().locator('.ant-modal-footer .ant-btn-primary').click();
   await page.waitForTimeout(600);
   const snapshotCall = posted.find(
     (item) => item.method === 'POST' && item.path === '/dbz/source-connector/snapshot',
@@ -499,6 +578,52 @@ try {
   check('下游列表渲染', (await page.locator('tbody tr.ant-table-row').count()) === 1);
   await layoutCheck(page, '下游');
   await page.screenshot({ path: `${SHOTS}/05-sink.png`, fullPage: true });
+
+  /* 5b. 下游配置也走图形化：sink 的参数键与上游完全不同，分组要跟着换 */
+  await page.click('button:has-text("新增下游连接器")');
+  await page.waitForSelector('.ant-modal-wrap', { state: 'visible' });
+  await page.waitForTimeout(450);
+  check('下游默认图形化', (await visibleModal().locator('.ant-segmented-item-selected:has-text("图形化")').count()) === 1);
+  check('下游图形化按组列出配置项', (await visibleModal().locator('.dbz-config-group').count()) === 5);
+  check(
+    '下游不出现上游的源库键',
+    (await visibleModal().locator('label[for="database.include.list"]').count()) === 0 &&
+      (await visibleModal().locator('label[for="signal.enabled.channels"]').count()) === 0,
+  );
+  check('下游字段是 sink 的键', (await visibleModal().locator('label[for="connection.url"]').count()) === 1);
+
+  await visibleModal().getByRole('button', { name: '套用 JDBC Sink 模板', exact: true }).click();
+  await page.waitForTimeout(200);
+  await visibleModal().locator('.ant-segmented-item:has-text("JSON")').click();
+  await visibleModal().locator('.dbz-json-editor').waitFor();
+  const sinkJson = JSON.parse(await visibleModal().locator('.dbz-json-editor').inputValue());
+  check(
+    '下游模板写入 JDBC sink 与追加语义',
+    sinkJson['connector.class'] === 'io.debezium.connector.jdbc.JdbcSinkConnector' &&
+      sinkJson['insert.mode'] === 'insert',
+    JSON.stringify({ class: sinkJson['connector.class'], mode: sinkJson['insert.mode'] }),
+  );
+
+  // 两个下游模板互为切换：换成 upsert 要真的改过来，并提醒补主键字段
+  await visibleModal().locator('.ant-segmented-item:has-text("图形化")').click();
+  await page.waitForTimeout(150);
+  await visibleModal().getByRole('button', { name: '套用 JDBC Sink 模板（upsert）' }).click();
+  await page.waitForTimeout(200);
+  check(
+    '切到 upsert 后提醒补主键字段',
+    (await visibleModal().locator('text=但没填 primary.key.fields').count()) > 0,
+  );
+  await page.screenshot({ path: `${SHOTS}/05b-sink-editor.png` });
+  await visibleModal().locator('.ant-segmented-item:has-text("JSON")').click();
+  await visibleModal().locator('.dbz-json-editor').waitFor();
+  const sinkUpsert = JSON.parse(await visibleModal().locator('.dbz-json-editor').inputValue());
+  check(
+    '切到 upsert 模板后写入模式改过来',
+    sinkUpsert['insert.mode'] === 'upsert' && sinkUpsert['primary.key.mode'] === 'record_value',
+    JSON.stringify({ mode: sinkUpsert['insert.mode'], keyMode: sinkUpsert['primary.key.mode'] }),
+  );
+  await visibleModal().locator('.ant-modal-footer .ant-btn').first().click();
+  await page.waitForSelector('.ant-modal-wrap', { state: 'hidden', timeout: 5000 });
 
   /* 6. 远端连接器：列表、未纳管连接器、任务展开与重启 */
   await page.goto(`${base}/remote-connector?kafkaConnectId=101`, { waitUntil: 'networkidle' });

@@ -4,6 +4,10 @@
  * 下游连接器通过 `sourceConnectorId` 归属某条上游，通过 `kafkaConnectId` 指定运行它的集群。
  * 两者相互独立：下游与上游可以在同一台集群上，也可以分处不同集群（只要对接同一个 Kafka）。
  *
+ * 配置区用 {@link ConnectorConfigEditor}（`kind="sink"`）：图形化填「消费哪个 topic、写哪个库、
+ * 按什么语义写」，也可以直接写 JSON。sink 的参数键与上游完全不同（没有 `database.*`，
+ * 地址都在 `connection.*` 上），所以分组由编辑器按方向各带一份。
+ *
  * 「启用」不在这里：它在列表的启用列上切换（见 `EnabledSwitch`），因为禁用会连带注销
  * 集群上的连接器，不适合混在改配置的表单里一起提交。
  */
@@ -12,7 +16,7 @@ import { App as AntdApp, Form, Input, Modal, Select } from 'antd';
 import { useState } from 'react';
 import { sinkConnectorApi } from '../../api/sink-connector';
 import type { DbzSinkConnectorVo, Id } from '../../api/types';
-import JsonEditor from '../../components/JsonEditor';
+import ConnectorConfigEditor from '../../components/ConnectorConfigEditor';
 import { errorMessage } from '../../utils/format';
 
 interface SinkConnectorFormProps {
@@ -125,9 +129,9 @@ export default function SinkConnectorForm({
       onOk={handleSubmit}
       onCancel={onCancel}
       afterOpenChange={syncForm}
-      width={720}
+      width={860}
     >
-      <Form form={form} layout="vertical" style={{ marginTop: 12 }}>
+      <Form form={form} layout="vertical" style={{ marginTop: 12 }} className="dbz-form-scroll">
         <Form.Item
           name="sourceConnectorId"
           label="上游连接器"
@@ -181,10 +185,10 @@ export default function SinkConnectorForm({
 
         <Form.Item
           name="connectorConfig"
-          label="连接器配置（JSON）"
+          label="连接器配置"
           rules={[{ validator: validateJson }]}
         >
-          <JsonEditor />
+          <ConnectorConfigEditor kind="sink" />
         </Form.Item>
 
         <Form.Item name="remark" label="备注">

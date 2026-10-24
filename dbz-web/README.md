@@ -264,11 +264,38 @@ scripts/smoke.mjs        # 冒烟测试
 
 改后端枚举时必须同步 `src/dic/index.ts`，否则页面显示「未知状态」。
 
+## 连接器配置：图形化与 JSON
+
+上游、下游表单的配置区都是 `components/ConnectorConfigEditor.tsx`，**两种写法共享同一份 JSON 文本**：
+图形化只是把它渲染成表单，改动立刻写回；图形化没列出的键切到 JSON 还在，不会丢。
+
+| 方向 | 图形化分组 | 模板 |
+| --- | --- | --- |
+| 上游（`kind="source"`） | 基本信息 / 源库连接 / 捕获范围 / 信号 / 快照 / 序列化 | MySQL 模板、PostgreSQL 模板 |
+| 下游（`kind="sink"`） | 基本信息 / 目标库连接 / 写入方式 / 序列化 / 容错 | JDBC Sink 模板、JDBC Sink 模板（upsert） |
+
+模板的动作按意图分四类，**不是无脑「只补空键」**（早先那样写，从 MySQL 模板点 PostgreSQL 模板时
+`connector.class` 一个都不改，部署到集群才发现还是 MySQL）：
+
+| 类别 | 行为 | 例子 |
+| --- | --- | --- |
+| `overwrite` | 直接改写 | `connector.class`、`insert.mode` |
+| `stale` | 直接删掉（另一家的专属键，留着是无效参数） | 换到 PostgreSQL 时删 `database.include.list` |
+| `port` | 为空、或还是模板写的默认端口才改 | 3306 ⇄ 5432；自己填的 3307 不会被改回去 |
+| `fill` | 只补空键 | 序列化 4 项、`snapshot.mode` |
+
+捕获范围按方言只显示一份：`connector.class` 是 MySQL/MariaDB 时只出现 `database.include.list`，
+是 PostgreSQL 时只出现 `schema.include.list` 与 `plugin.name`；认不出连接器类（自定义类）时全部显示，
+不做猜测。
+
+必填项之外还有一条「前后矛盾」提醒：下游选了 `insert.mode=upsert/update` 却把主键来源留成
+`record_value` 又不填 `primary.key.fields` 时，表单会直接点出来——这个错原本要到部署阶段才暴露。
+
 ## 页面与接口对照
 
 | 页面 | 用到的接口 |
 | --- | --- |
-| 总览 | 各表的 `/list`，在浏览器里算统计与异常 |
+| 总览 | 四张表的 `/list`（含 Kafka 集群），在浏览器里算统计与异常；异常清单里消息集群排在集群之前一起列 |
 | Kafka 集群 | `/dbz/kafka-broker` 的 `/page`、`POST`、`PUT`、`DELETE /{id}` + `POST /check` |
 | Kafka Connect | `/dbz/kafka-connect` 的 `/page`、`POST`、`PUT`、`DELETE /{id}` |
 | 上游连接器 | `/dbz/source-connector` 同上 + `GET /snapshot/preview`、`POST /snapshot` |
