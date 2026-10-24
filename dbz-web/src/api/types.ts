@@ -139,6 +139,42 @@ export interface DbzSourceConnectorModifyInput extends Partial<DbzSourceConnecto
   id: Id;
 }
 
+/**
+ * # 快照类型（`SnapshotType`）
+ *
+ * 对应 Debezium 信号里的 `data.type`。`incremental` 与流式读取并行、不阻塞；
+ * `blocking` 会暂停流式读取，只在较新版本可用。
+ */
+export type SnapshotType = 'incremental' | 'blocking';
+
+/**
+ * # 快照预检结果（`DbzSourceConnectorSnapshotVo`）
+ *
+ * 服务端按连接器配置解析出来的「这次会快照什么」：源库方言、连的库、信号表，
+ * 以及捕获范围内的表清单。表清单来自源库的 `information_schema`，不是库里的记录。
+ */
+export interface DbzSourceConnectorSnapshotVo {
+  /** 源库方言：`mysql` / `postgresql` */
+  dialect: string;
+  /** 连接器连的库 */
+  database: string;
+  /** 信号表全限定名（`signal.data.collection`） */
+  signalCollection: string;
+  /** 本次可快照的表（全限定名） */
+  dataCollections: string[];
+  /** 解析过程中的提醒（如 `table.include.list` 有条目没匹配到表） */
+  warnings: string[];
+}
+
+/** # 触发快照的请求体 */
+export interface DbzSourceConnectorSnapshotInput {
+  id: Id;
+  /** 要快照的表；空数组表示捕获范围内的全部表 */
+  dataCollections: string[];
+  /** 快照类型 */
+  snapshotType: SnapshotType;
+}
+
 /** # 新增下游连接器的请求体 */
 export interface DbzSinkConnectorAddInput extends DbzSourceConnectorAddInput {
   sourceConnectorId: Id;

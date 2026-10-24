@@ -17,6 +17,7 @@ import { connectorRunStatusDic, dicOptions } from '../../dic';
 import { useClusterOptions } from '../../hooks/useOptions';
 import { usePagedQuery } from '../../hooks/usePagedQuery';
 import { errorMessage, formatMs, orDash, prettyJson } from '../../utils/format';
+import SnapshotModal from './SnapshotModal';
 import SourceConnectorForm from './SourceConnectorForm';
 
 /** 筛选草稿 */
@@ -34,6 +35,8 @@ export default function SourceConnectorPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<DbzSourceConnectorVo | null>(null);
   const [preview, setPreview] = useState<DbzSourceConnectorVo | null>(null);
+  // 不为空表示「重新同步」弹窗打开，值是目标记录
+  const [snapshotTarget, setSnapshotTarget] = useState<DbzSourceConnectorVo | null>(null);
 
   const { data, loading, error, pageNum, pageSize, search, reload, setPageNum, setPageSize } =
     usePagedQuery<DbzSourceConnectorVo>((params) => sourceConnectorApi.page(params));
@@ -140,7 +143,7 @@ export default function SourceConnectorPage() {
     {
       title: '操作',
       key: 'actions',
-      width: 170,
+      width: 250,
       fixed: 'right',
       render: (_, record) => (
         <Space size={4}>
@@ -156,6 +159,9 @@ export default function SourceConnectorPage() {
           </Button>
           <Button type="link" size="small" onClick={() => setPreview(record)}>
             配置
+          </Button>
+          <Button type="link" size="small" onClick={() => setSnapshotTarget(record)}>
+            重新同步
           </Button>
           <Button type="link" size="small" danger onClick={() => handleDelete(record)}>
             删除
@@ -260,7 +266,7 @@ export default function SourceConnectorPage() {
         loading={loading}
         columns={columns}
         dataSource={data.list}
-        scroll={{ x: 1100 }}
+        scroll={{ x: 1200 }}
         pagination={{
           current: pageNum,
           pageSize,
@@ -286,6 +292,12 @@ export default function SourceConnectorPage() {
           setFormOpen(false);
           reload();
         }}
+      />
+
+      <SnapshotModal
+        open={Boolean(snapshotTarget)}
+        record={snapshotTarget}
+        onClose={() => setSnapshotTarget(null)}
       />
 
       <Drawer

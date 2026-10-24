@@ -4,10 +4,12 @@
  * 对应 `DbzSourceConnectorRouter`，路径前缀 `/dbz/source-connector`。
  */
 
-import { apiDelete, apiGetPage, apiGetList, apiPost, apiPut, type QueryParams } from './client';
+import { apiDelete, apiGetPage, apiGetList, apiGet, apiPost, apiPut, type QueryParams } from './client';
 import type {
   DbzSourceConnectorAddInput,
   DbzSourceConnectorModifyInput,
+  DbzSourceConnectorSnapshotInput,
+  DbzSourceConnectorSnapshotVo,
   DbzSourceConnectorVo,
   Id,
   PageRx,
@@ -30,4 +32,17 @@ export const sourceConnectorApi = {
 
   /** 删除 */
   remove: (id: Id): Promise<DbzSourceConnectorVo> => apiDelete(`${BASE}/${id}`),
+
+  /**
+   * 预检「再同步」：列出这次会快照哪些表（只读，不写信号）
+   *
+   * 服务端要直连源库读 `information_schema`，所以这个请求比普通查询慢；
+   * 连不上源库会在这里就报错，而不是等到真正触发时才发现。
+   */
+  snapshotPreview: (id: Id): Promise<DbzSourceConnectorSnapshotVo> =>
+    apiGet(BASE + '/snapshot/preview', { id }),
+
+  /** 触发一次快照：往源库信号表写 `execute-snapshot` 信号 */
+  snapshot: (input: DbzSourceConnectorSnapshotInput): Promise<void> =>
+    apiPost(BASE + '/snapshot', input),
 };
