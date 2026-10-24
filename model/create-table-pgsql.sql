@@ -39,7 +39,11 @@ comment on column dbz_kafka_connect.url is
 
 comment on column dbz_kafka_connect.run_status is
 '状态
-@enum KafkaConnectStatus default=None 0=None:无状态（刚添加记录，或刚改过地址/重新启用，等待下一轮检查）, 1=Normal:正常, 2=Disabled:已禁用, 3=ConnectFailed:连接失败';
+@enum KafkaConnectStatus default=None
+  0=None           无状态（刚添加记录，或刚改过地址/重新启用，等待下一轮检查）
+  1=Normal         正常
+  2=Disabled       已禁用
+  3=ConnectFailed  连接失败';
 
 comment on column dbz_kafka_connect.remark is
 '备注
@@ -115,7 +119,16 @@ comment on column dbz_sink_connector.connector_config is
 
 comment on column dbz_sink_connector.run_status is
 '运行状态
-@enum ConnectorRunStatus default=None 0=None:无状态（刚添加记录）, 1=Running:运行中, 2=Disabled:已禁用, 3=KafkaConnectFailed:连接 KafkaConnect 失败, 4=RegisterFailed:注册连接器失败, 5=CheckFailed:检测连接器失败, 6=CheckError:检测连接器异常, 7=CheckStatusFailed:检测连接器状态失败, 8=CheckStatusError:检测连接器状态异常';
+@enum ConnectorRunStatus default=None
+  0=None                无状态（刚添加记录）
+  1=Running             运行中
+  2=Disabled            已禁用
+  3=KafkaConnectFailed  连接 KafkaConnect 失败
+  4=RegisterFailed      注册连接器失败
+  5=CheckFailed         检测连接器失败
+  6=CheckError          检测连接器异常
+  7=CheckStatusFailed   检测连接器状态失败
+  8=CheckStatusError    检测连接器状态异常';
 
 comment on column dbz_sink_connector.remark is
 '备注
@@ -201,7 +214,16 @@ comment on column dbz_source_connector.connector_config is
 
 comment on column dbz_source_connector.run_status is
 '运行状态
-@enum ConnectorRunStatus default=None 0=None:无状态（刚添加记录）, 1=Running:运行中, 2=Disabled:已禁用, 3=KafkaConnectFailed:连接 KafkaConnect 失败, 4=RegisterFailed:注册连接器失败, 5=CheckFailed:检测连接器失败, 6=CheckError:检测连接器异常, 7=CheckStatusFailed:检测连接器状态失败, 8=CheckStatusError:检测连接器状态异常';
+@enum ConnectorRunStatus default=None
+  0=None                无状态（刚添加记录）
+  1=Running             运行中
+  2=Disabled            已禁用
+  3=KafkaConnectFailed  连接 KafkaConnect 失败
+  4=RegisterFailed      注册连接器失败
+  5=CheckFailed         检测连接器失败
+  6=CheckError          检测连接器异常
+  7=CheckStatusFailed   检测连接器状态失败
+  8=CheckStatusError    检测连接器状态异常';
 
 comment on column dbz_source_connector.remark is
 '备注

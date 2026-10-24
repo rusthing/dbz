@@ -1778,7 +1778,16 @@ LABL 0 新宋体,8,N</a:FontList>
 <a:ModificationDate>1792402262</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
 <a:Comment>运行状态
-@enum ConnectorRunStatus default=None 0=None:无状态（刚添加记录）, 1=Running:运行中, 2=Disabled:已禁用, 3=KafkaConnectFailed:连接 KafkaConnect 失败, 4=RegisterFailed:注册连接器失败, 5=CheckFailed:检测连接器失败, 6=CheckError:检测连接器异常, 7=CheckStatusFailed:检测连接器状态失败, 8=CheckStatusError:检测连接器状态异常</a:Comment>
+@enum ConnectorRunStatus default=None
+  0=None                无状态（刚添加记录）
+  1=Running             运行中
+  2=Disabled            已禁用
+  3=KafkaConnectFailed  连接 KafkaConnect 失败
+  4=RegisterFailed      注册连接器失败
+  5=CheckFailed         检测连接器失败
+  6=CheckError          检测连接器异常
+  7=CheckStatusFailed   检测连接器状态失败
+  8=CheckStatusError    检测连接器状态异常</a:Comment>
 <a:DefaultValue>0</a:DefaultValue>
 <a:DataType>BT</a:DataType>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
@@ -2005,7 +2014,16 @@ LABL 0 新宋体,8,N</a:FontList>
 <a:ModificationDate>1792402260</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
 <a:Comment>运行状态
-@enum ConnectorRunStatus default=None 0=None:无状态（刚添加记录）, 1=Running:运行中, 2=Disabled:已禁用, 3=KafkaConnectFailed:连接 KafkaConnect 失败, 4=RegisterFailed:注册连接器失败, 5=CheckFailed:检测连接器失败, 6=CheckError:检测连接器异常, 7=CheckStatusFailed:检测连接器状态失败, 8=CheckStatusError:检测连接器状态异常</a:Comment>
+@enum ConnectorRunStatus default=None
+  0=None                无状态（刚添加记录）
+  1=Running             运行中
+  2=Disabled            已禁用
+  3=KafkaConnectFailed  连接 KafkaConnect 失败
+  4=RegisterFailed      注册连接器失败
+  5=CheckFailed         检测连接器失败
+  6=CheckError          检测连接器异常
+  7=CheckStatusFailed   检测连接器状态失败
+  8=CheckStatusError    检测连接器状态异常</a:Comment>
 <a:DefaultValue>0</a:DefaultValue>
 <a:DataType>BT</a:DataType>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
@@ -2193,7 +2211,11 @@ LABL 0 新宋体,8,N</a:FontList>
 <a:ModificationDate>1792403300</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
 <a:Comment>状态
-@enum KafkaConnectStatus default=None 0=None:无状态（刚添加记录，或刚改过地址/重新启用，等待下一轮检查）, 1=Normal:正常, 2=Disabled:已禁用, 3=ConnectFailed:连接失败</a:Comment>
+@enum KafkaConnectStatus default=None
+  0=None           无状态（刚添加记录，或刚改过地址/重新启用，等待下一轮检查）
+  1=Normal         正常
+  2=Disabled       已禁用
+  3=ConnectFailed  连接失败</a:Comment>
 <a:DefaultValue>0</a:DefaultValue>
 <a:DataType>BT</a:DataType>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
