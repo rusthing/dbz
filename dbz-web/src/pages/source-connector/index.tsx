@@ -76,7 +76,7 @@ export default function SourceConnectorPage() {
     {
       title: '名称',
       dataIndex: 'name',
-      width: 170,
+      width: 150,
       render: (name: string, record) => (
         <Space direction="vertical" size={0}>
           <span style={{ fontWeight: 500 }}>{name}</span>
@@ -89,7 +89,7 @@ export default function SourceConnectorPage() {
     {
       title: '连接器名称',
       dataIndex: 'connectorName',
-      width: 190,
+      width: 170,
       ellipsis: true,
       render: (connectorName: string) => (
         <Tooltip title={connectorName}>
@@ -100,14 +100,14 @@ export default function SourceConnectorPage() {
     {
       title: '所属集群',
       dataIndex: 'kafkaConnectId',
-      width: 130,
+      width: 120,
       ellipsis: true,
       render: (id: Id) => cluster.byId.get(id)?.name ?? `#${id}`,
     },
     {
       title: '状态',
       dataIndex: 'runStatus',
-      width: 120,
+      width: 110,
       render: (value: ConnectorRunStatus) => (
         <StatusTag dic={connectorRunStatusDic} value={value} />
       ),
@@ -115,7 +115,7 @@ export default function SourceConnectorPage() {
     {
       title: '启用',
       dataIndex: 'enabled',
-      width: 90,
+      width: 80,
       render: (enabled: boolean, record) => (
         <EnabledSwitch
           enabled={enabled}
@@ -137,13 +137,13 @@ export default function SourceConnectorPage() {
     {
       title: '更新时间',
       dataIndex: 'updateMs',
-      width: 160,
+      width: 150,
       render: (ms: string) => formatMs(ms),
     },
     {
       title: '操作',
       key: 'actions',
-      width: 250,
+      width: 230,
       fixed: 'right',
       render: (_, record) => (
         <Space size={4}>
@@ -266,7 +266,7 @@ export default function SourceConnectorPage() {
         loading={loading}
         columns={columns}
         dataSource={data.list}
-        scroll={{ x: 1200 }}
+        scroll={{ x: 1120 }}
         pagination={{
           current: pageNum,
           pageSize,

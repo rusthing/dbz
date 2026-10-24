@@ -9,8 +9,8 @@
 //! （见 `KafkaConnectorQueryDto` 的说明）。
 
 use crate::dto::{
-    KafkaConnectorDeleteDto, KafkaConnectorQueryDto, KafkaConnectorRestartDto,
-    KafkaConnectorTaskRestartDto,
+    KafkaConnectorControlDto, KafkaConnectorDeleteDto, KafkaConnectorQueryDto,
+    KafkaConnectorResetOffsetDto, KafkaConnectorRestartDto, KafkaConnectorTaskRestartDto,
 };
 use crate::svc::DbzKafkaConnectSvc;
 use crate::utils::{KafkaConnectorError, KafkaConnectorUtils, normalize_url};
@@ -172,6 +172,133 @@ impl KafkaConnectorSvc {
         info!("连接器<{connector_name}>已从 <{base_url}> 删除");
         Ok(Ro::success(format!(
             "连接器<{connector_name}>已从集群上删除"
+        )))
+    }
+
+    /// # 停止连接器
+    ///
+    /// 发 `PUT /connectors/{name}/stop`：连接器停下来、任务被撤回，但**配置与位点
+    /// 都保留**，恢复后从原处继续。要重做全量用
+    /// [`reset_connector_offsets`](Self::reset_connector_offsets)。
+    ///
+    /// 停下来的连接器在健康检查里的状态是「已停止」，会被记为异常并告警（
+    /// 这正是运维中断数据同步应该看到的样子），但**不会被自动重启** —— 自动修复
+    /// 只处理 `FAILED`，人工动作不能被机器覆盖。
+    ///
+    /// ## 参数
+    /// * `dto` - 目标 Kafka Connect 的定位参数 + 连接器名称
+    ///
+    /// ## 返回值
+    /// * `Ok(Ro<()>)` - 停止请求已被接受（停机是异步的）
+    /// * `Err(anyhow::Error)` - 名称为空、定位失败、连接器不存在或集群不支持该指令
+    #[log_call]
+    pub async fn stop_connector(dto: KafkaConnectorControlDto) -> Result<Ro<()>, anyhow::Error> {
+        let connector_name = Self::check_connector_name(&dto.connector_name)?;
+        let base_url =
+            Self::resolve_base_url(dto.kafka_connect_id, dto.kafka_connect_url.as_deref()).await?;
+
+        KafkaConnectorUtils::stop_connector(&base_url, connector_name)
+            .await
+            .map_err(|e| match e {
+                KafkaConnectorError::NotFound => anyhow!("连接器<{connector_name}>不存在"),
+                other => other.into(),
+            })?;
+
+        info!("连接器<{connector_name}>停止请求已提交");
+        Ok(Ro::success(format!(
+            "连接器<{connector_name}>停止请求已提交：配置与位点保留，下一次检查会把它记为\
+             「已停止」并告警（不会自动重启）；恢复请点「恢复运行」"
+        )))
+    }
+
+    /// # 恢复连接器
+    ///
+    /// 发 `PUT /connectors/{name}/resume`，既能恢复 `PAUSED`，也能让被
+    /// [`stop_connector`](Self::stop_connector) 停下的连接器重新拉起任务。
+    ///
+    /// ## 参数
+    /// * `dto` - 目标 Kafka Connect 的定位参数 + 连接器名称
+    ///
+    /// ## 返回值
+    /// * `Ok(Ro<()>)` - 恢复请求已被接受
+    /// * `Err(anyhow::Error)` - 名称为空、定位失败、连接器不存在或请求失败
+    #[log_call]
+    pub async fn resume_connector(dto: KafkaConnectorControlDto) -> Result<Ro<()>, anyhow::Error> {
+        let connector_name = Self::check_connector_name(&dto.connector_name)?;
+        let base_url =
+            Self::resolve_base_url(dto.kafka_connect_id, dto.kafka_connect_url.as_deref()).await?;
+
+        KafkaConnectorUtils::resume_connector(&base_url, connector_name)
+            .await
+            .map_err(|e| match e {
+                KafkaConnectorError::NotFound => anyhow!("连接器<{connector_name}>不存在"),
+                other => other.into(),
+            })?;
+
+        info!("连接器<{connector_name}>恢复请求已提交");
+        Ok(Ro::success(format!(
+            "连接器<{connector_name}>恢复请求已提交，Kafka Connect 将异步拉起任务"
+        )))
+    }
+
+    /// # 重置连接器位点
+    ///
+    /// 三步：先 `stop`（Kafka Connect 要求连接器处于停止状态才允许清位点）→
+    /// `DELETE /connectors/{name}/offsets` → 视 `resume` 决定要不要立刻拉起来。
+    ///
+    /// 位点清空后连接器就是「从没跑过」：Debezium 的 `snapshot.mode=initial` 会做
+    /// 一次全量快照，等于把这张表重新同步一遍。这一步不可撤销 —— 位点删了就没有了，
+    /// 想回到原来的位置只能靠消费端的 offset 记录。
+    ///
+    /// ## 参数
+    /// * `dto` - 目标 Kafka Connect 的定位参数 + 连接器名称 + 是否立即恢复
+    ///
+    /// ## 返回值
+    /// * `Ok(Ro<()>)` - 位点已清空（含是否已恢复）
+    /// * `Err(anyhow::Error)` - 名称为空、定位失败、连接器不存在、停止失败或清位点失败
+    #[log_call]
+    pub async fn reset_connector_offsets(
+        dto: KafkaConnectorResetOffsetDto,
+    ) -> Result<Ro<()>, anyhow::Error> {
+        let connector_name = Self::check_connector_name(&dto.connector_name)?;
+        let base_url =
+            Self::resolve_base_url(dto.kafka_connect_id, dto.kafka_connect_url.as_deref()).await?;
+
+        // 已经停止的连接器再停一次是空操作；正在跑的先停，否则清位点会被 400 拒掉
+        KafkaConnectorUtils::stop_connector(&base_url, connector_name)
+            .await
+            .map_err(|e| match e {
+                KafkaConnectorError::NotFound => anyhow!("连接器<{connector_name}>不存在"),
+                other => anyhow!("清空位点前先停止连接器失败：{other}"),
+            })?;
+
+        KafkaConnectorUtils::reset_connector_offsets(&base_url, connector_name)
+            .await
+            .map_err(|e| match e {
+                KafkaConnectorError::NotFound => anyhow!("连接器<{connector_name}>不存在"),
+                other => other.into(),
+            })?;
+
+        info!(
+            "连接器<{connector_name}>的位点已清空(resume={})",
+            dto.resume
+        );
+
+        if !dto.resume {
+            return Ok(Ro::success(format!(
+                "连接器<{connector_name}>的位点已清空，连接器仍处于停止状态：点「恢复运行」\
+                 后才会重新开始，`snapshot.mode=initial` 时首轮是整表快照"
+            )));
+        }
+
+        KafkaConnectorUtils::resume_connector(&base_url, connector_name)
+            .await
+            .map_err(|e| anyhow!("位点已清空，但恢复连接器<{connector_name}>失败：{e}"))?;
+        info!("连接器<{connector_name}>位点已清空并恢复运行");
+        Ok(Ro::success(format!(
+            "连接器<{connector_name}>的位点已清空并已恢复运行：连接器没有位点，\
+             `snapshot.mode=initial` 时开始整表快照，快照数据以 op=r 追加到原 topic，\
+             下游需按主键幂等处理"
         )))
     }
 

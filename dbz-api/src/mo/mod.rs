@@ -2,6 +2,7 @@
 
 pub mod prelude;
 
+pub mod dbz_kafka_broker;
 pub mod dbz_kafka_connect;
 pub mod dbz_sink_connector;
 pub mod dbz_source_connector;

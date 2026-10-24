@@ -26,4 +26,10 @@ pub enum KafkaConnectorStatus {
     Unassigned = 3,
     /// 已销毁
     Destroyed = 4,
+    /// 已停止（Kafka 3.5+ 的 `/stop` 指令，配置与位点都还在，只是不再消费）
+    ///
+    /// 与「已暂停」的区别只在恢复方式：`Paused` 用 `/resume` 恢复，`Stopped` 同样
+    /// 用 `/resume`，但停止期间连接器的任务不会保留。两者都不会被健康检查自动
+    /// 重启 —— 都是人工操作留下的状态。
+    Stopped = 5,
 }

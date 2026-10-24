@@ -5,6 +5,9 @@
  * 直接拿这段文本去 `POST /connectors` 部署。所以它必须是合法 JSON，且 `connector.class`
  * 等关键项要齐全——这里只做格式校验，语义正确性由集群的部署结果反馈。
  *
+ * 配置区用 {@link ConnectorConfigEditor}：图形化填常用项、或直接写 JSON，两种模式共享
+ * 同一份文本，图形化没覆盖的参数写在 JSON 里也不会被覆盖掉。
+ *
  * 「启用」不在这里：它在列表的启用列上切换（见 `EnabledSwitch`），因为禁用会连带注销
  * 集群上的连接器，不适合混在改配置的表单里一起提交。
  */
@@ -13,7 +16,7 @@ import { App as AntdApp, Form, Input, Modal, Select } from 'antd';
 import { useState } from 'react';
 import { sourceConnectorApi } from '../../api/source-connector';
 import type { DbzSourceConnectorVo, Id } from '../../api/types';
-import JsonEditor from '../../components/JsonEditor';
+import ConnectorConfigEditor from '../../components/ConnectorConfigEditor';
 import { errorMessage } from '../../utils/format';
 
 interface SourceConnectorFormProps {
@@ -122,9 +125,9 @@ export default function SourceConnectorForm({
       onOk={handleSubmit}
       onCancel={onCancel}
       afterOpenChange={syncForm}
-      width={720}
+      width={860}
     >
-      <Form form={form} layout="vertical" style={{ marginTop: 12 }}>
+      <Form form={form} layout="vertical" style={{ marginTop: 12 }} className="dbz-form-scroll">
         <Form.Item
           name="kafkaConnectId"
           label="Kafka Connect 集群"
@@ -164,10 +167,10 @@ export default function SourceConnectorForm({
 
         <Form.Item
           name="connectorConfig"
-          label="连接器配置（JSON）"
+          label="连接器配置"
           rules={[{ validator: validateJson }]}
         >
-          <JsonEditor />
+          <ConnectorConfigEditor />
         </Form.Item>
 
         <Form.Item name="remark" label="备注">

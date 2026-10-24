@@ -4646,6 +4646,51 @@ LABL 0 新宋体,8,N</a:FontList>
 <o:Table Ref="o17"/>
 </c:Object>
 </o:TableSymbol>
+<o:TableSymbol Id="o121">
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:IconMode>-1</a:IconMode>
+<a:Rect>((48922,18248), (56130,30336))</a:Rect>
+<a:LineColor>11881048</a:LineColor>
+<a:FillColor>16759472</a:FillColor>
+<a:ShadowColor>12632256</a:ShadowColor>
+<a:FontList>STRN 0 新宋体,8,N
+DISPNAME 0 新宋体,8,N
+OWNRDISPNAME 0 新宋体,8,N
+Columns 0 新宋体,8,N
+TablePkColumns 0 新宋体,8,U
+TableFkColumns 0 新宋体,8,N
+Keys 0 新宋体,8,N
+Indexes 0 新宋体,8,N
+Triggers 0 新宋体,8,N
+LABL 0 新宋体,8,N</a:FontList>
+<a:BrushStyle>6</a:BrushStyle>
+<a:GradientFillMode>65</a:GradientFillMode>
+<a:GradientEndColor>16777215</a:GradientEndColor>
+<c:Object>
+<o:Table Ref="o95"/>
+</c:Object>
+</o:TableSymbol>
+<o:ReferenceSymbol Id="o122">
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Rect>((4329,23642), (48922,24100))</a:Rect>
+<a:ListOfPoints>((4529,23842),(46922,23842))</a:ListOfPoints>
+<a:CornerStyle>1</a:CornerStyle>
+<a:ArrowStyle>1</a:ArrowStyle>
+<a:LineColor>11881048</a:LineColor>
+<a:ShadowColor>12632256</a:ShadowColor>
+<a:FontList>CENTER 0 新宋体,8,N
+SOURCE 0 新宋体,8,N
+DESTINATION 0 新宋体,8,N</a:FontList>
+<c:SourceSymbol>
+<o:TableSymbol Ref="o11"/>
+</c:SourceSymbol>
+<c:DestinationSymbol>
+<o:TableSymbol Ref="o121"/>
+</c:DestinationSymbol>
+<c:Object>
+<o:Reference Ref="o119"/>
+</c:Object>
+</o:ReferenceSymbol>
 </c:Symbols>
 </o:PhysicalDiagram>
 </c:PhysicalDiagrams>
@@ -5645,6 +5690,21 @@ DAT 1792403300</a:History>
 <a:Column.Mandatory>1</a:Column.Mandatory>
 <a:GlobalObjectID/>
 </o:Column>
+<o:Column Id="o92">
+<a:ObjectID>D229AEFB-73CF-4154-94E9-C2C2C7530B71</a:ObjectID>
+<a:Name>Kafka Broker ID</a:Name>
+<a:Code>kafka_broker_id</a:Code>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>Kafka Broker ID</a:Comment>
+<a:History>ORG {EE4C7DBB-7B0B-4514-AF1D-A7B4C668FFCC}
+DAT 1792852288</a:History>
+<a:DataType>INT8</a:DataType>
+<a:Length>8</a:Length>
+<a:GlobalObjectID/>
+</o:Column>
 </c:Columns>
 <c:Keys>
 <o:Key Id="o77">
@@ -5784,9 +5844,430 @@ DAT 1792403300</a:History>
 </o:IndexColumn>
 </c:IndexColumns>
 </o:Index>
+<o:Index Id="o93">
+<a:ObjectID>02D8A496-DD3D-4A4D-8A37-D2862B8998ED</a:ObjectID>
+<a:Name>Relationship_4_FK</a:Name>
+<a:Code>Relationship_4_FK</a:Code>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:GlobalObjectID/>
+<c:LinkedObject>
+<o:Reference Ref="o119"/>
+</c:LinkedObject>
+<c:IndexColumns>
+<o:IndexColumn Id="o94">
+<a:ObjectID>4A2E87C0-63DD-4C58-8018-B1DE9072ED2B</a:ObjectID>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:GlobalObjectID/>
+<c:Column>
+<o:Column Ref="o92"/>
+</c:Column>
+<c:Elements>
+<o:Column Ref="o92"/>
+</c:Elements>
+</o:IndexColumn>
+</c:IndexColumns>
+</o:Index>
 </c:Indexes>
 <c:PrimaryKey>
 <o:Key Ref="o77"/>
+</c:PrimaryKey>
+</o:Table>
+<o:Table Id="o95">
+<a:ObjectID>4DF105BB-6039-4B5B-83D7-A974EC601430</a:ObjectID>
+<a:Name>Kafka Broker</a:Name>
+<a:Code>dbz_kafka_broker</a:Code>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:History>ORG {E4F13C53-8B2A-4CAB-9315-14AC51ADAD96}</a:History>
+<a:GlobalObjectID/>
+<a:TotalSavingCurrency/>
+<c:Columns>
+<o:Column Id="o96">
+<a:ObjectID>C1A4730F-6AAA-499B-B610-4BA6805BEF4E</a:ObjectID>
+<a:Name>ID</a:Name>
+<a:Code>id</a:Code>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:History>ORG {99410933-C3C3-4462-B75E-A6EC34508AF4}
+DAT 1792852288</a:History>
+<a:DataType>INT8</a:DataType>
+<a:Length>8</a:Length>
+<a:Column.Mandatory>1</a:Column.Mandatory>
+<a:GlobalObjectID/>
+</o:Column>
+<o:Column Id="o97">
+<a:ObjectID>E0605046-E823-4E42-AAA3-340735752681</a:ObjectID>
+<a:Name>名称</a:Name>
+<a:Code>name</a:Code>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>名称
+@len 1..=50</a:Comment>
+<a:History>ORG {74050012-FB2F-4AF9-9581-646F09C78750}
+DAT 1792852288</a:History>
+<a:DataType>VARCHAR(50)</a:DataType>
+<a:Length>50</a:Length>
+<a:Column.Mandatory>1</a:Column.Mandatory>
+<a:GlobalObjectID/>
+</o:Column>
+<o:Column Id="o98">
+<a:ObjectID>877F2AA3-1457-41BB-9B10-01B4983D97AD</a:ObjectID>
+<a:Name>Broker 地址</a:Name>
+<a:Code>bootstrap_servers</a:Code>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>Broker 地址(host:port，多个用逗号分隔)
+@len 1..=500</a:Comment>
+<a:History>ORG {8C2CA068-55F0-4D71-90A5-16FCD2307CE3}
+DAT 1792852288</a:History>
+<a:DataType>VARCHAR(500)</a:DataType>
+<a:Length>500</a:Length>
+<a:Column.Mandatory>1</a:Column.Mandatory>
+<a:GlobalObjectID/>
+</o:Column>
+<o:Column Id="o99">
+<a:ObjectID>44D770DE-B9CE-47FA-9646-9AA8ACAAA4F2</a:ObjectID>
+<a:Name>安全协议</a:Name>
+<a:Code>security_protocol</a:Code>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>安全协议
+@enum KafkaSecurityProtocol default=Plaintext
+  0=Plaintext      明文
+  1=SaslPlaintext  SASL 明文（用户名/密码认证）</a:Comment>
+<a:History>ORG {93F5AE68-8984-41D1-AD07-C113D6466D6E}
+DAT 1792852288</a:History>
+<a:DefaultValue>0</a:DefaultValue>
+<a:DataType>INT2</a:DataType>
+<a:Length>2</a:Length>
+<a:Column.Mandatory>1</a:Column.Mandatory>
+<a:GlobalObjectID/>
+</o:Column>
+<o:Column Id="o100">
+<a:ObjectID>0BA00AC4-46A1-4BE0-9F57-E16D2C4742FD</a:ObjectID>
+<a:Name>SASL 机制</a:Name>
+<a:Code>sasl_mechanism</a:Code>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>SASL 机制
+@enum KafkaSaslMechanism default=None
+  0=None         不使用（安全协议为明文时）
+  1=Plain        SASL/PLAIN
+  2=ScramSha256  SCRAM-SHA-256
+  3=ScramSha512  SCRAM-SHA-512</a:Comment>
+<a:History>ORG {EFFCB0B0-596B-488D-ADD9-2026AD8FD493}
+DAT 1792852288</a:History>
+<a:DefaultValue>0</a:DefaultValue>
+<a:DataType>INT2</a:DataType>
+<a:Length>2</a:Length>
+<a:Column.Mandatory>1</a:Column.Mandatory>
+<a:GlobalObjectID/>
+</o:Column>
+<o:Column Id="o101">
+<a:ObjectID>8C4C9E2B-2D4E-4BB2-AA4E-7C638CBA7802</a:ObjectID>
+<a:Name>认证用户名</a:Name>
+<a:Code>sasl_username</a:Code>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>认证用户名
+@len 0..=100</a:Comment>
+<a:History>ORG {65B0D10B-4047-4374-B675-842A2ED880A7}
+DAT 1792852288</a:History>
+<a:DataType>VARCHAR(100)</a:DataType>
+<a:Length>100</a:Length>
+<a:GlobalObjectID/>
+</o:Column>
+<o:Column Id="o102">
+<a:ObjectID>D1C99C47-A276-461F-8C80-C54FA74420C7</a:ObjectID>
+<a:Name>认证密码</a:Name>
+<a:Code>sasl_password</a:Code>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>认证密码(明文存储，读写窗口只对运维开放)
+@len 0..=200</a:Comment>
+<a:History>ORG {A215D849-68C0-4CF1-BF43-927275C04C3C}
+DAT 1792852288</a:History>
+<a:DataType>VARCHAR(200)</a:DataType>
+<a:Length>200</a:Length>
+<a:GlobalObjectID/>
+</o:Column>
+<o:Column Id="o103">
+<a:ObjectID>181CEBDD-C726-419F-8572-9FDDC02C7EAB</a:ObjectID>
+<a:Name>状态</a:Name>
+<a:Code>run_status</a:Code>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>状态
+@enum KafkaBrokerStatus default=None
+  0=None           无状态（刚添加记录，或刚改过地址/认证/重新启用，等待下一轮检查）
+  1=Normal         正常
+  2=Disabled       已禁用
+  3=ConnectFailed  连接失败</a:Comment>
+<a:History>ORG {76C384CD-372A-4E73-B7AE-079A4DAA4F50}
+DAT 1792852288</a:History>
+<a:DefaultValue>0</a:DefaultValue>
+<a:DataType>INT2</a:DataType>
+<a:Length>2</a:Length>
+<a:Column.Mandatory>1</a:Column.Mandatory>
+<a:GlobalObjectID/>
+</o:Column>
+<o:Column Id="o104">
+<a:ObjectID>CE06C1D2-5669-4A11-8F94-F4EE6422C062</a:ObjectID>
+<a:Name>备注</a:Name>
+<a:Code>remark</a:Code>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>备注
+@len 0..=50</a:Comment>
+<a:History>ORG {F7582087-DDB5-4316-AC72-F9A354D9B190}
+DAT 1792852288</a:History>
+<a:DataType>VARCHAR(50)</a:DataType>
+<a:Length>50</a:Length>
+<a:GlobalObjectID/>
+</o:Column>
+<o:Column Id="o105">
+<a:ObjectID>2D36A194-3909-4F7A-A786-8D72E745B9A8</a:ObjectID>
+<a:Name>启用</a:Name>
+<a:Code>enabled</a:Code>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:History>ORG {C190CB58-5C71-415F-A068-81C7C951A409}
+DAT 1792852288</a:History>
+<a:DefaultValue>true</a:DefaultValue>
+<a:DataType>BOOL</a:DataType>
+<a:Column.Mandatory>1</a:Column.Mandatory>
+<a:GlobalObjectID/>
+</o:Column>
+<o:Column Id="o106">
+<a:ObjectID>698B89A9-0A51-4BC0-BEB3-2CCCEE70C932</a:ObjectID>
+<a:Name>创建者ID</a:Name>
+<a:Code>creater_id</a:Code>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:History>ORG {361A6F09-4D2E-4F2B-A5E1-610F81A9F849}
+DAT 1792852288</a:History>
+<a:DataType>INT8</a:DataType>
+<a:Length>8</a:Length>
+<a:Column.Mandatory>1</a:Column.Mandatory>
+<a:GlobalObjectID/>
+</o:Column>
+<o:Column Id="o107">
+<a:ObjectID>402CC0DB-E6DA-4866-B41C-DF36C5901C8F</a:ObjectID>
+<a:Name>创建时间戳</a:Name>
+<a:Code>create_ms</a:Code>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:History>ORG {E49D91EB-DB8E-4414-9B15-4C8A309C87C2}
+DAT 1792852288</a:History>
+<a:DataType>INT8</a:DataType>
+<a:Length>8</a:Length>
+<a:Column.Mandatory>1</a:Column.Mandatory>
+<a:GlobalObjectID/>
+</o:Column>
+<o:Column Id="o108">
+<a:ObjectID>EA8F0316-0AA7-435D-A201-B1134436151A</a:ObjectID>
+<a:Name>更新者ID</a:Name>
+<a:Code>updater_id</a:Code>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:History>ORG {B6852726-4A4F-4667-9C34-C3AB0DE7FDBB}
+DAT 1792852288</a:History>
+<a:DataType>INT8</a:DataType>
+<a:Length>8</a:Length>
+<a:Column.Mandatory>1</a:Column.Mandatory>
+<a:GlobalObjectID/>
+</o:Column>
+<o:Column Id="o109">
+<a:ObjectID>F9E0F2B3-76DE-4B17-A4BE-13E828807489</a:ObjectID>
+<a:Name>更新时间戳</a:Name>
+<a:Code>update_ms</a:Code>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:History>ORG {A89B8B23-EC4E-4627-A5B3-03A8989AAAD6}
+DAT 1792852288</a:History>
+<a:DataType>INT8</a:DataType>
+<a:Length>8</a:Length>
+<a:Column.Mandatory>1</a:Column.Mandatory>
+<a:GlobalObjectID/>
+</o:Column>
+</c:Columns>
+<c:Keys>
+<o:Key Id="o110">
+<a:ObjectID>C59DEA9E-3AFA-442E-8F23-895D698E917C</a:ObjectID>
+<a:Name>Identifier_1</a:Name>
+<a:Code>Identifier_1</a:Code>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:History>ORG {6CAC615B-5885-459B-8390-7C73C23DAB13}
+DAT 1792852288</a:History>
+<a:GlobalObjectID/>
+<c:Key.Columns>
+<o:Column Ref="o96"/>
+</c:Key.Columns>
+</o:Key>
+<o:Key Id="o111">
+<a:ObjectID>B16A3497-2675-4997-AB73-2AD20239FD5E</a:ObjectID>
+<a:Name>名称</a:Name>
+<a:Code>name</a:Code>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:History>ORG {4B54B017-5402-4431-8C4E-CBAA8491B473}
+DAT 1792852288</a:History>
+<a:GlobalObjectID/>
+<c:Key.Columns>
+<o:Column Ref="o97"/>
+</c:Key.Columns>
+</o:Key>
+<o:Key Id="o112">
+<a:ObjectID>A689A3E9-0A6D-4793-9BA7-06243C2D9558</a:ObjectID>
+<a:Name>Broker 地址</a:Name>
+<a:Code>bootstrap_servers</a:Code>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:History>ORG {253E5162-88F0-4F39-A01A-670E487D6CB8}
+DAT 1792852288</a:History>
+<a:GlobalObjectID/>
+<c:Key.Columns>
+<o:Column Ref="o98"/>
+</c:Key.Columns>
+</o:Key>
+</c:Keys>
+<c:Indexes>
+<o:Index Id="o113">
+<a:ObjectID>40B6E8C8-7AE7-40A4-9A16-99D5E9C2B7F8</a:ObjectID>
+<a:Name>dbz_kafka_broker_PK</a:Name>
+<a:Code>dbz_kafka_broker_PK</a:Code>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:GlobalObjectID/>
+<a:Unique>1</a:Unique>
+<c:LinkedObject>
+<o:Key Ref="o110"/>
+</c:LinkedObject>
+<c:IndexColumns>
+<o:IndexColumn Id="o114">
+<a:ObjectID>104621CA-2654-4DF5-84F2-1E705F5DA6FE</a:ObjectID>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:GlobalObjectID/>
+<c:Column>
+<o:Column Ref="o96"/>
+</c:Column>
+<c:Elements>
+<o:Column Ref="o96"/>
+</c:Elements>
+</o:IndexColumn>
+</c:IndexColumns>
+</o:Index>
+<o:Index Id="o115">
+<a:ObjectID>218345FD-F83C-4B93-B89A-AA0DAAEADBF1</a:ObjectID>
+<a:Name>dbz_kafka_broker_AK</a:Name>
+<a:Code>dbz_kafka_broker_AK</a:Code>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:GlobalObjectID/>
+<a:Unique>1</a:Unique>
+<c:LinkedObject>
+<o:Key Ref="o111"/>
+</c:LinkedObject>
+<c:IndexColumns>
+<o:IndexColumn Id="o116">
+<a:ObjectID>E6389F57-1B12-4480-B13E-433B1A55B00B</a:ObjectID>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:GlobalObjectID/>
+<c:Column>
+<o:Column Ref="o97"/>
+</c:Column>
+<c:Elements>
+<o:Column Ref="o97"/>
+</c:Elements>
+</o:IndexColumn>
+</c:IndexColumns>
+</o:Index>
+<o:Index Id="o117">
+<a:ObjectID>EE9C2A19-617D-4988-8EBE-F27678D2A29A</a:ObjectID>
+<a:Name>dbz_kafka_broker_AK2</a:Name>
+<a:Code>dbz_kafka_broker_AK2</a:Code>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:GlobalObjectID/>
+<a:Unique>1</a:Unique>
+<c:LinkedObject>
+<o:Key Ref="o112"/>
+</c:LinkedObject>
+<c:IndexColumns>
+<o:IndexColumn Id="o118">
+<a:ObjectID>5F0EFC47-31F5-479E-8C37-DA293B72F85B</a:ObjectID>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:GlobalObjectID/>
+<c:Column>
+<o:Column Ref="o98"/>
+</c:Column>
+<c:Elements>
+<o:Column Ref="o98"/>
+</c:Elements>
+</o:IndexColumn>
+</c:IndexColumns>
+</o:Index>
+</c:Indexes>
+<c:PrimaryKey>
+<o:Key Ref="o110"/>
 </c:PrimaryKey>
 </o:Table>
 </c:Tables>
@@ -5913,6 +6394,48 @@ DAT 1792546369</a:History>
 </c:Object1>
 <c:Object2>
 <o:Column Ref="o42"/>
+</c:Object2>
+</o:ReferenceJoin>
+</c:Joins>
+</o:Reference>
+<o:Reference Id="o119">
+<a:ObjectID>6F8336DD-E3D7-492D-832C-4A87E1199550</a:ObjectID>
+<a:Name>Relationship_4</a:Name>
+<a:Code>Relationship_4</a:Code>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:History>ORG {58EACE9F-7CFC-48BD-81D6-F97AE3B80243}
+DAT 1792852288</a:History>
+<a:GlobalObjectID/>
+<a:Cardinality>0..*</a:Cardinality>
+<a:UpdateConstraint>1</a:UpdateConstraint>
+<a:DeleteConstraint>1</a:DeleteConstraint>
+<c:ParentTable>
+<o:Table Ref="o95"/>
+</c:ParentTable>
+<c:ChildTable>
+<o:Table Ref="o17"/>
+</c:ChildTable>
+<c:ParentKey>
+<o:Key Ref="o110"/>
+</c:ParentKey>
+<c:Joins>
+<o:ReferenceJoin Id="o120">
+<a:ObjectID>12FBD33C-3A65-49F3-BCA9-C6F7A7176B1F</a:ObjectID>
+<a:CreationDate>1792852288</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852288</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:History>ORG {88881020-42DD-490B-BCD8-FD660B543D19}
+DAT 1792852288</a:History>
+<a:GlobalObjectID/>
+<c:Object1>
+<o:Column Ref="o96"/>
+</c:Object1>
+<c:Object2>
+<o:Column Ref="o92"/>
 </c:Object2>
 </o:ReferenceJoin>
 </c:Joins>

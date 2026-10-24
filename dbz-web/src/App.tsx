@@ -5,6 +5,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import AppLayout from './layouts/AppLayout';
 import Dashboard from './pages/Dashboard';
+import KafkaBrokerPage from './pages/kafka-broker';
 import KafkaConnectPage from './pages/kafka-connect';
 import RemoteConnectorPage from './pages/remote-connector';
 import SinkConnectorPage from './pages/sink-connector';
@@ -15,6 +16,7 @@ export default function App() {
     <Routes>
       <Route element={<AppLayout />}>
         <Route index element={<Dashboard />} />
+        <Route path="kafka-broker" element={<KafkaBrokerPage />} />
         <Route path="kafka-connect" element={<KafkaConnectPage />} />
         <Route path="source-connector" element={<SourceConnectorPage />} />
         <Route path="sink-connector" element={<SinkConnectorPage />} />

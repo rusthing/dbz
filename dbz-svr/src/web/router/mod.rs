@@ -1,3 +1,5 @@
+mod dbz_kafka_broker_check_router;
+mod dbz_kafka_broker_router;
 mod dbz_kafka_connect_router;
 mod dbz_kafka_connector_router;
 mod dbz_sink_connector_router;

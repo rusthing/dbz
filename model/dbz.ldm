@@ -1640,6 +1640,49 @@ LABL 0 新宋体,8,N</a:FontList>
 <o:Entity Ref="o16"/>
 </c:Object>
 </o:EntitySymbol>
+<o:EntitySymbol Id="o86">
+<a:CreationDate>1792852329</a:CreationDate>
+<a:ModificationDate>1792852329</a:ModificationDate>
+<a:IconMode>-1</a:IconMode>
+<a:Rect>((-19428,31101), (5970,43203))</a:Rect>
+<a:LineColor>11881048</a:LineColor>
+<a:FillColor>16759472</a:FillColor>
+<a:ShadowColor>12632256</a:ShadowColor>
+<a:FontList>STRN 0 新宋体,8,N
+DISPNAME 0 新宋体,8,N
+Attributes 0 新宋体,8,N
+EntityPrimaryAttribute 0 新宋体,8,U
+EntityForeignAttribute 0 新宋体,8,N
+Identifiers 0 新宋体,8,N
+LABL 0 新宋体,8,N</a:FontList>
+<a:BrushStyle>6</a:BrushStyle>
+<a:GradientFillMode>65</a:GradientFillMode>
+<a:GradientEndColor>16777215</a:GradientEndColor>
+<c:Object>
+<o:Entity Ref="o65"/>
+</c:Object>
+</o:EntitySymbol>
+<o:RelationshipSymbol Id="o87">
+<a:ModificationDate>1792852329</a:ModificationDate>
+<a:Rect>((-11328,30383), (-10728,31101))</a:Rect>
+<a:ListOfPoints>((-11028,30701),(-11028,31001))</a:ListOfPoints>
+<a:CornerStyle>1</a:CornerStyle>
+<a:ArrowStyle>1</a:ArrowStyle>
+<a:LineColor>11881048</a:LineColor>
+<a:ShadowColor>12632256</a:ShadowColor>
+<a:FontList>CENTER 0 新宋体,8,N
+SOURCE 0 新宋体,8,N
+DESTINATION 0 新宋体,8,N</a:FontList>
+<c:SourceSymbol>
+<o:EntitySymbol Ref="o10"/>
+</c:SourceSymbol>
+<c:DestinationSymbol>
+<o:EntitySymbol Ref="o86"/>
+</c:DestinationSymbol>
+<c:Object>
+<o:Relationship Ref="o83"/>
+</c:Object>
+</o:RelationshipSymbol>
 </c:Symbols>
 </o:LogicalDiagram>
 </c:LogicalDiagrams>
@@ -2296,6 +2339,274 @@ LABL 0 新宋体,8,N</a:FontList>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
 <a:GlobalObjectID/>
 </o:EntityAttribute>
+<o:EntityAttribute Id="o85">
+<a:ObjectID>F48A8E70-E806-44E0-8990-D44DE3FED245</a:ObjectID>
+<a:Name>Kafka Broker ID</a:Name>
+<a:Code>kafka_broker_id</a:Code>
+<a:CreationDate>1792852329</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852329</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>Kafka Broker ID</a:Comment>
+<a:DataType>LI</a:DataType>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+</c:Attributes>
+</o:Entity>
+<o:Entity Id="o65">
+<a:ObjectID>0FE88CCA-E483-454C-80A9-A1C022017445</a:ObjectID>
+<a:Name>Kafka Broker</a:Name>
+<a:Code>kafka_broker</a:Code>
+<a:CreationDate>1792852329</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852329</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:GlobalObjectID/>
+<c:Identifiers>
+<o:Identifier Id="o66">
+<a:ObjectID>CA9B41F7-2758-4325-B56B-70C3E29B3AE7</a:ObjectID>
+<a:Name>Identifier_1</a:Name>
+<a:Code>Identifier_1</a:Code>
+<a:CreationDate>1792852329</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852329</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:GlobalObjectID/>
+<c:Identifier.Attributes>
+<o:EntityAttribute Ref="o69"/>
+</c:Identifier.Attributes>
+</o:Identifier>
+<o:Identifier Id="o67">
+<a:ObjectID>D84721B9-CA75-445A-99D9-8FB44F68DC9F</a:ObjectID>
+<a:Name>名称</a:Name>
+<a:Code>name</a:Code>
+<a:CreationDate>1792852329</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852329</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:GlobalObjectID/>
+<c:Identifier.Attributes>
+<o:EntityAttribute Ref="o70"/>
+</c:Identifier.Attributes>
+</o:Identifier>
+<o:Identifier Id="o68">
+<a:ObjectID>84387FD0-304D-4324-AB01-F190320252D7</a:ObjectID>
+<a:Name>Broker 地址</a:Name>
+<a:Code>bootstrap_servers</a:Code>
+<a:CreationDate>1792852329</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852329</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:GlobalObjectID/>
+<c:Identifier.Attributes>
+<o:EntityAttribute Ref="o71"/>
+</c:Identifier.Attributes>
+</o:Identifier>
+</c:Identifiers>
+<c:PrimaryIdentifier>
+<o:Identifier Ref="o66"/>
+</c:PrimaryIdentifier>
+<c:Attributes>
+<o:EntityAttribute Id="o69">
+<a:ObjectID>1D4BD4DA-BEE5-4F4A-A317-58652752BAB3</a:ObjectID>
+<a:Name>ID</a:Name>
+<a:Code>id</a:Code>
+<a:CreationDate>1792852329</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852329</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:DataType>LI</a:DataType>
+<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o70">
+<a:ObjectID>0D9A8D46-2D28-40F4-85FE-74DE31329E91</a:ObjectID>
+<a:Name>名称</a:Name>
+<a:Code>name</a:Code>
+<a:CreationDate>1792852329</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852329</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>名称
+@len 1..=50</a:Comment>
+<a:DataType>VA50</a:DataType>
+<a:Length>50</a:Length>
+<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o71">
+<a:ObjectID>07E7AA8C-4532-4962-9453-04B983CB33EB</a:ObjectID>
+<a:Name>Broker 地址</a:Name>
+<a:Code>bootstrap_servers</a:Code>
+<a:CreationDate>1792852329</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852329</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>Broker 地址(host:port，多个用逗号分隔)
+@len 1..=500</a:Comment>
+<a:DataType>VA500</a:DataType>
+<a:Length>500</a:Length>
+<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o72">
+<a:ObjectID>43AC7077-D76D-48C0-91DE-F246B3A76981</a:ObjectID>
+<a:Name>安全协议</a:Name>
+<a:Code>security_protocol</a:Code>
+<a:CreationDate>1792852329</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852329</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>安全协议
+@enum KafkaSecurityProtocol default=Plaintext
+  0=Plaintext      明文
+  1=SaslPlaintext  SASL 明文（用户名/密码认证）</a:Comment>
+<a:DefaultValue>0</a:DefaultValue>
+<a:DataType>BT</a:DataType>
+<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o73">
+<a:ObjectID>61846350-67B4-4814-9FBE-850DD6455176</a:ObjectID>
+<a:Name>SASL 机制</a:Name>
+<a:Code>sasl_mechanism</a:Code>
+<a:CreationDate>1792852329</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852329</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>SASL 机制
+@enum KafkaSaslMechanism default=None
+  0=None         不使用（安全协议为明文时）
+  1=Plain        SASL/PLAIN
+  2=ScramSha256  SCRAM-SHA-256
+  3=ScramSha512  SCRAM-SHA-512</a:Comment>
+<a:DefaultValue>0</a:DefaultValue>
+<a:DataType>BT</a:DataType>
+<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o74">
+<a:ObjectID>10CF5134-92CF-4537-9248-F17A8CF89FF6</a:ObjectID>
+<a:Name>认证用户名</a:Name>
+<a:Code>sasl_username</a:Code>
+<a:CreationDate>1792852329</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852329</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>认证用户名
+@len 0..=100</a:Comment>
+<a:DataType>VA100</a:DataType>
+<a:Length>100</a:Length>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o75">
+<a:ObjectID>FF3550DC-A1CC-46F6-A6AC-5AFF5055D53C</a:ObjectID>
+<a:Name>认证密码</a:Name>
+<a:Code>sasl_password</a:Code>
+<a:CreationDate>1792852329</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852329</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>认证密码(明文存储，读写窗口只对运维开放)
+@len 0..=200</a:Comment>
+<a:DataType>VA200</a:DataType>
+<a:Length>200</a:Length>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o76">
+<a:ObjectID>3791CE86-3D4D-44ED-9C5E-1FB5CE2DAC0D</a:ObjectID>
+<a:Name>状态</a:Name>
+<a:Code>run_status</a:Code>
+<a:CreationDate>1792852329</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852329</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>状态
+@enum KafkaBrokerStatus default=None
+  0=None           无状态（刚添加记录，或刚改过地址/认证/重新启用，等待下一轮检查）
+  1=Normal         正常
+  2=Disabled       已禁用
+  3=ConnectFailed  连接失败</a:Comment>
+<a:DefaultValue>0</a:DefaultValue>
+<a:DataType>BT</a:DataType>
+<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o77">
+<a:ObjectID>B91BD341-CA7F-4EE2-B4F8-73378B32CDE9</a:ObjectID>
+<a:Name>备注</a:Name>
+<a:Code>remark</a:Code>
+<a:CreationDate>1792852329</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852329</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>备注
+@len 0..=50</a:Comment>
+<a:DataType>VA50</a:DataType>
+<a:Length>50</a:Length>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o78">
+<a:ObjectID>79F43040-5D60-4074-BC7D-EDDA4F8C0BEE</a:ObjectID>
+<a:Name>启用</a:Name>
+<a:Code>enabled</a:Code>
+<a:CreationDate>1792852329</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852329</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:DefaultValue>true</a:DefaultValue>
+<a:DataType>BL</a:DataType>
+<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o79">
+<a:ObjectID>6838282C-7900-4D58-BA4A-C53ADFFC2F0C</a:ObjectID>
+<a:Name>创建者ID</a:Name>
+<a:Code>creater_id</a:Code>
+<a:CreationDate>1792852329</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852329</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:DataType>LI</a:DataType>
+<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o80">
+<a:ObjectID>A35792B8-8B4F-4AE6-A893-55AD1EDCBDA0</a:ObjectID>
+<a:Name>创建时间戳</a:Name>
+<a:Code>create_ms</a:Code>
+<a:CreationDate>1792852329</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852329</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:DataType>LI</a:DataType>
+<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o81">
+<a:ObjectID>3BB431E4-661C-4B73-AE07-4F7303FA5C30</a:ObjectID>
+<a:Name>更新者ID</a:Name>
+<a:Code>updater_id</a:Code>
+<a:CreationDate>1792852329</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852329</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:DataType>LI</a:DataType>
+<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o82">
+<a:ObjectID>D037B950-8665-40E0-8B09-461DBC6E1ADA</a:ObjectID>
+<a:Name>更新时间戳</a:Name>
+<a:Code>update_ms</a:Code>
+<a:CreationDate>1792852329</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852329</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:DataType>LI</a:DataType>
+<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
 </c:Attributes>
 </o:Entity>
 </c:Entities>
@@ -2409,6 +2720,43 @@ LABL 0 新宋体,8,N</a:FontList>
 </c:Joins>
 <c:ParentIdentifier>
 <o:Identifier Ref="o48"/>
+</c:ParentIdentifier>
+</o:Relationship>
+<o:Relationship Id="o83">
+<a:ObjectID>03BFAF6A-A954-40BF-B2B4-BB26CD92ED2F</a:ObjectID>
+<a:Name>Relationship_4</a:Name>
+<a:Code>Relationship_4</a:Code>
+<a:CreationDate>1792852329</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852329</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:GlobalObjectID/>
+<a:Entity1ToEntity2RoleCardinality>0,n</a:Entity1ToEntity2RoleCardinality>
+<a:Entity2ToEntity1RoleCardinality>0,1</a:Entity2ToEntity1RoleCardinality>
+<c:Object1>
+<o:Entity Ref="o65"/>
+</c:Object1>
+<c:Object2>
+<o:Entity Ref="o16"/>
+</c:Object2>
+<c:Joins>
+<o:RelationshipJoin Id="o84">
+<a:ObjectID>9FEFFB54-BE9E-49B3-91A5-516DF5AA626E</a:ObjectID>
+<a:CreationDate>1792852329</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792852329</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:GlobalObjectID/>
+<c:Object1>
+<o:EntityAttribute Ref="o69"/>
+</c:Object1>
+<c:Object2>
+<o:EntityAttribute Ref="o85"/>
+</c:Object2>
+</o:RelationshipJoin>
+</c:Joins>
+<c:ParentIdentifier>
+<o:Identifier Ref="o66"/>
 </c:ParentIdentifier>
 </o:Relationship>
 </c:Relationships>

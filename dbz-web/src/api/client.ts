@@ -147,9 +147,14 @@ export async function apiPost<T>(path: string, body?: unknown): Promise<T> {
   return ro.extra as T;
 }
 
-/** # PUT，返回业务数据 */
-export async function apiPut<T>(path: string, body?: unknown): Promise<T> {
-  const ro = await request<T>('PUT', path, { body });
+/**
+ * # PUT，返回业务数据
+ *
+ * `params` 是可选的：Kafka Connect 的 stop / resume 是「PUT 但没请求体」，
+ * 目标连接器只能放在查询串里。
+ */
+export async function apiPut<T>(path: string, body?: unknown, params?: QueryParams): Promise<T> {
+  const ro = await request<T>('PUT', path, { body, params });
   return ro.extra as T;
 }
 

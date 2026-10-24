@@ -150,3 +150,18 @@ body {
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
   font-size: 12.5px;
 }
+
+/* 连接器配置编辑器的分组：一组一张浅底卡片，视觉上把「源库连接」「信号」分开 */
+.dbz-config-group {
+  padding: 12px 14px;
+  background: #fafbfd;
+  border: 1px solid #eef0f4;
+  border-radius: 8px;
+}
+
+/* 表单弹窗里的长内容（配置编辑器）滚动，标题与按钮保持可见 */
+.dbz-form-scroll {
+  max-height: 62vh;
+  overflow-y: auto;
+  padding-right: 4px;
+}

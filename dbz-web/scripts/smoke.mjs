@@ -7,6 +7,8 @@
  * - 页面能渲染、表格行数与状态标签正确；
  * - 写接口带了 `X-User-Id`、请求体是 camelCase；
  * - 表单默认值、编辑回填、提交后关闭；
+ * - 联动字段（broker 选 SASL 才出现认证项）、双模式编辑器（图形化 ⇄ JSON）、
+ *   快照弹窗按通道重新预检、远端连接器的停止与重置位点；
  * - 布局体检：顶栏标题不被裁、表格不横向溢出、工具栏不换行。
  *
  * ## 用法
@@ -35,11 +37,44 @@ const ro = (extra) => ({ result: 1, msg: '查询成功', timestamp: Date.now(), 
 
 // 后端 u64 一律序列化成字符串（见 src/api/types.ts 的 Id），夹具必须照着来，
 // 否则 Number() / dayjs() 这类精度与解析问题在冒烟里看不出来。
+const brokers = [
+  {
+    id: '401',
+    name: '订单消息集群',
+    bootstrapServers: '10.0.0.21:9092,10.0.0.22:9092',
+    securityProtocol: 0,
+    saslMechanism: 0,
+    saslUsername: null,
+    runStatus: 1,
+    remark: '下游全量同步都写这里',
+    enabled: true,
+    createrId: '1',
+    createMs: '1759990000000',
+    updaterId: '1',
+    updateMs: '1760000600000',
+  },
+  {
+    id: '402',
+    name: '风控消息集群',
+    bootstrapServers: '10.0.1.31:9092',
+    securityProtocol: 1,
+    saslMechanism: 2,
+    saslUsername: 'dbz',
+    runStatus: 3,
+    enabled: true,
+    createrId: '1',
+    createMs: '1759990000000',
+    updaterId: '1',
+    updateMs: '1760000700000',
+  },
+];
+
 const clusters = [
   {
     id: '101',
     name: '生产集群-华东',
     url: 'http://10.0.0.11:8083',
+    kafkaBrokerId: '401',
     runStatus: 1,
     remark: '主力集群',
     enabled: true,
@@ -52,6 +87,7 @@ const clusters = [
     id: '102',
     name: '灰度集群',
     url: 'http://10.0.0.12:8083',
+    kafkaBrokerId: '402',
     runStatus: 3,
     enabled: true,
     createrId: '1',
@@ -140,6 +176,37 @@ const plugins = [
 
 const pageOf = (list) => ro({ pageNum: 1, total: list.length, list });
 
+/**
+ * 快照预检结果
+ *
+ * 两条通道能读到的范围本来就不一样，所以按 `channel` 返回两份不同的数据：
+ * `source` 是源库表名，`kafka` 是交给连接器展开的正则，且没有信号表。
+ */
+const snapshotPreview = (channel) =>
+  channel === 'kafka'
+    ? {
+        dialect: 'mysql',
+        database: 'orders',
+        channels: ['source', 'kafka'],
+        channel: 'kafka',
+        signalCollection: null,
+        kafkaTopic: 'dbz-signal',
+        kafkaBroker: '订单消息集群',
+        dataCollections: ['orders\\.*', 'settle\\.bill'],
+        warnings: [],
+      }
+    : {
+        dialect: 'mysql',
+        database: 'orders',
+        channels: ['source', 'kafka'],
+        channel: 'source',
+        signalCollection: 'orders.debezium_signal',
+        kafkaTopic: null,
+        kafkaBroker: null,
+        dataCollections: ['orders.t_order', 'orders.t_order_item'],
+        warnings: ['table.include.list 里的 orders.t_coupon 没有匹配到表'],
+      };
+
 /* -------------------------------------------------------------- 断言工具 */
 
 const checks = [];
@@ -205,21 +272,28 @@ page.on('console', (message) => {
 
 await page.route('**/dbz/**', async (route) => {
   const request = route.request();
-  const path = new URL(request.url()).pathname;
+  const url = new URL(request.url());
+  const path = url.pathname;
 
   if (request.method() !== 'GET') {
     posted.push({
       method: request.method(),
       path,
-      query: new URL(request.url()).search,
+      query: url.search,
       headers: request.headers(),
       // DELETE 不带请求体，postDataJSON() 在没有 body 时会抛错
       body: request.postData() ? request.postDataJSON() : null,
     });
+    // 检测接口要回业务数据（reachable/topicCount…），空信封会让页面走进异常分支
+    if (path === '/dbz/kafka-broker/check') {
+      return route.fulfill({ json: ro({ reachable: true, topicCount: 12, elapsedMs: 34 }) });
+    }
     await route.fulfill({ json: { result: 1, msg: '成功', timestamp: Date.now() } });
     return;
   }
 
+  if (path === '/dbz/kafka-broker/page') return route.fulfill({ json: pageOf(brokers) });
+  if (path === '/dbz/kafka-broker/list') return route.fulfill({ json: ro(brokers) });
   if (path === '/dbz/kafka-connect/page') return route.fulfill({ json: pageOf(clusters) });
   if (path === '/dbz/kafka-connect/list') return route.fulfill({ json: ro(clusters) });
   if (path === '/dbz/source-connector/page') return route.fulfill({ json: pageOf(sources) });
@@ -228,6 +302,10 @@ await page.route('**/dbz/**', async (route) => {
   if (path === '/dbz/sink-connector/list') return route.fulfill({ json: ro(sinks) });
   if (path === '/dbz/kafka-connector/list') return route.fulfill({ json: ro(connectors) });
   if (path === '/dbz/kafka-connector/plugins') return route.fulfill({ json: ro(plugins) });
+  if (path === '/dbz/source-connector/snapshot/preview') {
+    // 没指定通道时服务端默认挑 source，这条默认顺序也要照着演
+    return route.fulfill({ json: ro(snapshotPreview(url.searchParams.get('channel') ?? 'source')) });
+  }
   return route.fulfill({ json: ro(null) });
 });
 
@@ -239,6 +317,48 @@ try {
   const anomalyRows = await page.locator('tbody tr.ant-table-row').count();
   check('异常清单 3 行（集群/上游/下游各 1）', anomalyRows === 3, `实际 ${anomalyRows}`);
   await page.screenshot({ path: `${SHOTS}/01-dashboard.png`, fullPage: true });
+
+  /* 1b. Kafka 集群（broker）：列表、检测、SASL 字段联动 */
+  await page.click('.ant-menu-item:has-text("Kafka 集群")');
+  await page.waitForSelector('text=订单消息集群');
+  const brokerRows = await page.locator('tbody tr.ant-table-row').count();
+  check('Kafka 集群列表 2 行', brokerRows === 2, `实际 ${brokerRows}`);
+  check('broker 地址原样展示', (await page.locator('text=10.0.0.21:9092,10.0.0.22:9092').count()) > 0);
+  check('broker 状态标签渲染', (await page.locator('text=连接失败').count()) > 0);
+  await layoutCheck(page, 'Kafka 集群');
+  await page.screenshot({ path: `${SHOTS}/02-kafka-broker.png`, fullPage: true });
+
+  // 检测：真去拉一次 topic 列表，连不通也是 200（reachable=false）
+  await page.locator('tbody tr.ant-table-row').first().locator('button:has-text("检测")').click();
+  await page.waitForTimeout(600);
+  const brokerCheck = posted.find(
+    (item) => item.method === 'POST' && item.path === '/dbz/kafka-broker/check',
+  );
+  check('检测发出 POST 且带记录ID', brokerCheck?.body?.id === '401', JSON.stringify(brokerCheck?.body));
+  check(
+    '检测成功给出提示',
+    (await page.locator('.ant-message-notice-content:has-text("连接正常")').count()) > 0,
+  );
+
+  // 表单联动：明文协议不出现机制/账号/密码，选了 SASL 才出现
+  await page.click('button:has-text("新增集群")');
+  await page.waitForSelector('.ant-modal-wrap', { state: 'visible' });
+  await page.waitForTimeout(450);
+  check('明文协议下无认证字段', (await page.locator('#saslPassword').count()) === 0);
+  await page.locator('.ant-modal .ant-select-selector').first().click();
+  await page.click('.ant-select-item-option:has-text("SASL_PLAINTEXT")');
+  await page.waitForTimeout(300);
+  check('切到 SASL 后出现认证字段', (await page.locator('#saslPassword').count()) === 1);
+  // 机制不能停在「没有标签的 0」上：切到 SASL 时要给一个能连通的默认值
+  const mechanism = await page
+    .locator('.ant-modal .ant-select')
+    .nth(1)
+    .locator('.ant-select-selection-item')
+    .textContent();
+  check('切到 SASL 后机制有默认值', mechanism === 'SASL/PLAIN', String(mechanism));
+  await page.screenshot({ path: `${SHOTS}/03b-broker-form.png` });
+  await page.locator('.ant-modal-footer .ant-btn').first().click();
+  await page.waitForSelector('.ant-modal-wrap', { state: 'hidden', timeout: 5000 });
 
   /* 2. 集群列表 */
   await page.click('.ant-menu-item:has-text("Kafka Connect")');
@@ -281,6 +401,10 @@ try {
 
   await page.fill('#name', '冒烟测试集群');
   await page.fill('#url', 'http://127.0.0.1:8083');
+  // Kafka 集群是必填项：这台 worker 上的连接器把变更投到哪个集群
+  await page.locator('.ant-modal .ant-select-selector').first().click();
+  await page.click('.ant-select-item-option:has-text("订单消息集群")');
+  await page.waitForTimeout(200);
   await page.screenshot({ path: `${SHOTS}/03-modal.png` });
   await page.click('.ant-modal-footer .ant-btn-primary');
   await page.waitForSelector('.ant-modal-wrap', { state: 'hidden', timeout: 5000 });
@@ -289,6 +413,11 @@ try {
   const createCall = posted.find((item) => item.method === 'POST' && item.path === '/dbz/kafka-connect');
   check('新增集群发出 POST', Boolean(createCall));
   check('写接口带 X-User-Id', createCall?.headers['x-user-id'] === '1', String(createCall?.headers['x-user-id']));
+  check(
+    '新增集群带上所属 Kafka 集群',
+    createCall?.body?.kafkaBrokerId === '401',
+    JSON.stringify(createCall?.body),
+  );
   check(
     '请求体为 camelCase 且已 trim',
     createCall?.body?.name === '冒烟测试集群' && createCall?.body?.url === 'http://127.0.0.1:8083',
@@ -317,6 +446,52 @@ try {
   check('上游「所属集群」翻译成名称', (await page.locator('text=生产集群-华东').count()) > 0);
   await layoutCheck(page, '上游');
   await page.screenshot({ path: `${SHOTS}/04-source.png`, fullPage: true });
+
+  /* 4b. 配置编辑器：图形化与 JSON 是同一份数据 */
+  await page.click('button:has-text("新增上游连接器")');
+  await page.waitForSelector('.ant-modal-wrap', { state: 'visible' });
+  await page.waitForTimeout(450);
+  check('默认进入图形化模式', (await page.locator('.ant-segmented-item-selected:has-text("图形化")').count()) === 1);
+  check('图形化按组列出配置项', (await page.locator('.dbz-config-group').count()) === 5);
+  // 套模板只补空键，随后切到 JSON 应该能看到刚补上的值
+  await page.click('button:has-text("套用MySQL 模板")');
+  await page.waitForTimeout(200);
+  await page.click('.ant-segmented-item:has-text("JSON")');
+  await page.waitForSelector('.dbz-json-editor');
+  const configText = await page.locator('.dbz-json-editor').inputValue();
+  check(
+    '模板写入后 JSON 里能看到',
+    configText.includes('MySqlConnector') && configText.includes('"database.port": 3306'),
+    configText.slice(0, 120),
+  );
+  await page.screenshot({ path: `${SHOTS}/04b-config-editor.png` });
+  await page.locator('.ant-modal-footer .ant-btn').first().click();
+  await page.waitForSelector('.ant-modal-wrap', { state: 'hidden', timeout: 5000 });
+
+  /* 4c. 重新同步：两条通道可选，切换会重新预检，提交带 channel */
+  await page.locator('tbody tr.ant-table-row').first().locator('button:has-text("重新同步")').click();
+  await page.waitForSelector('text=信号表');
+  check('预检默认走源库信号表', (await page.locator('text=orders.debezium_signal').count()) > 0);
+  check(
+    '两条通道都能用时给出单选',
+    (await page.locator('.ant-modal .ant-radio-wrapper:has-text("源库信号表")').count()) === 1 &&
+      (await page.locator('.ant-modal .ant-radio-wrapper:has-text("Kafka 信号 topic")').count()) === 1,
+  );
+  await page.locator('.ant-modal .ant-radio-wrapper:has-text("Kafka 信号 topic")').click();
+  await page.waitForTimeout(500);
+  check('切到 Kafka 通道后展示落点', (await page.locator('text=dbz-signal').count()) > 0);
+  await page.screenshot({ path: `${SHOTS}/04c-snapshot.png` });
+  // 关掉的弹窗仍留在 DOM 里（display:none），所以 footer 要按可见的 wrap 挑
+  await page.click('.ant-modal-wrap:visible .ant-modal-footer .ant-btn-primary');
+  await page.waitForTimeout(600);
+  const snapshotCall = posted.find(
+    (item) => item.method === 'POST' && item.path === '/dbz/source-connector/snapshot',
+  );
+  check(
+    '触发快照提交所选通道与表',
+    snapshotCall?.body?.channel === 'kafka' && snapshotCall?.body?.id === '201',
+    JSON.stringify(snapshotCall?.body),
+  );
 
   /* 5. 下游连接器 */
   await page.click('.ant-menu-item:has-text("下游连接器")');
@@ -360,6 +535,43 @@ try {
     removeQuery.get('kafkaConnectId') === '101' &&
       removeQuery.get('connectorName') === 'mysql-orders-source',
     String(removeCall?.query),
+  );
+
+  /* 6c. 停止：保留配置与位点，只发 PUT，连接器名走查询串 */
+  await page.locator('tbody tr.ant-table-row').first().locator('button:has-text("停止")').click();
+  const stopPopconfirm = page.locator('.ant-popconfirm', { hasText: '停止连接器' });
+  await stopPopconfirm.waitFor();
+  await stopPopconfirm.locator('.ant-btn-primary').click();
+  await page.waitForTimeout(600);
+  const stopCall = posted.find(
+    (item) => item.method === 'PUT' && item.path === '/dbz/kafka-connector/stop',
+  );
+  const stopQuery = new URLSearchParams(stopCall?.query ?? '');
+  check(
+    '停止连接器发出 PUT 且带集群与连接器名',
+    stopQuery.get('kafkaConnectId') === '101' &&
+      stopQuery.get('connectorName') === 'mysql-orders-source',
+    String(stopCall?.query),
+  );
+
+  /* 6d. 重置位点：先停再清，resume 由用户勾选 */
+  await page.locator('tbody tr.ant-table-row').first().locator('button:has-text("重置位点")').click();
+  await page.waitForSelector('.ant-modal:has-text("位点删了就没有了")');
+  await page.locator('.ant-modal .ant-checkbox-wrapper').click();
+  await page.waitForTimeout(150);
+  await page.screenshot({ path: `${SHOTS}/07b-reset-offsets.png` });
+  await page.click('.ant-modal-footer .ant-btn-primary');
+  await page.waitForTimeout(600);
+  const resetCall = posted.find(
+    (item) => item.method === 'DELETE' && item.path === '/dbz/kafka-connector/offsets',
+  );
+  const resetQuery = new URLSearchParams(resetCall?.query ?? '');
+  check(
+    '重置位点发出 DELETE 且 resume=true',
+    resetQuery.get('kafkaConnectId') === '101' &&
+      resetQuery.get('connectorName') === 'mysql-orders-source' &&
+      resetQuery.get('resume') === 'true',
+    String(resetCall?.query),
   );
 
   /* 7. 插件 */

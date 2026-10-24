@@ -13,8 +13,8 @@
 //! ctrl 文件名也就必须跟着叫 `dbz_kafka_connector_ctrl.rs`，与 router、api_doc 保持一致。
 
 use crate::dto::{
-    KafkaConnectorDeleteDto, KafkaConnectorQueryDto, KafkaConnectorRestartDto,
-    KafkaConnectorTaskRestartDto,
+    KafkaConnectorControlDto, KafkaConnectorDeleteDto, KafkaConnectorQueryDto,
+    KafkaConnectorResetOffsetDto, KafkaConnectorRestartDto, KafkaConnectorTaskRestartDto,
 };
 use crate::svc::KafkaConnectorSvc;
 use crate::vo::{KafkaConnectorPluginVo, KafkaConnectorVo};
@@ -156,5 +156,98 @@ pub async fn delete_connector(
     Query(dto): Query<KafkaConnectorDeleteDto>,
 ) -> Result<Json<Ro<()>>, CtrlError> {
     let ro = KafkaConnectorSvc::delete_connector(dto).await?;
+    Ok(Json(ro))
+}
+
+/// # 停止连接器
+///
+/// 让连接器停下来但保留配置与位点，之后可以恢复运行继续消费。停止期间下一次健康
+/// 检查会把它记为「已停止」并告警，但不会自动重启 —— 人工动作不被机器覆盖。
+///
+/// 需要 Kafka 3.5 及以上（KIP-875）；更早的集群会返回「不支持该操作」。
+///
+/// ## 查询参数
+/// * `kafkaConnectId` - Kafka Connect ID（与 `kafkaConnectUrl` 二选一）
+/// * `kafkaConnectUrl` - Kafka Connect 地址（优先于 `kafkaConnectId`）
+/// * `connectorName` - 连接器名称
+///
+/// ## 返回值
+/// * 成功时返回提交结果
+/// * 失败时返回相应的错误信息
+#[utoipa::path(
+    put,
+    path = "/dbz/kafka-connector/stop",
+    params(KafkaConnectorControlDto),
+    // utoipa 无法解析 `Ro<()>`（空元组没有类型路径），故只描述状态码
+    responses((status = OK, description = "停止请求已提交"))
+)]
+#[debug_handler]
+#[log_call]
+pub async fn stop_connector(
+    Query(dto): Query<KafkaConnectorControlDto>,
+) -> Result<Json<Ro<()>>, CtrlError> {
+    let ro = KafkaConnectorSvc::stop_connector(dto).await?;
+    Ok(Json(ro))
+}
+
+/// # 恢复连接器
+///
+/// 恢复被停止或暂停的连接器，任务会被重新分配。对本来就在运行的连接器是空操作。
+///
+/// ## 查询参数
+/// * `kafkaConnectId` - Kafka Connect ID（与 `kafkaConnectUrl` 二选一）
+/// * `kafkaConnectUrl` - Kafka Connect 地址（优先于 `kafkaConnectId`）
+/// * `connectorName` - 连接器名称
+///
+/// ## 返回值
+/// * 成功时返回提交结果
+/// * 失败时返回相应的错误信息
+#[utoipa::path(
+    put,
+    path = "/dbz/kafka-connector/resume",
+    params(KafkaConnectorControlDto),
+    // utoipa 无法解析 `Ro<()>`（空元组没有类型路径），故只描述状态码
+    responses((status = OK, description = "恢复请求已提交"))
+)]
+#[debug_handler]
+#[log_call]
+pub async fn resume_connector(
+    Query(dto): Query<KafkaConnectorControlDto>,
+) -> Result<Json<Ro<()>>, CtrlError> {
+    let ro = KafkaConnectorSvc::resume_connector(dto).await?;
+    Ok(Json(ro))
+}
+
+/// # 重置连接器位点
+///
+/// 先停止连接器，再清空它记在 Kafka 里的位点，最后视 `resume` 决定要不要立刻拉起。
+/// 位点清空后连接器就是「从没跑过」：`snapshot.mode=initial` 时会做一次整表快照，
+/// 等于把数据重新同步一遍。**不可撤销**。
+///
+/// 与「再同步」（`/dbz/source-connector/snapshot`）的区别：那条路走信号，只重读指定
+/// 表、不清位点、不中断流式读取；这条路清掉全部位点，影响整条连接器。
+///
+/// ## 查询参数
+/// * `kafkaConnectId` - Kafka Connect ID（与 `kafkaConnectUrl` 二选一）
+/// * `kafkaConnectUrl` - Kafka Connect 地址（优先于 `kafkaConnectId`）
+/// * `connectorName` - 连接器名称
+/// * `resume` - 清完是否立即恢复运行（默认 `false`）
+///
+/// ## 返回值
+/// * 成功时返回位点清空结果（含是否已恢复）
+/// * 失败时返回相应的错误信息
+#[utoipa::path(
+    delete,
+    path = "/dbz/kafka-connector/offsets",
+    params(KafkaConnectorResetOffsetDto),
+    // utoipa 无法解析 `Ro<()>`（空元组没有类型路径），故只描述状态码
+    responses((status = OK, description = "位点已清空"))
+)]
+#[debug_handler]
+#[log_call]
+pub async fn reset_connector_offsets(
+    Query(dto): Query<KafkaConnectorResetOffsetDto>,
+) -> Result<Json<Ro<()>>, CtrlError> {
+    let ro = KafkaConnectorSvc::reset_connector_offsets(dto).await?;
     Ok(Json(ro))
 }

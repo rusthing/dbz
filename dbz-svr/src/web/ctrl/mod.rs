@@ -1,3 +1,5 @@
+pub mod dbz_kafka_broker_check_ctrl;
+pub mod dbz_kafka_broker_ctrl;
 pub mod dbz_kafka_connect_ctrl;
 pub mod dbz_kafka_connector_ctrl;
 pub mod dbz_sink_connector_ctrl;

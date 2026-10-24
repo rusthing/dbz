@@ -187,20 +187,22 @@ src/
 ├── api/                 # 与 dbz-api 的 DTO/VO 一一对应
 │   ├── client.ts        # fetch 封装：拆 Ro<T> 信封、补 X-User-Id、统一抛 ApiError
 │   ├── types.ts         # Ro / PageRx / VO / 请求体 / Id（u64 的线上形态）
+│   ├── kafka-broker.ts  # /dbz/kafka-broker（消息集群 CRUD + 检测）
 │   ├── kafka-connect.ts # /dbz/kafka-connect
 │   ├── source-connector.ts
 │   ├── sink-connector.ts
 │   └── kafka-connector.ts  # /dbz/kafka-connector（远端运维）
-├── components/          # StatusTag / EnabledTag / JsonEditor
-├── dic/                 # 三个状态枚举的整数判别式 → 文案/颜色
+├── components/          # StatusTag / EnabledSwitch / JsonEditor / ConnectorConfigEditor
+├── dic/                 # 状态枚举的整数判别式 → 文案/颜色
 ├── hooks/               # usePagedQuery / useAsync / useOptions
 ├── layouts/AppLayout.tsx
 ├── pages/
 │   ├── Dashboard.tsx            # 总览 + 异常清单
+│   ├── kafka-broker/            # 消息集群 CRUD + 连通性检测
 │   ├── kafka-connect/           # 集群 CRUD
-│   ├── source-connector/        # 上游 CRUD
+│   ├── source-connector/        # 上游 CRUD + 重新同步
 │   ├── sink-connector/          # 下游 CRUD
-│   └── remote-connector/        # 远端连接器/插件、重启
+│   └── remote-connector/        # 远端连接器/插件、重启、停止/恢复、重置位点
 └── utils/format.ts
 scripts/smoke.mjs        # 冒烟测试
 ```
@@ -255,6 +257,7 @@ scripts/smoke.mjs        # 冒烟测试
 
 | 枚举 | 语义 | 落库 |
 | --- | --- | --- |
+| `KafkaBrokerStatus` | 消息集群（broker）是否可达 | 是 |
 | `KafkaConnectStatus` | 集群自身是否可达 | 是 |
 | `ConnectorRunStatus` | 检查任务对连接器得出的结论 | 是 |
 | `KafkaConnectorStatus` | 远端连接器此刻的实时状态 | 否（来自 Kafka Connect REST） |
@@ -265,11 +268,12 @@ scripts/smoke.mjs        # 冒烟测试
 
 | 页面 | 用到的接口 |
 | --- | --- |
-| 总览 | 三张表的 `/list`，在浏览器里算统计与异常 |
+| 总览 | 各表的 `/list`，在浏览器里算统计与异常 |
+| Kafka 集群 | `/dbz/kafka-broker` 的 `/page`、`POST`、`PUT`、`DELETE /{id}` + `POST /check` |
 | Kafka Connect | `/dbz/kafka-connect` 的 `/page`、`POST`、`PUT`、`DELETE /{id}` |
-| 上游连接器 | `/dbz/source-connector` 同上 |
+| 上游连接器 | `/dbz/source-connector` 同上 + `GET /snapshot/preview`、`POST /snapshot` |
 | 下游连接器 | `/dbz/sink-connector` 同上 |
-| 远端连接器 | `GET /dbz/kafka-connector/plugins`、`GET /list`、`POST /restart`、`POST /task/restart` |
+| 远端连接器 | `GET /dbz/kafka-connector/plugins`、`GET /list`、`POST /restart`、`POST /task/restart`、`PUT /stop`、`PUT /resume`、`DELETE /offsets`、`DELETE /dbz/kafka-connector` |
 
 ## 删除到底会不会注销连接器
 
@@ -287,8 +291,18 @@ scripts/smoke.mjs        # 冒烟测试
 查不到地址就跳过注销并记一条 warn（按「从未部署过」处理）。
 
 所以「注销」这个动作在前端**没有独立入口**：要让连接器停掉但保留记录，用「禁用」
-（`enabled = false`）；要彻底清理，直接删除。「远端连接器」页是只读的（外加重启），
-没有注销按钮 —— 上面那张表的链路里也不需要它。
+（`enabled = false`）；要彻底清理，直接删除。
+
+「远端连接器」页是直接对集群下手的地方，除了重启与删除，还有两个**不改库**的动作：
+
+| 操作 | Kafka Connect 接口 | 影响 |
+| --- | --- | --- |
+| 停止 / 恢复 | `PUT /connectors/{name}/stop`、`/resume` | 保留配置与位点，恢复后从原处继续；需要 Kafka 3.5+ |
+| 重置位点 | 先 `stop` 再 `DELETE /connectors/{name}/offsets` | 位点清空即「从没跑过」，`snapshot.mode=initial` 时整表快照；**不可撤销** |
+
+停在「已停止」的连接器在健康检查里会被记为异常并告警，但**不会被自动重启** ——
+自动修复只处理 `FAILED`，人工动作不能被机器覆盖。要让 dbz 不再管这条连接器，
+去上游/下游列表把启用开关关掉。
 
 ## 已知限制
 

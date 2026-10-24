@@ -13,6 +13,7 @@ import type {
   DbzSourceConnectorVo,
   Id,
   PageRx,
+  SignalChannel,
 } from './types';
 
 const BASE = '/dbz/source-connector';
@@ -36,13 +37,16 @@ export const sourceConnectorApi = {
   /**
    * 预检「再同步」：列出这次会快照哪些表（只读，不写信号）
    *
-   * 服务端要直连源库读 `information_schema`，所以这个请求比普通查询慢；
-   * 连不上源库会在这里就报错，而不是等到真正触发时才发现。
+   * `source` 通道要直连源库读 `information_schema`，所以这个请求比普通查询慢；
+   * 连不上源库会在这里就报错，而不是等到真正触发时才发现。`kafka` 通道不连库，
+   * 返回的是交给连接器展开的表范围正则。
+   *
+   * `channel` 留空表示让服务端按默认顺序挑一条可用的（source 优先）。
    */
-  snapshotPreview: (id: Id): Promise<DbzSourceConnectorSnapshotVo> =>
-    apiGet(BASE + '/snapshot/preview', { id }),
+  snapshotPreview: (id: Id, channel?: SignalChannel): Promise<DbzSourceConnectorSnapshotVo> =>
+    apiGet(BASE + '/snapshot/preview', { id, channel }),
 
-  /** 触发一次快照：往源库信号表写 `execute-snapshot` 信号 */
+  /** 触发一次快照：`source` 通道写源库信号表，`kafka` 通道投信号 topic */
   snapshot: (input: DbzSourceConnectorSnapshotInput): Promise<void> =>
     apiPost(BASE + '/snapshot', input),
 };

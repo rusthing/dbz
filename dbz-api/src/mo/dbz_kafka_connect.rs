@@ -20,6 +20,9 @@ pub struct Model {
     pub create_ms: i64,
     pub updater_id: i64,
     pub update_ms: i64,
+    /// 对应的 broker 记录。可空是老数据的缘故：这张表先于 dbz_kafka_broker 存在，
+    /// 已有记录没有可回填的值，迁移不能硬加非空；新增/修改时由服务层要求必填。
+    pub kafka_broker_id: Option<i64>,
     #[sea_orm(has_many)]
     pub dbz_sink_connectors: HasMany<super::dbz_sink_connector::Entity>,
     #[sea_orm(has_many)]

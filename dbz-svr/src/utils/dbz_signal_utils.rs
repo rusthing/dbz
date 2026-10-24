@@ -322,29 +322,7 @@ impl DbzSignalUtils {
         config: &SourceSignalConfig,
         requested: &[String],
     ) -> Result<Vec<String>, anyhow::Error> {
-        let mut seen = HashSet::new();
-        let mut names = Vec::new();
-        for item in requested {
-            let item = item.trim();
-            if item.is_empty() {
-                continue;
-            }
-            let qualified = if item.contains('.') {
-                item.to_string()
-            } else {
-                format!("{}.{item}", config.default_schema())
-            };
-            if !QUALIFIED_NAME_RE.is_match(&qualified) {
-                bail!(
-                    "表名<{item}>不合法：要写成 `库.表` 或 `模式.表`，且只含字母、数字、\
-                     下划线、`$`、`#`、`-`"
-                );
-            }
-            if seen.insert(qualified.clone()) {
-                names.push(qualified);
-            }
-        }
-        Ok(names)
+        normalize_names(config.default_schema(), requested)
     }
 
     /// # 拼信号里 `data` 的 JSON
@@ -677,6 +655,48 @@ fn compile_patterns(patterns: &[String]) -> Result<Vec<Regex>, anyhow::Error> {
         .collect()
 }
 
+/// # 补全并去重表名（两种信号通道共用）
+///
+/// 只写表名时补 `default_schema` 前缀，并挡掉拼不成全限定名的写法 —— 与其让
+/// Debezium 在日志里报一句难懂的错误，不如这里说清楚。
+///
+/// ## 参数
+/// * `default_schema` - 补全用的前缀（MySQL 是连接器连的库，PG 是模式）
+/// * `requested` - 调用方给的表名，可以带前缀也可以不带
+///
+/// ## 返回值
+/// * `Ok(Vec<String>)` - 去重后的全限定名，保持调用方给的顺序
+/// * `Err(anyhow::Error)` - 有条目不是合法标识符
+fn normalize_names(
+    default_schema: &str,
+    requested: &[String],
+) -> Result<Vec<String>, anyhow::Error> {
+    let mut seen = HashSet::new();
+    let mut names = Vec::new();
+    for item in requested {
+        let item = item.trim();
+        if item.is_empty() {
+            continue;
+        }
+        // 已经带了前缀就原样用；没默认前缀时（如 Kafka 通道缺 database.dbname）也只能原样用
+        let qualified = if item.contains('.') || default_schema.is_empty() {
+            item.to_string()
+        } else {
+            format!("{default_schema}.{item}")
+        };
+        if !QUALIFIED_NAME_RE.is_match(&qualified) {
+            bail!(
+                "表名<{item}>不合法：要写成 `库.表` 或 `模式.表`，且只含字母、数字、\
+                 下划线、`$`、`#`、`-`"
+            );
+        }
+        if seen.insert(qualified.clone()) {
+            names.push(qualified);
+        }
+    }
+    Ok(names)
+}
+
 /// # MySQL 的 TLS 模式
 ///
 /// 未配置时按明文连：dbz 与源库通常同内网，而 `Preferred` 在客户端没编进 TLS 后端时
@@ -769,6 +789,243 @@ fn list(value: Option<&str>) -> Vec<String> {
                 .collect()
         })
         .unwrap_or_default()
+}
+
+// ==========================================================================
+// Kafka 信号通道
+// ==========================================================================
+
+/// # 从 `connector_config` 解析出的 Kafka 信号通道信息
+///
+/// Kafka 通道完全不碰源库：信号投到一个 topic，连接器的 `kafka` 通道自己消费。
+/// 因此这里只需要三样东西 —— 信号 topic、消息 key（必须等于 `topic.prefix`）、
+/// 以及捕获范围（用来拼 `data-collections` 正则）。
+///
+/// 与 [`SourceSignalConfig`] 的关键差别是**拿不到具体表名**：不连库就没法查
+/// `information_schema`，只能把 `table.include.list` 那套正则原样交给 Debezium，
+/// 由它在连接器侧展开。
+#[derive(Debug, Clone)]
+pub struct KafkaSignalConfig {
+    /// 源库方言（决定 `库.表` 还是 `模式.表`）
+    pub dialect: SourceDialect,
+    /// 信号 topic（`signal.kafka.topic`）
+    pub topic: String,
+    /// 消息 key（`topic.prefix`，老版本叫 `database.server.name`）
+    pub topic_prefix: String,
+    /// 连接器连的那个库（`database.dbname`），只用来补全只写了表名的条目
+    pub database: String,
+    /// 连接器自己配的 `signal.kafka.bootstrap.servers`（消费侧地址）
+    pub bootstrap_servers: Vec<String>,
+    /// 捕获的库 / 模式
+    pub schema_patterns: Vec<String>,
+    /// `table.include.list`
+    pub table_include: Vec<String>,
+    /// `table.exclude.list`
+    pub table_exclude: Vec<String>,
+}
+
+impl KafkaSignalConfig {
+    /// 只写表名时补全用的前缀，取值规则与 [`SourceSignalConfig::default_schema`] 一致
+    fn default_schema(&self) -> &str {
+        match self.dialect {
+            SourceDialect::MySql => &self.database,
+            SourceDialect::PostgreSql => self
+                .schema_patterns
+                .first()
+                .filter(|pattern| {
+                    pattern
+                        .chars()
+                        .all(|c| c.is_ascii_alphanumeric() || c == '_')
+                })
+                .map_or("public", String::as_str),
+        }
+    }
+
+    /// # 拼 `data-collections`
+    ///
+    /// 优先直接用 `table.include.list`：它本身就是「全限定名的正则」，与
+    /// `data-collections` 要的语法一致。没有它就按捕获的库/模式退化成
+    /// `(库1|库2)\..*`，再没有就 `.*`（连接器本来就没限范围）。
+    ///
+    /// ## 返回值
+    /// * `Vec<String>` - 交给 Debezium 的正则列表，至少一项
+    pub fn data_collection_patterns(&self) -> Vec<String> {
+        if !self.table_include.is_empty() {
+            return self.table_include.clone();
+        }
+        if !self.schema_patterns.is_empty() {
+            return vec![format!("({})\\..*", self.schema_patterns.join("|"))];
+        }
+        vec![".*".to_string()]
+    }
+}
+
+impl DbzSignalUtils {
+    /// # 读出连接器启用了哪些信号通道
+    ///
+    /// 配置里没写 `signal.enabled.channels` 时按 Debezium 的默认值返回 `["source"]`
+    /// —— 默认只启用 source，kafka 通道必须在配置里显式加上才会生效。
+    ///
+    /// ## 参数
+    /// * `connector_config` - 连接器配置 JSON
+    ///
+    /// ## 返回值
+    /// * `Vec<String>` - 通道名；配置不是合法 JSON 时为空
+    pub fn enabled_channels(connector_config: &str) -> Vec<String> {
+        let Ok(Value::Object(object)) = serde_json::from_str::<Value>(connector_config) else {
+            return Vec::new();
+        };
+        let config: HashMap<String, Value> = object.into_iter().collect();
+        let channels = list(text(&config, "signal.enabled.channels").as_deref());
+        if channels.is_empty() {
+            vec!["source".to_string()]
+        } else {
+            channels
+        }
+    }
+
+    /// # 解析 Kafka 信号通道配置
+    ///
+    /// 只校验「发一条 Kafka 信号需要什么」：通道得开着、topic 得有、`topic.prefix`
+    /// 得有（消息 key 就是它，对不上会被连接器静默忽略）。
+    ///
+    /// ## 参数
+    /// * `connector_config` - 连接器配置 JSON
+    ///
+    /// ## 返回值
+    /// * `Ok(KafkaSignalConfig)` - topic、key 与捕获范围
+    /// * `Err(anyhow::Error)` - 不是支持的方言、通道没开、缺 topic 或缺 key
+    pub fn parse_kafka_config(connector_config: &str) -> Result<KafkaSignalConfig, anyhow::Error> {
+        let value: Value = serde_json::from_str(connector_config)
+            .map_err(|e| anyhow!("连接器配置不是合法的 JSON: {e}"))?;
+        let Value::Object(object) = value else {
+            bail!("连接器配置必须是 JSON 对象");
+        };
+        let config: HashMap<String, Value> = object.into_iter().collect();
+
+        let class = text(&config, "connector.class").unwrap_or_default();
+        let class_lower = class.to_ascii_lowercase();
+        let dialect = if class_lower.contains("mysql") || class_lower.contains("mariadb") {
+            SourceDialect::MySql
+        } else if class_lower.contains("postgres") {
+            SourceDialect::PostgreSql
+        } else {
+            bail!(
+                "连接器<{class}>不支持用 Kafka 信号触发快照：只有 MySQL/MariaDB 与 PostgreSQL \
+                 的增量快照接受 execute-snapshot 信号"
+            );
+        };
+
+        let channels = Self::enabled_channels(connector_config);
+        if !channels.iter().any(|channel| channel == "kafka") {
+            bail!(
+                "连接器的 signal.enabled.channels 是 [{}]，没有启用 kafka 通道。要么把它加上\
+                 （如 \"source,kafka\"）并配好 signal.kafka.topic、\
+                 signal.kafka.bootstrap.servers，要么改用 source 信号表",
+                channels.join(",")
+            );
+        }
+
+        let Some(topic) = text(&config, "signal.kafka.topic") else {
+            bail!(
+                "连接器启用了 kafka 信号通道，但没有配 signal.kafka.topic：信号要发到哪个 \
+                 topic 上不知道"
+            );
+        };
+
+        // key 必须是 topic.prefix；老版本 Debezium 叫 database.server.name
+        let topic_prefix = text(&config, "topic.prefix")
+            .or_else(|| text(&config, "database.server.name"))
+            .ok_or_else(|| {
+                anyhow!(
+                    "连接器配置里没有 topic.prefix：Kafka 信号的消息 key 必须等于它，\
+                     缺了就只能被连接器忽略"
+                )
+            })?;
+
+        let database = text(&config, "database.dbname")
+            .or_else(|| text(&config, "database.initial.database"))
+            .unwrap_or_default()
+            .to_string();
+        let schema_patterns = match dialect {
+            SourceDialect::MySql => {
+                let databases = list(text(&config, "database.include.list").as_deref());
+                if databases.is_empty() {
+                    if database.is_empty() {
+                        Vec::new()
+                    } else {
+                        vec![database.clone()]
+                    }
+                } else {
+                    databases
+                }
+            }
+            SourceDialect::PostgreSql => {
+                let schemas = list(text(&config, "schema.include.list").as_deref());
+                if schemas.is_empty() {
+                    vec!["public".to_string()]
+                } else {
+                    schemas
+                }
+            }
+        };
+
+        Ok(KafkaSignalConfig {
+            dialect,
+            topic: topic.to_string(),
+            topic_prefix: topic_prefix.to_string(),
+            database,
+            bootstrap_servers: list(text(&config, "signal.kafka.bootstrap.servers").as_deref()),
+            schema_patterns,
+            table_include: list(text(&config, "table.include.list").as_deref()),
+            table_exclude: list(text(&config, "table.exclude.list").as_deref()),
+        })
+    }
+
+    /// # 补全并去重调用方给的表名（Kafka 通道）
+    ///
+    /// 与信号表那条的区别是**不连库**：只按连接器配置里的方言补前缀，不核对表是否
+    /// 真的存在。Kafka 通道本来就把 `data-collections` 当正则交给 Debezium，写错的
+    /// 表名不会报错、只会被跳过，所以这里的校验只到「拼得成全限定名」为止。
+    ///
+    /// ## 参数
+    /// * `config` - Kafka 信号配置
+    /// * `requested` - 调用方给的表名，可以带前缀也可以不带
+    ///
+    /// ## 返回值
+    /// * `Ok(Vec<String>)` - 去重后的全限定名，保持调用方给的顺序
+    /// * `Err(anyhow::Error)` - 有条目不是合法标识符
+    pub fn normalize_kafka_data_collections(
+        config: &KafkaSignalConfig,
+        requested: &[String],
+    ) -> Result<Vec<String>, anyhow::Error> {
+        normalize_names(config.default_schema(), requested)
+    }
+
+    /// # 拼 Kafka 信号的消息体
+    ///
+    /// 注意与信号表的差别：表里 `type` 和 `data` 是两列，这里 `type` 要包在消息体里，
+    /// `data` 是嵌套对象：
+    ///
+    /// ```text
+    /// {"type":"execute-snapshot","data":{"data-collections":["db.t"],"type":"incremental"}}
+    /// ```
+    ///
+    /// ## 参数
+    /// * `data_collections` - 正则或全限定名列表
+    /// * `snapshot_type` - 增量 / 阻塞
+    ///
+    /// ## 返回值
+    /// * `Ok(String)` - 消息体 JSON
+    /// * `Err(anyhow::Error)` - 清单为空
+    pub fn build_kafka_signal_value(
+        data_collections: &[String],
+        snapshot_type: SnapshotType,
+    ) -> Result<String, anyhow::Error> {
+        let data = Self::build_signal_data(data_collections, snapshot_type)?;
+        // data 已是合法 JSON，直接拼一层外层，省一次反序列化
+        Ok(format!(r#"{{"type":"execute-snapshot","data":{data}}}"#))
+    }
 }
 
 #[cfg(test)]

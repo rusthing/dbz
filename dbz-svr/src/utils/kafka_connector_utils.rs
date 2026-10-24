@@ -15,6 +15,9 @@
 //! - `GET  /connectors/{name}/status`   查询连接器运行状态
 //! - `POST /connectors/{name}/restart`  重启连接器（可连同其任务）
 //! - `POST /connectors/{name}/tasks/{id}/restart` 重启单个任务
+//! - `PUT  /connectors/{name}/stop`     停止连接器（Kafka 3.5+，保留配置与位点）
+//! - `PUT  /connectors/{name}/resume`   恢复运行
+//! - `DELETE /connectors/{name}/offsets` 清空位点（要求连接器先处于停止状态）
 
 use crate::dic::KafkaConnectorStatus;
 use crate::vo::{KafkaConnectorPluginVo, KafkaConnectorTaskVo, KafkaConnectorVo};
@@ -469,6 +472,152 @@ impl KafkaConnectorUtils {
         info!("连接器<{connector_name}>的任务<{task_id}>重启请求已接受");
         Ok(())
     }
+
+    /// # 停止连接器
+    ///
+    /// 调用 `PUT /connectors/{name}/stop`，让连接器停下来但**保留配置与位点**：
+    /// 任务会被撤回，之后 [`resume_connector`](Self::resume_connector) 能从原处继续。
+    /// 这是 KIP-875 引入的接口，Kafka 3.5 之前的集群没有（会返回 405 或 404），
+    /// 那时只能用暂停（`PAUSED`）或直接删连接器。
+    ///
+    /// ## 参数
+    /// * `base_url` - Kafka Connect 地址
+    /// * `connector_name` - 连接器名称
+    ///
+    /// ## 返回值
+    /// * `Ok(())` - 停止请求已被接受（停机是异步的）
+    /// * `Err(KafkaConnectorError)` - 连接器不存在、集群版本不支持或请求失败
+    pub async fn stop_connector(
+        base_url: &str,
+        connector_name: &str,
+    ) -> Result<(), KafkaConnectorError> {
+        Self::control(
+            reqwest::Method::PUT,
+            base_url,
+            &format!("connectors/{connector_name}/stop"),
+            "停止",
+            connector_name,
+        )
+        .await?;
+        info!("连接器<{connector_name}>停止请求已接受");
+        Ok(())
+    }
+
+    /// # 恢复连接器
+    ///
+    /// 调用 `PUT /connectors/{name}/resume`。既能恢复 `PAUSED`，也能让被
+    /// [`stop_connector`](Self::stop_connector) 停下的连接器重新拉起任务；对本来就在
+    /// 运行的连接器是空操作。
+    ///
+    /// ## 参数
+    /// * `base_url` - Kafka Connect 地址
+    /// * `connector_name` - 连接器名称
+    ///
+    /// ## 返回值
+    /// * `Ok(())` - 恢复请求已被接受
+    /// * `Err(KafkaConnectorError)` - 连接器不存在或请求失败
+    pub async fn resume_connector(
+        base_url: &str,
+        connector_name: &str,
+    ) -> Result<(), KafkaConnectorError> {
+        Self::control(
+            reqwest::Method::PUT,
+            base_url,
+            &format!("connectors/{connector_name}/resume"),
+            "恢复",
+            connector_name,
+        )
+        .await?;
+        info!("连接器<{connector_name}>恢复请求已接受");
+        Ok(())
+    }
+
+    /// # 清空连接器位点
+    ///
+    /// 调用 `DELETE /connectors/{name}/offsets`，把连接器记在 Kafka 里的位点删掉。
+    /// 用处是「让它当作从没跑过」：Debezium 的 `snapshot.mode=initial` 只在没有位点
+    /// 时才做初始快照，所以清位点 + 恢复运行等于重做一次全量。
+    ///
+    /// **要求连接器先处于停止状态**，否则 Kafka Connect 会返回 400
+    /// （`Connector ... is not stopped`）。本方法不去替你停：停与不停是运维的决定，
+    /// 调用方（服务层）先发 `/stop` 再来这里。
+    ///
+    /// ## 参数
+    /// * `base_url` - Kafka Connect 地址
+    /// * `connector_name` - 连接器名称
+    ///
+    /// ## 返回值
+    /// * `Ok(())` - 位点已删除
+    /// * `Err(KafkaConnectorError)` - 连接器不存在、未停止或请求失败
+    pub async fn reset_connector_offsets(
+        base_url: &str,
+        connector_name: &str,
+    ) -> Result<(), KafkaConnectorError> {
+        Self::control(
+            reqwest::Method::DELETE,
+            base_url,
+            &format!("connectors/{connector_name}/offsets"),
+            "清空位点",
+            connector_name,
+        )
+        .await?;
+        info!("连接器<{connector_name}>的位点已清空");
+        Ok(())
+    }
+
+    /// # 发一条没有请求体的控制指令
+    ///
+    /// stop / resume / 清空位点三者形状一致（一次 HTTP、成功空响应、404 表示连接器
+    /// 不存在），差别只有方法与路径，抽一处免得三份几乎相同的错误处理各自漂移。
+    ///
+    /// ## 参数
+    /// * `method` - HTTP 方法
+    /// * `base_url` - Kafka Connect 地址
+    /// * `path` - 相对路径（不含前导 `/`）
+    /// * `action` - 动作名，用于拼错误文案
+    /// * `connector_name` - 连接器名称（只用于文案）
+    ///
+    /// ## 返回值
+    /// * `Ok(())` - 指令已被接受
+    /// * `Err(KafkaConnectorError)` - 连接器不存在或请求失败
+    async fn control(
+        method: reqwest::Method,
+        base_url: &str,
+        path: &str,
+        action: &str,
+        connector_name: &str,
+    ) -> Result<(), KafkaConnectorError> {
+        let url = format!("{}/{}", base_url.trim_end_matches('/'), path);
+        let is_get = method == reqwest::Method::GET;
+        let resp = HTTP_CLIENT
+            .request(method, &url)
+            .send()
+            .await
+            .map_err(|e| {
+                KafkaConnectorError::Request(format!("{action}连接器<{connector_name}>失败: {e}"))
+            })?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(KafkaConnectorError::NotFound);
+        }
+        if !resp.status().is_success() {
+            let status = resp.status();
+            let body = resp.text().await.unwrap_or_default();
+            // 405 / 501 几乎只出现在「集群版本不支持这个指令」上，直接把这点说出来
+            if !is_get
+                && (status == reqwest::StatusCode::METHOD_NOT_ALLOWED
+                    || status == reqwest::StatusCode::NOT_IMPLEMENTED)
+            {
+                return Err(KafkaConnectorError::Request(format!(
+                    "{action}连接器<{connector_name}>失败: 目标 Kafka Connect 不支持该操作\
+                     （HTTP {status}），停止/恢复需要 Kafka 3.5 及以上：{body}"
+                )));
+            }
+            return Err(KafkaConnectorError::Request(format!(
+                "{action}连接器<{connector_name}>失败: {body}"
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// # Kafka Connect 连接器状态响应
@@ -625,6 +774,7 @@ fn parse_connector_state(state: &str) -> KafkaConnectorStatus {
         "RUNNING" => KafkaConnectorStatus::Running,
         "FAILED" => KafkaConnectorStatus::Failed,
         "PAUSED" => KafkaConnectorStatus::Paused,
+        "STOPPED" => KafkaConnectorStatus::Stopped,
         "DESTROYED" => KafkaConnectorStatus::Destroyed,
         _ => KafkaConnectorStatus::Unassigned,
     }

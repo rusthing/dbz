@@ -16,7 +16,7 @@
 
 use crate::dic::{ConnectorRunStatus, KafkaConnectStatus, KafkaConnectorStatus};
 use crate::dto::{DbzSinkConnectorQueryDto, DbzSourceConnectorQueryDto};
-use crate::svc::{DbzSinkConnectorSvc, DbzSourceConnectorSvc};
+use crate::svc::{DbzKafkaBrokerSvc, DbzSinkConnectorSvc, DbzSourceConnectorSvc};
 use crate::utils::{DbzAlarmUtils, KafkaConnectorError, KafkaConnectorUtils, normalize_url};
 use crate::vo::{DbzSinkConnectorVo, DbzSourceConnectorVo};
 use anyhow::anyhow;
@@ -74,12 +74,18 @@ struct KafkaConnectorCheck<'a> {
 // 无法改成 Box 包裹，这里统一放行该 lint
 #[allow(clippy::result_large_err)]
 impl DbzKafkaConnectSvc {
-    /// # 新增前钩子：新建即禁用时直接落为「已禁用」
+    /// # 新增前钩子：要求绑定 Kafka 集群，新建即禁用时直接落为「已禁用」
+    ///
+    /// `kafka_broker_id` 在库列上可空（老记录没有可回填的值），但新增必须给：没有
+    /// broker 地址就发不了 Kafka 信号、查不了 topic，建一条查不到后端的记录没有意义。
     ///
     /// 被禁用的集群不参与健康检查，不在这里写状态就会一直停在「无状态」。
     async fn before_add_hook(
         mut add_dto: DbzKafkaConnectAddDto,
     ) -> Result<DbzKafkaConnectAddDto, SvcError> {
+        if add_dto.kafka_broker_id.is_none() {
+            return Err(anyhow!("新增 Kafka Connect 时必须选择对应的 Kafka 集群（broker）").into());
+        }
         if add_dto.enabled == Some(false) {
             add_dto.run_status = Some(KafkaConnectStatus::Disabled);
         }
@@ -237,6 +243,13 @@ impl DbzKafkaConnectSvc {
         info!("开始定时检查所有 Kafka Connect 与连接器...");
 
         let db = get_db_conn().map_err(|e| anyhow!("获取数据库连接失败: {e}"))?;
+
+        // broker 先查一轮：连接器能不能正常投递取决于它后面的集群。这一步只回写
+        // 集群状态、不参与下面的告警收敛 —— broker 不通时受影响的连接器会在各自
+        // 的检查里报出来，再单独为 broker 报一遍等于同一根因刷两条。
+        if let Err(e) = DbzKafkaBrokerSvc::check_all().await {
+            warn!("检查 Kafka 集群状态失败: {e}");
+        }
 
         let kc_ro = Self::list_by_query_dto::<DatabaseConnection>(
             DbzKafkaConnectQueryDto::builder().build(),
@@ -772,6 +785,22 @@ impl DbzKafkaConnectSvc {
                 .await?
                 .extra
                 .unwrap_or_default(),
+        )
+    }
+
+    /// # 统计挂在该 broker 上的 Kafka Connect 数量
+    ///
+    /// 删 broker 之前用：还有 Connect 记录指着它时不允许删（数据库侧是 restrict）。
+    pub(crate) async fn count_by_kafka_broker(kafka_broker_id: U64) -> Result<usize, SvcError> {
+        let query_dto = DbzKafkaConnectQueryDto::builder()
+            .kafka_broker_id(Some(kafka_broker_id))
+            .build();
+        Ok(
+            Self::list_by_query_dto::<DatabaseConnection>(query_dto, None)
+                .await?
+                .extra
+                .unwrap_or_default()
+                .len(),
         )
     }
 

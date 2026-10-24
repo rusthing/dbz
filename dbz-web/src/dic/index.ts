@@ -13,8 +13,11 @@
 
 import type {
   ConnectorRunStatus,
+  KafkaBrokerStatus,
   KafkaConnectStatus,
   KafkaConnectorStatus,
+  KafkaSaslMechanism,
+  KafkaSecurityProtocol,
 } from '../api/types';
 
 /** # 字典项 */
@@ -53,6 +56,34 @@ export const kafkaConnectorStatusDic: DicItem<KafkaConnectorStatus>[] = [
   { value: 2, label: '已暂停', color: 'warning' },
   { value: 3, label: '未分配', color: 'processing' },
   { value: 4, label: '已销毁', color: 'default' },
+  { value: 5, label: '已停止', color: 'warning' },
+];
+
+/** # Kafka 集群（broker）状态 */
+export const kafkaBrokerStatusDic: DicItem<KafkaBrokerStatus>[] = [
+  { value: 0, label: '无状态', color: 'default' },
+  { value: 1, label: '正常', color: 'success' },
+  { value: 2, label: '已禁用', color: 'default' },
+  { value: 3, label: '连接失败', color: 'error' },
+];
+
+/**
+ * # Kafka 安全协议
+ *
+ * 直接用 Kafka 的协议名：它就是连接器配置里的 `security.protocol` 取值，写中文反而
+ * 多一层翻译；TLS 需要证书，暂不支持，所以只有明文这一支。
+ */
+export const kafkaSecurityProtocolDic: DicItem<KafkaSecurityProtocol>[] = [
+  { value: 0, label: 'PLAINTEXT', color: 'default' },
+  { value: 1, label: 'SASL_PLAINTEXT', color: 'processing' },
+];
+
+/** # Kafka SASL 机制 */
+export const kafkaSaslMechanismDic: DicItem<KafkaSaslMechanism>[] = [
+  { value: 0, label: '不使用', color: 'default' },
+  { value: 1, label: 'SASL/PLAIN', color: 'processing' },
+  { value: 2, label: 'SCRAM-SHA-256', color: 'processing' },
+  { value: 3, label: 'SCRAM-SHA-512', color: 'processing' },
 ];
 
 /** # 取字典项 */

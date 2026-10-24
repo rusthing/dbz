@@ -41,15 +41,48 @@ impl SnapshotType {
     }
 }
 
+/// # 信号通道
+///
+/// Debezium 的 `execute-snapshot` 只能通过信号通道送达，dbz 支持其中两种：
+///
+/// * `source` —— 往源库的信号表插一行。不需要 Kafka，但要 dbz 能直连业务库，
+///   `signal.data.collection` 也必须配好。
+/// * `kafka` —— 往信号 topic 投一条消息。不碰业务库，但连接器要显式启用 kafka
+///   通道（`signal.enabled.channels` 里带上 `kafka`），并且得有一个 broker 记录
+///   用来投递。
+///
+/// 两者都是「把信号交给连接器自己消费」，语义等价，选哪个只取决于环境里哪条路通。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum SignalChannel {
+    /// 源库信号表
+    #[default]
+    Source,
+    /// Kafka 信号 topic
+    Kafka,
+}
+
+impl SignalChannel {
+    /// 通道名，对应 `signal.enabled.channels` 里的取值
+    pub fn value(&self) -> &'static str {
+        match self {
+            Self::Source => "source",
+            Self::Kafka => "kafka",
+        }
+    }
+}
+
 /// # 快照预检 DTO
 ///
-/// 只解析连接器配置、读一次源库的 `information_schema`，不写任何东西：
-/// 用来在弹窗里列出「这次会快照哪些表」，让人确认后再真正发信号。
+/// 只解析连接器配置（source 通道还会读一次源库的 `information_schema`），不写任何
+/// 东西：用来在弹窗里列出「这次会快照哪些表」，让人确认后再真正发信号。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema, IntoParams)]
 #[serde(default, rename_all = "camelCase")]
 pub struct DbzSourceConnectorSnapshotPreviewDto {
     /// 上游连接器ID
     pub id: U64,
+    /// 想看哪条通道的预检结果，留空按默认顺序挑一条可用的
+    pub channel: Option<SignalChannel>,
 }
 
 /// # 触发快照 DTO
@@ -67,4 +100,7 @@ pub struct DbzSourceConnectorSnapshotDto {
     /// 快照类型，默认增量
     #[serde(default)]
     pub snapshot_type: SnapshotType,
+    /// 用哪条信号通道，留空按默认顺序挑一条可用的
+    #[serde(default)]
+    pub channel: Option<SignalChannel>,
 }

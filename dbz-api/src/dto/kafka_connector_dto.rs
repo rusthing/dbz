@@ -97,6 +97,50 @@ pub struct KafkaConnectorDeleteDto {
     pub connector_name: String,
 }
 
+/// # 停止 / 恢复连接器 DTO
+///
+/// 停止与恢复都是「对一个已存在的连接器发一条指令」，入参与删除完全同形，所以共用
+/// 一个结构。走查询参数（两个接口都不带请求体）。
+///
+/// 停止**不删配置、不动位点**：恢复后从原处继续。要重做全量请用重置位点
+/// （[`KafkaConnectorResetOffsetDto`]）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema, IntoParams)]
+#[serde(default, rename_all = "camelCase")]
+pub struct KafkaConnectorControlDto {
+    /// Kafka Connect ID（未提供 kafkaConnectUrl 时必填）
+    pub kafka_connect_id: Option<U64>,
+    /// Kafka Connect 地址（优先于 kafkaConnectId）
+    /// @len 0..
+    pub kafka_connect_url: Option<String>,
+    /// 连接器名称
+    /// @len 1..
+    pub connector_name: String,
+}
+
+/// # 重置连接器位点 DTO
+///
+/// 清空连接器记在 Kafka 里的位点，让它「当作从没跑过」。Kafka Connect 要求连接器
+/// 先处于停止状态，所以服务层会先停再清；`resume` 决定清完要不要立刻拉起来。
+///
+/// `resume = true` 时，Debezium 的 `snapshot.mode=initial` 会在没有位点的情况下做
+/// 一次**全量快照** —— 这正是「重新同步」的效果，数据量大时要知道自己在做什么。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema, IntoParams)]
+#[serde(default, rename_all = "camelCase")]
+pub struct KafkaConnectorResetOffsetDto {
+    /// Kafka Connect ID（未提供 kafkaConnectUrl 时必填）
+    pub kafka_connect_id: Option<U64>,
+    /// Kafka Connect 地址（优先于 kafkaConnectId）
+    /// @len 0..
+    pub kafka_connect_url: Option<String>,
+    /// 连接器名称
+    /// @len 1..
+    pub connector_name: String,
+    /// 清空位点后是否立即恢复运行（默认 `false`，保持停止状态）
+    ///
+    /// 置 `true` 等于「重做一次全量」：连接器没有位点，按 `snapshot.mode` 重新快照。
+    pub resume: bool,
+}
+
 /// `includeTasks` 的默认值：重启连接器时默认连同其任务一起重启
 fn default_include_tasks() -> bool {
     true

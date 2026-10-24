@@ -8,6 +8,7 @@ import {
   ApiOutlined,
   ClusterOutlined,
   DashboardOutlined,
+  DatabaseOutlined,
   ImportOutlined,
   ExportOutlined,
 } from '@ant-design/icons';
@@ -24,6 +25,13 @@ const NAV_ITEMS = [
     title: '总览',
     desc: '集群与连接器的整体健康度',
     icon: <DashboardOutlined />,
+  },
+  {
+    path: '/kafka-broker',
+    label: 'Kafka 集群',
+    title: 'Kafka 集群（broker）',
+    desc: '消息往哪个集群投：地址、认证与连通状态',
+    icon: <DatabaseOutlined />,
   },
   {
     path: '/kafka-connect',

@@ -2,10 +2,20 @@
  * # 远端连接器
  *
  * 这一页操作的是**集群上真实运行的连接器**（Kafka Connect REST API），不是库里的记录：
- * 因此能看到未经 dbz 纳管的连接器（有人在集群上手工建的），也能直接重启或删除它们。
+ * 因此能看到未经 dbz 纳管的连接器（有人在集群上手工建的），也能直接重启、停止、重置位点
+ * 或删除它们。
  *
  * 删除只动集群、不动库：删掉的连接器若仍被 dbz 纳管，下一轮健康检查会按记录重新部署
  * 回来；要彻底停掉请去对应的上游/下游连接器列表把启用开关关掉。
+ *
+ * ## 停止与重置位点的区别
+ *
+ * - **停止**（`/stop`，Kafka 3.5+）：保留配置与位点，恢复后从原处继续。
+ * - **重置位点**（`/offsets`）：清掉位点，连接器就是「从没跑过」，`snapshot.mode=initial`
+ *   时会整表快照一遍。服务端会先停再清，**不可撤销**。
+ *
+ * 停在「已停止」的连接器在 dbz 健康检查里会被记为异常并告警，但不会被自动重启 ——
+ * 自动修复只处理 `FAILED`，人工动作不该被机器覆盖。
  *
  * 定位目标集群用 `?kafkaConnectId=`：从「Kafka Connect」页点「连接器」跳过来时自动带上。
  */
@@ -15,7 +25,9 @@ import {
   Alert,
   Button,
   Card,
+  Checkbox,
   Empty,
+  Modal,
   Popconfirm,
   Select,
   Space,
@@ -106,6 +118,11 @@ function ConnectorsPanel({ kafkaConnectId }: { kafkaConnectId: Id }) {
   );
   const [restarting, setRestarting] = useState<string | null>(null);
   const [removing, setRemoving] = useState<string | null>(null);
+  const [switching, setSwitching] = useState<string | null>(null);
+  /** 重置位点的目标连接器；非空时弹出确认框 */
+  const [resetTarget, setResetTarget] = useState<KafkaConnectorVo | null>(null);
+  const [resetResume, setResetResume] = useState(false);
+  const [resetting, setResetting] = useState(false);
 
   const handleRestart = async (connectorName: string) => {
     setRestarting(connectorName);
@@ -121,6 +138,50 @@ function ConnectorsPanel({ kafkaConnectId }: { kafkaConnectId: Id }) {
       message.error(errorMessage(reason));
     } finally {
       setRestarting(null);
+    }
+  };
+
+  /** 停止 / 恢复：同一个按钮按当前状态切换语义 */
+  const handleSwitch = async (connectorName: string, stopped: boolean) => {
+    setSwitching(connectorName);
+    try {
+      if (stopped) {
+        await kafkaConnectorApi.resume({ kafkaConnectId, connectorName });
+        message.success(`已提交恢复：${connectorName}`);
+      } else {
+        await kafkaConnectorApi.stop({ kafkaConnectId, connectorName });
+        message.success(`已提交停止：${connectorName}（配置与位点保留）`);
+      }
+      reload();
+    } catch (reason) {
+      message.error(errorMessage(reason));
+    } finally {
+      setSwitching(null);
+    }
+  };
+
+  const handleResetOffsets = async () => {
+    if (!resetTarget) {
+      return;
+    }
+    setResetting(true);
+    try {
+      await kafkaConnectorApi.resetOffsets({
+        kafkaConnectId,
+        connectorName: resetTarget.name,
+        resume: resetResume,
+      });
+      message.success(
+        resetResume
+          ? `已清空位点并恢复运行：${resetTarget.name}`
+          : `已清空位点：${resetTarget.name}（仍处于停止状态）`,
+      );
+      setResetTarget(null);
+      reload();
+    } catch (reason) {
+      message.error(errorMessage(reason));
+    } finally {
+      setResetting(false);
     }
   };
 
@@ -174,34 +235,68 @@ function ConnectorsPanel({ kafkaConnectId }: { kafkaConnectId: Id }) {
     {
       title: '操作',
       key: 'actions',
-      width: 150,
-      render: (_, record) => (
-        <Space size={4}>
-          <Popconfirm
-            title={`重启连接器「${record.name}」？`}
-            description="将连同其任务一起重启，异步生效。"
-            okText="重启"
-            cancelText="取消"
-            onConfirm={() => handleRestart(record.name)}
-          >
-            <Button type="link" size="small" loading={restarting === record.name}>
-              重启
+      width: 290,
+      render: (_, record) => {
+        // 已停止的连接器给「恢复」，其余给「停止」
+        const stopped = record.state === 5;
+        return (
+          <Space size={4}>
+            <Popconfirm
+              title={
+                stopped
+                  ? `恢复连接器「${record.name}」？`
+                  : `停止连接器「${record.name}」？`
+              }
+              description={
+                stopped
+                  ? '恢复后从原位点继续消费。'
+                  : '配置与位点都会保留，恢复后从原处继续；停止期间每轮健康检查都会把它记为异常并告警（不会自动重启）。需要 Kafka 3.5+。'
+              }
+              okText={stopped ? '恢复' : '停止'}
+              cancelText="取消"
+              onConfirm={() => handleSwitch(record.name, stopped)}
+            >
+              <Button type="link" size="small" loading={switching === record.name}>
+                {stopped ? '恢复' : '停止'}
+              </Button>
+            </Popconfirm>
+            <Popconfirm
+              title={`重启连接器「${record.name}」？`}
+              description="将连同其任务一起重启，异步生效。"
+              okText="重启"
+              cancelText="取消"
+              onConfirm={() => handleRestart(record.name)}
+            >
+              <Button type="link" size="small" loading={restarting === record.name}>
+                重启
+              </Button>
+            </Popconfirm>
+            <Button
+              type="link"
+              size="small"
+              danger
+              onClick={() => {
+                setResetResume(false);
+                setResetTarget(record);
+              }}
+            >
+              重置位点
             </Button>
-          </Popconfirm>
-          <Popconfirm
-            title={`从集群上删除「${record.name}」？`}
-            description="连接器与其任务会从集群上注销，库里的记录不受影响；若它仍被 dbz 纳管，下一轮检查会重新部署回来。"
-            okText="删除"
-            okButtonProps={{ danger: true }}
-            cancelText="取消"
-            onConfirm={() => handleRemove(record.name)}
-          >
-            <Button type="link" size="small" danger loading={removing === record.name}>
-              删除
-            </Button>
-          </Popconfirm>
-        </Space>
-      ),
+            <Popconfirm
+              title={`从集群上删除「${record.name}」？`}
+              description="连接器与其任务会从集群上注销，库里的记录不受影响；若它仍被 dbz 纳管，下一轮检查会重新部署回来。"
+              okText="删除"
+              okButtonProps={{ danger: true }}
+              cancelText="取消"
+              onConfirm={() => handleRemove(record.name)}
+            >
+              <Button type="link" size="small" danger loading={removing === record.name}>
+                删除
+              </Button>
+            </Popconfirm>
+          </Space>
+        );
+      },
     },
   ];
 
@@ -246,6 +341,42 @@ function ConnectorsPanel({ kafkaConnectId }: { kafkaConnectId: Id }) {
           ),
         }}
       />
+
+      <Modal
+        open={Boolean(resetTarget)}
+        title={`重置位点 · ${resetTarget?.name ?? ''}`}
+        width={580}
+        okText="清空位点"
+        okButtonProps={{ danger: true }}
+        cancelText="取消"
+        confirmLoading={resetting}
+        onOk={handleResetOffsets}
+        onCancel={() => setResetTarget(null)}
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Alert
+            type="warning"
+            showIcon
+            message="位点删了就没有了，这一步不可撤销"
+            description="服务端会先停止连接器再清空位点。清空后连接器就是「从没跑过」：snapshot.mode=initial 时会做一次整表快照，数据以 op=r 追加到原 topic，下游需按主键幂等处理。"
+          />
+          <Typography.Text type="secondary">
+            与「再同步」的区别：再同步走信号，只重读指定表、不清位点、不中断流式读取；
+            这条路清掉全部位点，影响整条连接器。
+          </Typography.Text>
+          <Checkbox
+            checked={resetResume}
+            onChange={(event) => setResetResume(event.target.checked)}
+          >
+            清空后立即恢复运行（等于立刻重做一次全量快照）
+          </Checkbox>
+          {!resetResume && (
+            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+              不勾选时连接器保持「已停止」，需要再点一次「恢复」；期间健康检查会把它记为异常并告警。
+            </Typography.Text>
+          )}
+        </Space>
+      </Modal>
     </>
   );
 }

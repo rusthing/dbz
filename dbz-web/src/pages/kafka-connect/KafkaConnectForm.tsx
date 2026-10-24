@@ -3,17 +3,23 @@
  *
  * 新增与编辑共用一个弹窗：有 `record` 就是编辑，没有就是新增。
  *
- * 地址（`url`）是集群的唯一业务标识，也是健康检查的探测目标；服务端在**改地址**时
- * 会先把旧地址上的连接器全部注销，所以这里给出明确提示，避免运维误以为只是换个字符串。
+ * 两件事要在这里定下来：
+ *
+ * 1. **地址**（`url`）—— 健康检查的探测目标。服务端在改地址时会先把旧地址上的
+ *    连接器全部注销，所以这里给出明确提示，避免运维误以为只是换个字符串。
+ * 2. **Kafka 集群**（`kafkaBrokerId`）—— 这台 worker 上的连接器把信号投到哪个
+ *    集群。「再同步」走 Kafka 通道时要顺着它找 broker，所以新增必填；老记录可能
+ *    还空着，编辑时补上即可。
  *
  * 「启用」不在这里：它在列表的启用列上切换（见 `EnabledSwitch`），因为禁用会连带
  * 注销集群上的连接器，不适合混在「改个名字、改个地址」的表单里一起提交。
  */
 
-import { App as AntdApp, Form, Input, Modal } from 'antd';
-import { useState } from 'react';
+import { App as AntdApp, Form, Input, Modal, Select } from 'antd';
+import { useEffect, useState } from 'react';
+import { kafkaBrokerApi } from '../../api/kafka-broker';
 import { kafkaConnectApi } from '../../api/kafka-connect';
-import type { DbzKafkaConnectVo } from '../../api/types';
+import type { DbzKafkaConnectVo, Id } from '../../api/types';
 import { errorMessage } from '../../utils/format';
 
 interface KafkaConnectFormProps {
@@ -27,6 +33,7 @@ interface KafkaConnectFormProps {
 interface FormValues {
   name: string;
   url: string;
+  kafkaBrokerId: Id;
   remark?: string;
 }
 
@@ -39,7 +46,29 @@ export default function KafkaConnectForm({
   const { message } = AntdApp.useApp();
   const [form] = Form.useForm<FormValues>();
   const [submitting, setSubmitting] = useState(false);
+  const [brokerOptions, setBrokerOptions] = useState<{ value: Id; label: string }[]>([]);
   const isEdit = Boolean(record);
+
+  /**
+   * 打开时拉一次 Kafka 集群列表：集群数量不多，而选项要显示「名称 + 地址」，
+   * 由页面传进来会多一层参数传递，这里自己取更省事。
+   */
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+    kafkaBrokerApi
+      .list()
+      .then((brokers) =>
+        setBrokerOptions(
+          brokers.map((broker) => ({
+            value: broker.id,
+            label: `${broker.name}（${broker.bootstrapServers}）`,
+          })),
+        ),
+      )
+      .catch(() => setBrokerOptions([]));
+  }, [open]);
 
   /**
    * # 弹窗完全打开后同步表单
@@ -56,6 +85,7 @@ export default function KafkaConnectForm({
       form.setFieldsValue({
         name: record.name,
         url: record.url,
+        kafkaBrokerId: record.kafkaBrokerId ?? undefined,
         remark: record.remark ?? '',
       });
     } else {
@@ -74,6 +104,7 @@ export default function KafkaConnectForm({
       const payload = {
         name: values.name.trim(),
         url: values.url.trim(),
+        kafkaBrokerId: values.kafkaBrokerId,
         // 传空串而不是 undefined：ModifyDto 用 Option<Option<String>> 区分「不改」与「清空」
         remark: values.remark?.trim() ?? '',
       };
@@ -103,7 +134,7 @@ export default function KafkaConnectForm({
       onOk={handleSubmit}
       onCancel={onCancel}
       afterOpenChange={syncForm}
-      width={560}
+      width={600}
     >
       <Form form={form} layout="vertical" style={{ marginTop: 12 }}>
         <Form.Item
@@ -127,6 +158,21 @@ export default function KafkaConnectForm({
           ]}
         >
           <Input placeholder="http://10.0.0.1:8083" allowClear />
+        </Form.Item>
+
+        <Form.Item
+          name="kafkaBrokerId"
+          label="Kafka 集群"
+          extra="这台 worker 上的连接器把变更（以及再同步的信号）写到这里。没有可选项时先去「Kafka 集群」页建一条。"
+          rules={[{ required: true, message: '请选择 Kafka 集群' }]}
+        >
+          <Select
+            showSearch
+            optionFilterProp="label"
+            placeholder="选择 Kafka 集群"
+            options={brokerOptions}
+            notFoundContent="还没有 Kafka 集群记录"
+          />
         </Form.Item>
 
         <Form.Item name="remark" label="备注">
