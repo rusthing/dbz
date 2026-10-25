@@ -61,6 +61,13 @@ interface FieldSpec {
   placeholder?: string;
   /** `select` 的候选值；`AutoComplete` 也用它，但允许填别的 */
   options?: string[];
+  /**
+   * `select` 候选项的注释，键为候选值
+   *
+   * 只在下拉项里显示，选中之后输入框里仍是值本身 —— 枚举值（`schema_only` 这类）
+   * 不看注释根本猜不出行为，全挤在字段下方的 help 里又得抬头一个个对。
+   */
+  optionHints?: Record<string, string>;
   /** 允许在候选项之外自己填（`connector.class` 这类） */
   freeform?: boolean;
   /** 图形化里标红，不做强制校验（语义正确性由集群反馈） */
@@ -290,7 +297,16 @@ const SOURCE_GROUPS: FieldGroup[] = [
           'no_data',
           'configuration_based',
         ],
-        help: 'initial：没有位点时整表快照；schema_only：只读表结构。',
+        optionHints: {
+          initial: '默认：没有位点时整表快照，有位点就直接追增量',
+          initial_only: '只做一次整表快照，做完就停，不追后续变更',
+          schema_only: '只读表结构、不搬数据，随后从当前位点追增量',
+          schema_only_recovery: '修复用：schema 历史丢失/损坏时重建，正常跑别选',
+          when_needed: '比 initial 更谨慎：缺位点或 schema 不兼容时才快照',
+          no_data: '需要时只补表结构，同样不搬数据',
+          configuration_based: '只快照 snapshot.include.collection.list 里列出的表',
+        },
+        help: '拿不准就 initial；只要增量、不要历史数据用 schema_only。两条信号通道的「重新同步」不用改这里。',
       },
     ],
   },
@@ -705,7 +721,28 @@ export default function ConnectorConfigEditor({
           value={current || undefined}
           allowClear
           placeholder={field.placeholder}
-          options={field.options?.map((option) => ({ value: option, label: option }))}
+          options={field.options?.map((option) => ({
+            value: option,
+            label: option,
+            hint: field.optionHints?.[option],
+          }))}
+          // 有注释就让下拉自己撑宽，否则长注释会被输入框的宽度挤成两行
+          popupMatchSelectWidth={!field.optionHints}
+          optionRender={
+            field.optionHints
+              ? (option) => (
+                  // 值这一列定宽，各条注释才对得齐（见 global.css 的 .dbz-option-row）
+                  <div className="dbz-option-row">
+                    <span className="dbz-mono">{toText(option.value)}</span>
+                    {option.data.hint && (
+                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                        {option.data.hint}
+                      </Typography.Text>
+                    )}
+                  </div>
+                )
+              : undefined
+          }
           onChange={(next) => setField(field.key, next ?? '')}
         />
       );

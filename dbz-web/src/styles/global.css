@@ -151,6 +151,18 @@ body {
   font-size: 12.5px;
 }
 
+/* 配置项下拉里「值 + 注释」的一行：值定宽，注释才对得齐 */
+.dbz-option-row {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.dbz-option-row .dbz-mono {
+  flex: none;
+  min-width: 160px;
+}
+
 /* 连接器配置编辑器的分组：一组一张浅底卡片，视觉上把「源库连接」「信号」分开 */
 .dbz-config-group {
   padding: 12px 14px;

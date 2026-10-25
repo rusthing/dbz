@@ -589,6 +589,20 @@ try {
   );
   await page.screenshot({ path: `${SHOTS}/04b-config-editor.png` });
 
+  // 枚举值光看名字猜不出行为（schema_only_recovery 尤其），下拉里每项都要带注释
+  // 点外层 .ant-select：值已经选中时，选中文本那层会挡住 input，直接点 input 会超时
+  await visibleModal().locator('.ant-select:has([id="snapshot.mode"])').click();
+  await page.waitForTimeout(300);
+  const modeOptions = page.locator('.ant-select-dropdown:visible .ant-select-item-option');
+  const recoveryText = await page
+    .locator('.ant-select-dropdown:visible .ant-select-item-option:has-text("schema_only_recovery")')
+    .innerText();
+  check('快照模式下拉 7 项齐全', (await modeOptions.count()) === 7, String(await modeOptions.count()));
+  check('快照模式每项都带注释', recoveryText.includes('修复'), recoveryText);
+  await page.screenshot({ path: `${SHOTS}/04b2-snapshot-mode.png` });
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(250);
+
   await visibleModal().locator('.ant-segmented-item:has-text("JSON")').click();
   await visibleModal().locator('.dbz-json-editor').waitFor();
   const configJson = JSON.parse(await visibleModal().locator('.dbz-json-editor').inputValue());
