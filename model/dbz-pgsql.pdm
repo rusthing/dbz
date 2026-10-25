@@ -4818,6 +4818,22 @@ DAT 1791624231</a:History>
 <a:Column.Mandatory>1</a:Column.Mandatory>
 <a:GlobalObjectID/>
 </o:Column>
+<o:Column Id="o123">
+<a:ObjectID>ABAF62E6-CC2C-4223-9AF6-D97C91C9874B</a:ObjectID>
+<a:Name>检查结论</a:Name>
+<a:Code>run_msg</a:Code>
+<a:CreationDate>1792888095</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792888095</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>检查结论（最近一次检查的失败原因，成功时为空）
+@len 0..=500</a:Comment>
+<a:History>ORG {9C4EC3F2-B4B4-4F5E-B9A9-45A626C07321}
+DAT 1792888095</a:History>
+<a:DataType>VARCHAR(500)</a:DataType>
+<a:Length>500</a:Length>
+<a:GlobalObjectID/>
+</o:Column>
 <o:Column Id="o24">
 <a:ObjectID>68E15090-7E9C-4914-89FC-149CE4046A4E</a:ObjectID>
 <a:Name>备注</a:Name>
@@ -5220,6 +5236,22 @@ DAT 1792402491</a:History>
 <a:Column.Mandatory>1</a:Column.Mandatory>
 <a:GlobalObjectID/>
 </o:Column>
+<o:Column Id="o124">
+<a:ObjectID>F327BFE0-B3C1-46BF-9146-A9A06EFE8391</a:ObjectID>
+<a:Name>检查结论</a:Name>
+<a:Code>run_msg</a:Code>
+<a:CreationDate>1792888095</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792888095</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>检查结论（最近一次检查的失败原因，成功时为空）
+@len 0..=500</a:Comment>
+<a:History>ORG {9B3786C3-40EF-496A-998D-60C7F301A326}
+DAT 1792888095</a:History>
+<a:DataType>VARCHAR(500)</a:DataType>
+<a:Length>500</a:Length>
+<a:GlobalObjectID/>
+</o:Column>
 <o:Column Id="o48">
 <a:ObjectID>4369A52B-BFDD-4922-97C0-41F0B938AF00</a:ObjectID>
 <a:Name>备注</a:Name>
@@ -5597,6 +5629,22 @@ DAT 1792403300</a:History>
 <a:DataType>INT2</a:DataType>
 <a:Length>2</a:Length>
 <a:Column.Mandatory>1</a:Column.Mandatory>
+<a:GlobalObjectID/>
+</o:Column>
+<o:Column Id="o125">
+<a:ObjectID>B21A70B4-B33D-4878-B13E-299EC40EFE56</a:ObjectID>
+<a:Name>检查结论</a:Name>
+<a:Code>run_msg</a:Code>
+<a:CreationDate>1792888095</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792888095</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>检查结论（最近一次检查的失败原因，成功时为空）
+@len 0..=500</a:Comment>
+<a:History>ORG {CA9F0B0C-9A4E-4D88-B1A8-11EC9D6CCE7E}
+DAT 1792888095</a:History>
+<a:DataType>VARCHAR(500)</a:DataType>
+<a:Length>500</a:Length>
 <a:GlobalObjectID/>
 </o:Column>
 <o:Column Id="o71">
@@ -6033,6 +6081,22 @@ DAT 1792852288</a:History>
 <a:DataType>INT2</a:DataType>
 <a:Length>2</a:Length>
 <a:Column.Mandatory>1</a:Column.Mandatory>
+<a:GlobalObjectID/>
+</o:Column>
+<o:Column Id="o126">
+<a:ObjectID>698E3B87-A0D0-44A8-A2F4-1F1C95D687F3</a:ObjectID>
+<a:Name>检查结论</a:Name>
+<a:Code>run_msg</a:Code>
+<a:CreationDate>1792888095</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792888095</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>检查结论（最近一次检查的失败原因，成功时为空）
+@len 0..=500</a:Comment>
+<a:History>ORG {385A95BA-91D1-4CED-9917-FDF41D23447B}
+DAT 1792888095</a:History>
+<a:DataType>VARCHAR(500)</a:DataType>
+<a:Length>500</a:Length>
 <a:GlobalObjectID/>
 </o:Column>
 <o:Column Id="o104">

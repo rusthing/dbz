@@ -49,10 +49,60 @@ import type {
   KafkaConnectorVo,
 } from '../../api/types';
 import StatusTag from '../../components/StatusTag';
+import type { StatusDetail } from '../../components/StatusTag';
 import { kafkaConnectorStatusDic } from '../../dic';
 import { useAsync } from '../../hooks/useAsync';
 import { useClusterOptions } from '../../hooks/useOptions';
 import { errorMessage, orDash } from '../../utils/format';
+
+/** 任务的异常状态：FAILED 与 UNASSIGNED（与后端 `is_task_abnormal` 同一套判定） */
+const ABNORMAL_TASK_STATES: KafkaConnectorStatus[] = [1, 3];
+
+/**
+ * 远端连接器的运行详情
+ *
+ * 这一页的状态是集群上**此刻**的真实状态，`/connectors?expand=status` 一次就把
+ * 连接器与任务的 trace 都带回来了，所以不用再发请求。失败原因优先取连接器自己的
+ * trace（它没起来），其次取第一个失败任务的（它起来了但挂了）。
+ */
+function connectorDetail(record: KafkaConnectorVo): StatusDetail {
+  const abnormal = record.tasks.filter((task) => ABNORMAL_TASK_STATES.includes(task.state));
+  const taskText =
+    record.tasks.length === 0
+      ? '无任务（连接器没分配任务）'
+      : abnormal.length === 0
+        ? `${record.tasks.length} 个，全部正常`
+        : `${record.tasks.length} 个，异常 ${abnormal.length} 个（#${abnormal
+            .map((task) => task.id)
+            .join(', #')}）`;
+
+  const taskTrace = abnormal
+    .map((task) => task.trace?.trim())
+    .find((trace): trace is string => Boolean(trace));
+
+  return {
+    summary: `运行详情 · ${record.name}`,
+    rows: [
+      {
+        label: '类名',
+        value: <span className="dbz-mono">{orDash(record.connectorClass)}</span>,
+      },
+      {
+        label: 'Worker',
+        value: <span className="dbz-mono">{orDash(record.workerId)}</span>,
+      },
+      { label: '任务', value: taskText },
+      ...(record.state === 5
+        ? [{ label: '说明', value: '已停止：配置与位点保留，恢复后从原处继续' }]
+        : []),
+      ...(record.state === 2
+        ? [{ label: '说明', value: '已暂停：人工或集群侧暂停，dbz 不会自动重启它' }]
+        : []),
+    ],
+    // 连接器自身的 trace 优先；任务那份额外可以在展开行里逐个重启
+    reason: record.trace?.trim() || taskTrace || null,
+  };
+}
 
 export default function RemoteConnectorPage() {
   const cluster = useClusterOptions();
@@ -222,8 +272,12 @@ function ConnectorsPanel({ kafkaConnectId }: { kafkaConnectId: Id }) {
       title: '状态',
       dataIndex: 'state',
       width: 110,
-      render: (state: KafkaConnectorStatus) => (
-        <StatusTag dic={kafkaConnectorStatusDic} value={state} />
+      render: (state: KafkaConnectorStatus, record) => (
+        <StatusTag
+          dic={kafkaConnectorStatusDic}
+          value={state}
+          detail={connectorDetail(record)}
+        />
       ),
     },
     {

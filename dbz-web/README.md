@@ -156,6 +156,7 @@ curl -s http://xxx:xxx/dbz-svr/dbz/kafka-connect/list | head -c 200             
 **不需要 dbz-svr、不碰数据库**就能把每个页面真实渲染一遍，并校验：
 
 - 页面渲染、表格行数、状态标签、字典翻译、时间列格式化；
+- **悬停状态弹出运行详情**：失败原因确实从 `runMsg` / trace 渲染出来了（漏传 `detail` 会 FAIL）；
 - 写接口带了 `X-User-Id`、请求体是 camelCase 且已 trim；
 - 表单默认值、编辑回填、提交后自动关闭；
 - 布局体检：顶栏标题不被裁、表格不横向溢出、工具栏不换行。
@@ -301,6 +302,25 @@ scripts/smoke.mjs        # 冒烟测试
 | 上游连接器 | `/dbz/source-connector` 同上 + `GET /snapshot/preview`、`POST /snapshot` |
 | 下游连接器 | `/dbz/sink-connector` 同上 |
 | 远端连接器 | `GET /dbz/kafka-connector/plugins`、`GET /list`、`POST /restart`、`POST /task/restart`、`PUT /stop`、`PUT /resume`、`DELETE /offsets`、`DELETE /dbz/kafka-connector` |
+
+## 状态悬停：运行详情
+
+集群、Kafka Connect、上游/下游连接器列表里的**状态标签可以悬停**（虚线下划 + 问号光标），
+弹出的是「这个状态是怎么得出的」：
+
+| 页面 | 弹层内容 | 失败原因来自 |
+| --- | --- | --- |
+| Kafka 集群 | 地址、认证方式（协议 + 机制 + 账号）、结论时间 | `dbz_kafka_broker.run_msg`（检测时写入） |
+| Kafka Connect | 地址、结论时间 | `dbz_kafka_connect.run_msg`（健康检查写入） |
+| 上游 / 下游连接器 | 连接器名、所属集群（下游还有上游）、结论时间 | `dbz_{source,sink}_connector.run_msg`（健康检查写入） |
+| 远端连接器 | 类名、worker、任务清点、停止/暂停说明 | `GET /connectors?expand=status` 带回的 trace，不额外发请求 |
+
+`run_msg` 只在**失败时**有值（成功时为空），内容取自真正的原因：探测连不上时是请求错误，
+部署被拒时是 Kafka Connect 的响应体（会指出哪个参数不合法），状态异常时是异常 trace 的
+首行（例如 `Access denied for user 'dbz'`）。写入前统一压成一行并截到 500 字符
+（`dbz-svr/src/utils/error_msg_utils.rs`），所以不会因为 Java 栈太长把列写爆。
+
+状态没变、原因也没变时不写库，`update_ms` 因此表示「进入当前状态/原因的时间」。
 
 ## 删除到底会不会注销连接器
 

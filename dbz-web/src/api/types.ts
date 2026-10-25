@@ -97,6 +97,8 @@ export interface DbzKafkaBrokerVo extends AuditFields {
   saslMechanism: KafkaSaslMechanism;
   saslUsername?: string | null;
   runStatus: KafkaBrokerStatus;
+  /** 检查结论：最近一次检测的失败原因，正常时为空 */
+  runMsg?: string | null;
   remark?: string | null;
   enabled: boolean;
 }
@@ -139,6 +141,8 @@ export interface DbzKafkaConnectVo extends AuditFields {
   /** 关联的 Kafka 集群（broker）；老记录可能为空 */
   kafkaBrokerId?: Id | null;
   runStatus: KafkaConnectStatus;
+  /** 检查结论：最近一次探测的失败原因，正常时为空 */
+  runMsg?: string | null;
   remark?: string | null;
   enabled: boolean;
 }
@@ -151,6 +155,8 @@ export interface DbzSourceConnectorVo extends AuditFields {
   connectorName: string;
   connectorConfig: string;
   runStatus: ConnectorRunStatus;
+  /** 检查结论：最近一次检查的失败原因，正常时为空 */
+  runMsg?: string | null;
   remark?: string | null;
   enabled: boolean;
 }
@@ -164,6 +170,8 @@ export interface DbzSinkConnectorVo extends AuditFields {
   connectorName: string;
   connectorConfig: string;
   runStatus: ConnectorRunStatus;
+  /** 检查结论：最近一次检查的失败原因，正常时为空 */
+  runMsg?: string | null;
   remark?: string | null;
   enabled: boolean;
 }
@@ -295,6 +303,10 @@ export interface KafkaConnectorVo {
   /** 集群自己判定的方向：`source` / `sink`，低版本集群可能为空串 */
   type: string;
   state: KafkaConnectorStatus;
+  /** 执行该连接器的 worker（任务可能分布在别的 worker 上） */
+  workerId?: string | null;
+  /** 连接器级异常栈（自身 FAILED 时才有，任务那份额外挂在任务上） */
+  trace?: string | null;
   tasks: KafkaConnectorTaskVo[];
 }
 

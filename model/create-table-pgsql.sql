@@ -15,6 +15,7 @@ create table dbz_kafka_broker (
    sasl_username        VARCHAR(100)         null,
    sasl_password        VARCHAR(200)         null,
    run_status           INT2                 not null default 0,
+   run_msg              VARCHAR(500)         null,
    remark               VARCHAR(50)          null,
    enabled              BOOL                 not null default true,
    creater_id           INT8                 not null,
@@ -70,6 +71,10 @@ comment on column dbz_kafka_broker.run_status is
   2=Disabled       已禁用
   3=ConnectFailed  连接失败';
 
+comment on column dbz_kafka_broker.run_msg is
+'检查结论（最近一次检查的失败原因，成功时为空）
+@len 0..=500';
+
 comment on column dbz_kafka_broker.remark is
 '备注
 @len 0..=50';
@@ -103,6 +108,7 @@ create table dbz_kafka_connect (
    name                 VARCHAR(50)          not null,
    url                  VARCHAR(100)         not null,
    run_status           INT2                 not null default 0,
+   run_msg              VARCHAR(500)         null,
    remark               VARCHAR(50)          null,
    enabled              BOOL                 not null default true,
    creater_id           INT8                 not null,
@@ -136,6 +142,10 @@ comment on column dbz_kafka_connect.run_status is
   1=Normal         正常
   2=Disabled       已禁用
   3=ConnectFailed  连接失败';
+
+comment on column dbz_kafka_connect.run_msg is
+'检查结论（最近一次检查的失败原因，成功时为空）
+@len 0..=500';
 
 comment on column dbz_kafka_connect.remark is
 '备注
@@ -183,6 +193,7 @@ create table dbz_sink_connector (
    connector_name       VARCHAR(50)          not null,
    connector_config     TEXT                 not null,
    run_status           INT2                 not null default 0,
+   run_msg              VARCHAR(500)         null,
    remark               VARCHAR(50)          null,
    enabled              BOOL                 not null default true,
    creater_id           INT8                 not null,
@@ -230,6 +241,10 @@ comment on column dbz_sink_connector.run_status is
   6=CheckError          检测连接器异常
   7=CheckStatusFailed   检测连接器状态失败
   8=CheckStatusError    检测连接器状态异常';
+
+comment on column dbz_sink_connector.run_msg is
+'检查结论（最近一次检查的失败原因，成功时为空）
+@len 0..=500';
 
 comment on column dbz_sink_connector.remark is
 '备注
@@ -281,6 +296,7 @@ create table dbz_source_connector (
    connector_name       VARCHAR(50)          not null,
    connector_config     TEXT                 not null,
    run_status           INT2                 not null default 0,
+   run_msg              VARCHAR(500)         null,
    remark               VARCHAR(50)          null,
    enabled              BOOL                 not null default true,
    creater_id           INT8                 not null,
@@ -325,6 +341,10 @@ comment on column dbz_source_connector.run_status is
   6=CheckError          检测连接器异常
   7=CheckStatusFailed   检测连接器状态失败
   8=CheckStatusError    检测连接器状态异常';
+
+comment on column dbz_source_connector.run_msg is
+'检查结论（最近一次检查的失败原因，成功时为空）
+@len 0..=500';
 
 comment on column dbz_source_connector.remark is
 '备注

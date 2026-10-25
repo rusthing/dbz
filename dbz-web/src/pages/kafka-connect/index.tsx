@@ -15,6 +15,7 @@ import { kafkaConnectApi } from '../../api/kafka-connect';
 import type { DbzKafkaConnectVo, KafkaConnectStatus } from '../../api/types';
 import EnabledSwitch from '../../components/EnabledSwitch';
 import StatusTag from '../../components/StatusTag';
+import type { StatusDetail } from '../../components/StatusTag';
 import { dicOptions, kafkaConnectStatusDic } from '../../dic';
 import { usePagedQuery } from '../../hooks/usePagedQuery';
 import { errorMessage, formatMs, orDash } from '../../utils/format';
@@ -25,6 +26,26 @@ interface FilterDraft {
   keyword?: string;
   runStatus?: KafkaConnectStatus;
   enabled?: boolean;
+}
+
+/**
+ * 状态悬停详情
+ *
+ * 集群的「连接失败」多半是地址写错、端口不通或 REST 被挡，探测到的具体错误由服务端
+ * 写进 `run_msg`；悬停直接给出来，省一次「去服务器上看日志」。
+ */
+function statusDetailOf(record: DbzKafkaConnectVo): StatusDetail {
+  return {
+    summary: `运行详情 · ${record.name}`,
+    rows: [
+      { label: '地址', value: <span className="dbz-mono">{record.url}</span> },
+      { label: '结论时间', value: formatMs(record.updateMs) },
+      ...(record.runStatus === 0
+        ? [{ label: '说明', value: '刚新增或改过地址，等下一轮检查给结论' }]
+        : []),
+    ],
+    reason: record.runMsg,
+  };
 }
 
 export default function KafkaConnectPage() {
@@ -97,7 +118,13 @@ export default function KafkaConnectPage() {
       title: '状态',
       dataIndex: 'runStatus',
       width: 110,
-      render: (value: KafkaConnectStatus) => <StatusTag dic={kafkaConnectStatusDic} value={value} />,
+      render: (value: KafkaConnectStatus, record) => (
+        <StatusTag
+          dic={kafkaConnectStatusDic}
+          value={value}
+          detail={statusDetailOf(record)}
+        />
+      ),
     },
     {
       title: '启用',

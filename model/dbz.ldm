@@ -1836,6 +1836,20 @@ DESTINATION 0 新宋体,8,N</a:FontList>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
 <a:GlobalObjectID/>
 </o:EntityAttribute>
+<o:EntityAttribute Id="o88">
+<a:ObjectID>4713ACB6-6BB0-4EC5-BF98-9B9FC44ECC94</a:ObjectID>
+<a:Name>检查结论</a:Name>
+<a:Code>run_msg</a:Code>
+<a:CreationDate>1792888112</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792888112</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>检查结论（最近一次检查的失败原因，成功时为空）
+@len 0..=500</a:Comment>
+<a:DataType>VA500</a:DataType>
+<a:Length>500</a:Length>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
 <o:EntityAttribute Id="o26">
 <a:ObjectID>7E42EB07-50CC-44FD-80AC-2A89D746C41C</a:ObjectID>
 <a:Name>备注</a:Name>
@@ -2072,6 +2086,20 @@ DESTINATION 0 新宋体,8,N</a:FontList>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
 <a:GlobalObjectID/>
 </o:EntityAttribute>
+<o:EntityAttribute Id="o89">
+<a:ObjectID>8A69CBFB-DA09-4959-96A6-160902778AF3</a:ObjectID>
+<a:Name>检查结论</a:Name>
+<a:Code>run_msg</a:Code>
+<a:CreationDate>1792888112</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792888112</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>检查结论（最近一次检查的失败原因，成功时为空）
+@len 0..=500</a:Comment>
+<a:DataType>VA500</a:DataType>
+<a:Length>500</a:Length>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
 <o:EntityAttribute Id="o42">
 <a:ObjectID>E513AA43-4381-4FD3-990E-D285CBEDB25E</a:ObjectID>
 <a:Name>备注</a:Name>
@@ -2262,6 +2290,20 @@ DESTINATION 0 新宋体,8,N</a:FontList>
 <a:DefaultValue>0</a:DefaultValue>
 <a:DataType>BT</a:DataType>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o90">
+<a:ObjectID>18E993BC-2AED-4A90-A686-1176D90C2DC5</a:ObjectID>
+<a:Name>检查结论</a:Name>
+<a:Code>run_msg</a:Code>
+<a:CreationDate>1792888112</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792888112</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>检查结论（最近一次检查的失败原因，成功时为空）
+@len 0..=500</a:Comment>
+<a:DataType>VA500</a:DataType>
+<a:Length>500</a:Length>
 <a:GlobalObjectID/>
 </o:EntityAttribute>
 <o:EntityAttribute Id="o55">
@@ -2530,6 +2572,20 @@ DESTINATION 0 新宋体,8,N</a:FontList>
 <a:DefaultValue>0</a:DefaultValue>
 <a:DataType>BT</a:DataType>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o91">
+<a:ObjectID>B34D100B-5178-44F8-A4B7-344A51E81D38</a:ObjectID>
+<a:Name>检查结论</a:Name>
+<a:Code>run_msg</a:Code>
+<a:CreationDate>1792888112</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1792888112</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>检查结论（最近一次检查的失败原因，成功时为空）
+@len 0..=500</a:Comment>
+<a:DataType>VA500</a:DataType>
+<a:Length>500</a:Length>
 <a:GlobalObjectID/>
 </o:EntityAttribute>
 <o:EntityAttribute Id="o77">

@@ -165,3 +165,55 @@ body {
   overflow-y: auto;
   padding-right: 4px;
 }
+
+/* 状态标签可悬停看详情：虚线下划 + help 光标，让「这里能停一下」看得出来 */
+.dbz-status-hover {
+  cursor: help;
+}
+
+.dbz-status-hover .ant-tag {
+  cursor: help;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
+
+/* 悬停弹出的运行详情 */
+.dbz-status-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.dbz-status-row {
+  display: flex;
+  gap: 8px;
+}
+
+.dbz-status-row-label {
+  flex: none;
+  width: 62px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.dbz-status-row-value {
+  min-width: 0;
+  word-break: break-all;
+}
+
+/* 失败原因：等宽、浅底、超过高度内部滚动（Debezium 的异常可能很长） */
+.dbz-status-reason {
+  margin: 2px 0 0;
+  padding: 8px 10px;
+  max-height: 180px;
+  overflow: auto;
+  background: #fafbfd;
+  border: 1px solid #eef0f4;
+  border-radius: 6px;
+  color: #cf1322;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 11.5px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}

@@ -24,7 +24,7 @@ use crate::dic::{KafkaBrokerStatus, KafkaSaslMechanism, KafkaSecurityProtocol};
 use crate::dto::DbzKafkaBrokerCheckDto;
 use crate::mo::dbz_kafka_broker::Model as BrokerModel;
 use crate::svc::DbzKafkaConnectSvc;
-use crate::utils::{BrokerConn, KafkaBrokerUtils};
+use crate::utils::{BrokerConn, KafkaBrokerUtils, RUN_MSG_MAX, one_line};
 use crate::vo::DbzKafkaBrokerCheckVo;
 use anyhow::anyhow;
 use robotech::db::get_db_conn;
@@ -142,6 +142,8 @@ impl DbzKafkaBrokerSvc {
         } else {
             KafkaBrokerStatus::None
         });
+        // 新记录还没有检查过，结论必须为空：带上一条的理由会和状态自相矛盾
+        add_dto.run_msg = Some(None);
         Ok(add_dto)
     }
 
@@ -228,6 +230,8 @@ impl DbzKafkaBrokerSvc {
             } else {
                 KafkaBrokerStatus::Disabled
             });
+            // 地址/认证变了或重新启用，上一轮的失败原因已经不适用于新配置
+            modify_dto.run_msg = Some(None);
         }
 
         Ok(modify_dto)
@@ -309,7 +313,7 @@ impl DbzKafkaBrokerSvc {
         let checked = KafkaBrokerUtils::check(&conn).await;
         let elapsed_ms = started.elapsed().as_millis() as u64;
 
-        let (result, status) = match checked {
+        let (result, status, run_msg) = match checked {
             Ok((topic_count, _)) => {
                 info!(
                     "Kafka 集群<{}>(id={})检测通过，{} 个 topic，耗时 {elapsed_ms}ms",
@@ -323,6 +327,7 @@ impl DbzKafkaBrokerSvc {
                         message: None,
                     },
                     KafkaBrokerStatus::Normal,
+                    None,
                 )
             }
             Err(e) => {
@@ -335,11 +340,12 @@ impl DbzKafkaBrokerSvc {
                         message: Some(format!("{e:#}")),
                     },
                     KafkaBrokerStatus::ConnectFailed,
+                    Some(one_line(&format!("{e:#}"), RUN_MSG_MAX)),
                 )
             }
         };
 
-        Self::update_status(&model, status).await?;
+        Self::update_status(&model, status, run_msg).await?;
 
         let msg = if result.reachable {
             format!("连接正常，{} 个 topic", result.topic_count)
@@ -370,16 +376,21 @@ impl DbzKafkaBrokerSvc {
 
         let mut changed = 0;
         for model in brokers.iter().filter(|model| model.enabled) {
-            let status = match KafkaBrokerUtils::check(&BrokerConn::from_model(model)).await {
-                Ok(_) => KafkaBrokerStatus::Normal,
-                Err(e) => {
-                    warn!("Kafka 集群<{}>(id={})检测失败: {e}", model.name, model.id);
-                    KafkaBrokerStatus::ConnectFailed
-                }
-            };
-            if status != KafkaBrokerStatus::from(model.run_status) {
+            let (status, run_msg) =
+                match KafkaBrokerUtils::check(&BrokerConn::from_model(model)).await {
+                    Ok(_) => (KafkaBrokerStatus::Normal, None),
+                    Err(e) => {
+                        warn!("Kafka 集群<{}>(id={})检测失败: {e}", model.name, model.id);
+                        (
+                            KafkaBrokerStatus::ConnectFailed,
+                            Some(one_line(&format!("{e:#}"), RUN_MSG_MAX)),
+                        )
+                    }
+                };
+            // 状态没变也可能换了原因（超时 → 认证失败），所以两个都要比
+            if status != KafkaBrokerStatus::from(model.run_status) || run_msg != model.run_msg {
                 changed += 1;
-                if let Err(e) = Self::update_status(model, status).await {
+                if let Err(e) = Self::update_status(model, status, run_msg).await {
                     warn!("回写 Kafka 集群<{}>状态失败: {e}", model.name);
                 }
             }
@@ -389,7 +400,8 @@ impl DbzKafkaBrokerSvc {
         for model in brokers.iter().filter(|model| !model.enabled) {
             if KafkaBrokerStatus::from(model.run_status) != KafkaBrokerStatus::Disabled {
                 changed += 1;
-                if let Err(e) = Self::update_status(model, KafkaBrokerStatus::Disabled).await {
+                if let Err(e) = Self::update_status(model, KafkaBrokerStatus::Disabled, None).await
+                {
                     warn!("回写 Kafka 集群<{}>状态失败: {e}", model.name);
                 }
             }
@@ -398,23 +410,33 @@ impl DbzKafkaBrokerSvc {
         Ok(changed)
     }
 
-    /// # 回写状态
+    /// # 回写状态与检查结论
     ///
-    /// 状态没变就不写库：检查每轮都跑，每轮写一次会让 `update_ms` 失去意义。
+    /// 状态没变、结论也没变就不写库：检查每轮都跑，每轮写一次会让 `update_ms`
+    /// 失去意义。**结论变了要写**——一直是「连接失败」但原因从「超时」变成
+    /// 「认证失败」时，正是最该让人看到的时刻。
+    ///
+    /// ## 参数
+    /// * `model` - 库里的记录（用来比对是否真的有变化）
+    /// * `run_status` - 检查得出的状态
+    /// * `run_msg` - 失败原因（成功时传 `None`，库里会被清空）
     async fn update_status(
         model: &BrokerModel,
         run_status: KafkaBrokerStatus,
+        run_msg: Option<String>,
     ) -> Result<(), anyhow::Error> {
-        if KafkaBrokerStatus::from(model.run_status) == run_status {
+        if KafkaBrokerStatus::from(model.run_status) == run_status && model.run_msg == run_msg {
             return Ok(());
         }
 
-        let modify_dto = DbzKafkaBrokerModifyDto::builder()
+        let mut modify_dto = DbzKafkaBrokerModifyDto::builder()
             .id(U64(model.id as u64))
             .run_status(run_status)
             ._current_user_id(U64(1))
             ._current_ms(U64(now_ms()))
             .build();
+        // 直接赋值：字段是 Option<Option<String>>，Some(None) 才是「置 NULL」
+        modify_dto.run_msg = Some(run_msg);
 
         Self::modify::<DatabaseConnection>(modify_dto, None)
             .await

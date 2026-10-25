@@ -112,8 +112,22 @@ export default function SinkConnectorPage() {
       title: '状态',
       dataIndex: 'runStatus',
       width: 120,
-      render: (value: ConnectorRunStatus) => (
-        <StatusTag dic={connectorRunStatusDic} value={value} />
+      render: (value: ConnectorRunStatus, record) => (
+        <StatusTag
+          dic={connectorRunStatusDic}
+          value={value}
+          detail={{
+            summary: `运行详情 · ${record.name}`,
+            rows: [
+              { label: '连接器', value: <span className="dbz-mono">{record.connectorName}</span> },
+              { label: '所属集群', value: cluster.byId.get(record.kafkaConnectId)?.name ?? `#${record.kafkaConnectId}` },
+              { label: '上游连接器', value: source.byId.get(record.sourceConnectorId)?.name ?? `#${record.sourceConnectorId}` },
+              { label: '结论时间', value: formatMs(record.updateMs) },
+            ],
+            // 失败原因由健康检查写回：部署被拒的响应体、异常任务的 trace 首行都在这里
+            reason: record.runMsg,
+          }}
+        />
       ),
     },
     {

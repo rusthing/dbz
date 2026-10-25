@@ -23,6 +23,12 @@ pub struct DbzKafkaConnectDto {
     /// 状态
     #[db_default]
     pub run_status: KafkaConnectStatus,
+    /// 检查结论（失败原因，由健康检查回写；成功时为空）
+    ///
+    /// 连不上时把探测到的原因（拒绝连接、超时、HTTP 4xx……）留在记录上，
+    /// 排查时不必去翻日志。
+    /// @len 0..=500
+    pub run_msg: Option<String>,
     /// 备注
     /// @len 0..=50
     pub remark: Option<String>,

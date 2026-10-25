@@ -32,6 +32,11 @@ pub struct DbzKafkaBrokerDto {
     /// 状态
     #[db_default]
     pub run_status: KafkaBrokerStatus,
+    /// 检查结论（失败原因，由检测回写；成功时为空）
+    ///
+    /// 例如「连接 Kafka 集群<生产>超时（10s）：10.0.0.1:9092」。密码不会出现在这里。
+    /// @len 0..=500
+    pub run_msg: Option<String>,
     /// 备注
     /// @len 0..=50
     pub remark: Option<String>,

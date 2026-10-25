@@ -9,6 +9,7 @@
  * - 表单默认值、编辑回填、提交后关闭；
  * - 联动字段（broker 选 SASL 才出现认证项）、双模式编辑器（图形化 ⇄ JSON）、
  *   快照弹窗按通道重新预检、远端连接器的停止与重置位点；
+ * - 悬停状态弹出运行详情：失败原因要真的从 `runMsg` / trace 渲染出来；
  * - 布局体检：顶栏标题不被裁、表格不横向溢出、工具栏不换行。
  *
  * ## 用法
@@ -61,6 +62,8 @@ const brokers = [
     saslMechanism: 2,
     saslUsername: 'dbz',
     runStatus: 3,
+    runMsg:
+      '连接 Kafka 集群<风控消息集群>失败（10.0.1.31:9092）：SASL authentication failed, broker closed the connection',
     enabled: true,
     createrId: '1',
     createMs: '1759990000000',
@@ -104,6 +107,8 @@ const clusters = [
     url: 'http://10.0.0.12:8083',
     kafkaBrokerId: '402',
     runStatus: 3,
+    runMsg:
+      '连接 Kafka Connect 失败: error sending request for url (http://10.0.0.12:8083/connectors): connection refused',
     enabled: true,
     createrId: '1',
     createMs: '1759990000000',
@@ -134,6 +139,7 @@ const sources = [
     connectorName: 'mysql-users-source',
     connectorConfig: '{"connector.class":"io.debezium.connector.mysql.MySqlConnector"}',
     runStatus: 6,
+    runMsg: "任务 #0: io.debezium.DebeziumException: Access denied for user 'dbz'@'10.0.0.%'",
     enabled: true,
     createrId: '1',
     createMs: '1759990000000',
@@ -151,6 +157,8 @@ const sinks = [
     connectorName: 'jdbc-orders-sink',
     connectorConfig: '{"connector.class":"io.debezium.connector.jdbc.JdbcSinkConnector"}',
     runStatus: 4,
+    runMsg:
+      '部署连接器失败: {"error_code":400,"message":"Connector configuration is invalid: connection.url is required"}',
     enabled: true,
     createrId: '1',
     createMs: '1759990000000',
@@ -165,6 +173,8 @@ const connectors = [
     connectorClass: 'io.debezium.connector.mysql.MySqlConnector',
     type: 'source',
     state: 0,
+    workerId: '10.0.0.11:8083',
+    trace: null,
     tasks: [
       { id: 0, state: 0, workerId: '10.0.0.11:8083' },
       {
@@ -180,6 +190,9 @@ const connectors = [
     connectorClass: 'io.debezium.connector.postgresql.PostgresConnector',
     type: 'source',
     state: 1,
+    workerId: '10.0.0.12:8083',
+    trace:
+      'io.debezium.DebeziumException: Failed to read from the WAL\n\tat io.debezium.connector.postgresql.PostgresStreamingChangeEventSource.execute(...)',
     tasks: [],
   },
 ];
@@ -268,6 +281,37 @@ async function layoutCheck(target, label) {
  * 于是「下游表单里没有 database.include.list」这种断言会被上游的残留节点骗过去。
  */
 const visibleModal = () => page.locator('.ant-modal-wrap:visible');
+
+/**
+ * # 悬停状态看运行详情
+ *
+ * 列表里的状态是检查任务的结论，失败原因另外存（库里的 `run_msg`、远端集群返回的
+ * trace），靠悬停弹出。这里断言弹层里确实出现了那句话——只断言标签的话，把 `runMsg`
+ * 从 VO 里漏掉、或某页忘了传 `detail`，都测不出来。
+ *
+ * ## 参数
+ * * `rowText` - 用来定位表格行的文案（名称）
+ * * `expectText` - 弹层里必须出现的片段（失败原因的关键部分）
+ * * `label` - 断言名前缀
+ */
+async function hoverStatus(rowText, expectText, label, shot) {
+  const row = page.locator('tbody tr.ant-table-row', { hasText: rowText }).first();
+  await row.locator('.dbz-status-hover').first().hover();
+  const popover = page.locator('.ant-popover:visible').first();
+  await popover.waitFor({ state: 'visible', timeout: 5000 });
+  // 等淡入动画结束再读文本/截图，否则拿到的是半透明的中间帧
+  await page.waitForTimeout(350);
+  const content = (await popover.innerText()).replace(/\s+/g, ' ');
+  const ok = content.includes(expectText);
+  check(`${label}悬停状态能看到运行详情`, ok, ok ? '' : content.slice(0, 160));
+  if (shot) {
+    await page.screenshot({ path: `${SHOTS}/${shot}` });
+  }
+  // 移开鼠标：弹层会盖住下一行，点按钮就点不到了
+  await page.mouse.move(0, 0);
+  await page.waitForTimeout(250);
+  return content;
+}
 
 /* ---------------------------------------------------------------- 跑起来 */
 
@@ -368,6 +412,18 @@ try {
   check('Kafka 集群列表 3 行', brokerRows === 3, `实际 ${brokerRows}`);
   check('broker 地址原样展示', (await page.locator('text=10.0.0.21:9092,10.0.0.22:9092').count()) > 0);
   check('broker 状态标签渲染', (await page.locator('text=连接失败').count()) > 0);
+  // 悬停看详情：状态是结论，原因写在 runMsg 里
+  const brokerDetail = await hoverStatus(
+    '风控消息集群',
+    'SASL authentication failed',
+    'Kafka 集群',
+    '02b-broker-status.png',
+  );
+  check(
+    'broker 详情带地址与认证方式',
+    brokerDetail.includes('10.0.1.31:9092') && brokerDetail.includes('SCRAM-SHA-256'),
+    brokerDetail.slice(0, 120),
+  );
   await layoutCheck(page, 'Kafka 集群');
   await page.screenshot({ path: `${SHOTS}/02-kafka-broker.png`, fullPage: true });
 
@@ -409,6 +465,7 @@ try {
   const clusterRows = await page.locator('tbody tr.ant-table-row').count();
   check('集群列表 2 行', clusterRows === 2, `实际 ${clusterRows}`);
   check('集群状态标签渲染', (await page.locator('text=连接失败').count()) > 0);
+  await hoverStatus('灰度集群', 'connection refused', 'Kafka Connect');
 
   const headerBox = await page.locator('.dbz-header-title').boundingBox();
   check(
@@ -487,6 +544,7 @@ try {
   await page.waitForSelector('text=订单库增量');
   check('上游列表渲染', (await page.locator('tbody tr.ant-table-row').count()) === 2);
   check('上游「所属集群」翻译成名称', (await page.locator('text=生产集群-华东').count()) > 0);
+  await hoverStatus('用户库增量', 'Access denied for user', '上游连接器', '04b-source-status.png');
   await layoutCheck(page, '上游');
   await page.screenshot({ path: `${SHOTS}/04-source.png`, fullPage: true });
 
@@ -576,6 +634,7 @@ try {
   await page.click('.ant-menu-item:has-text("下游连接器")');
   await page.waitForSelector('text=订单同步到数仓');
   check('下游列表渲染', (await page.locator('tbody tr.ant-table-row').count()) === 1);
+  await hoverStatus('订单同步到数仓', 'connection.url is required', '下游连接器');
   await layoutCheck(page, '下游');
   await page.screenshot({ path: `${SHOTS}/05-sink.png`, fullPage: true });
 
@@ -630,6 +689,18 @@ try {
   await page.waitForSelector('text=mysql-orders-source');
   check('远端连接器列表渲染', (await page.locator('tbody tr.ant-table-row').count()) === 2);
   check('未纳管连接器可见', (await page.locator('text=manual-test-connector').count()) > 0);
+  // 这一页的详情来自集群的 expand=status 响应，不需要额外请求
+  const remoteDetail = await hoverStatus(
+    'manual-test-connector',
+    'Failed to read from the WAL',
+    '远端连接器',
+    '06b-remote-status.png',
+  );
+  check(
+    '远端详情带 worker 与类名',
+    remoteDetail.includes('10.0.0.12:8083') && remoteDetail.includes('PostgresConnector'),
+    remoteDetail.slice(0, 160),
+  );
   await page.screenshot({ path: `${SHOTS}/06-remote.png`, fullPage: true });
 
   await page.locator('tbody tr.ant-table-row').first().locator('.ant-table-row-expand-icon').click();

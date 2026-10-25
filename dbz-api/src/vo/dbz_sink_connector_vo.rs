@@ -17,6 +17,8 @@ pub struct DbzSinkConnectorVo {
     pub connector_config: String,
     /// 运行状态
     pub run_status: ConnectorRunStatus,
+    /// 检查结论（最近一次检查的失败原因，成功时为空）
+    pub run_msg: Option<String>,
     /// 备注
     pub remark: Option<String>,
     /// 启用

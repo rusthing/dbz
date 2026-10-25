@@ -59,6 +59,18 @@ pub struct KafkaConnectorVo {
     pub connector_type: String,
     /// 连接器状态
     pub state: KafkaConnectorStatus,
+    /// 执行该连接器的 worker
+    ///
+    /// 与 [`KafkaConnectorTaskVo::worker_id`] 不同：任务可能被分配到不同的 worker。
+    /// 连接器级 worker 决定 REST 请求落到哪台，排查「为什么在这台上」时用它。
+    #[serde(default)]
+    pub worker_id: Option<String>,
+    /// 连接器级的异常堆栈（连接器自身 FAILED 时才有）
+    ///
+    /// 任务异常的那份在 [`KafkaConnectorTaskVo::trace`]。两者都给出来，页面才能在
+    /// 鼠标悬停时直接说明失败原因，不用再点开去集群查。
+    #[serde(default)]
+    pub trace: Option<String>,
     /// 任务列表
     #[serde(default)]
     pub tasks: Vec<KafkaConnectorTaskVo>,

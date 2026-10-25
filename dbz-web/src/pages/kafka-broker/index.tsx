@@ -20,9 +20,16 @@ import { kafkaBrokerApi } from '../../api/kafka-broker';
 import type { DbzKafkaBrokerVo, KafkaBrokerStatus } from '../../api/types';
 import EnabledSwitch from '../../components/EnabledSwitch';
 import StatusTag from '../../components/StatusTag';
-import { dicOptions, kafkaBrokerStatusDic, kafkaSecurityProtocolDic } from '../../dic';
+import type { StatusDetail } from '../../components/StatusTag';
+import {
+  dicLabel,
+  dicOptions,
+  kafkaBrokerStatusDic,
+  kafkaSaslMechanismDic,
+  kafkaSecurityProtocolDic,
+} from '../../dic';
 import { usePagedQuery } from '../../hooks/usePagedQuery';
-import { errorMessage, orDash } from '../../utils/format';
+import { errorMessage, formatMs, orDash } from '../../utils/format';
 import KafkaBrokerForm from './KafkaBrokerForm';
 
 /** 筛选表单的草稿状态 */
@@ -30,6 +37,33 @@ interface FilterDraft {
   keyword?: string;
   runStatus?: KafkaBrokerStatus;
   enabled?: boolean;
+}
+
+/**
+ * 状态悬停详情
+ *
+ * 列表里的状态是「最近一次检测」的结论，悬停要回答的是：怎么连、什么时候得出的、
+ * 失败原因是什么。原因由服务端在检测时写进 `run_msg`，不看这份就得去翻日志。
+ */
+function statusDetailOf(record: DbzKafkaBrokerVo): StatusDetail {
+  const auth =
+    record.securityProtocol === 0
+      ? 'PLAINTEXT（无认证）'
+      : `SASL_PLAINTEXT · ${dicLabel(kafkaSaslMechanismDic, record.saslMechanism)}${
+          record.saslUsername ? ` · ${record.saslUsername}` : ''
+        }`;
+  return {
+    summary: `运行详情 · ${record.name}`,
+    rows: [
+      { label: '地址', value: <span className="dbz-mono">{record.bootstrapServers}</span> },
+      { label: '认证', value: auth },
+      { label: '结论时间', value: formatMs(record.updateMs) },
+      ...(record.runStatus === 0
+        ? [{ label: '说明', value: '刚新增或改过地址/认证，等下一轮检测给结论' }]
+        : []),
+    ],
+    reason: record.runMsg,
+  };
 }
 
 export default function KafkaBrokerPage() {
@@ -145,7 +179,13 @@ export default function KafkaBrokerPage() {
       title: '状态',
       dataIndex: 'runStatus',
       width: 100,
-      render: (value: KafkaBrokerStatus) => <StatusTag dic={kafkaBrokerStatusDic} value={value} />,
+      render: (value: KafkaBrokerStatus, record) => (
+        <StatusTag
+          dic={kafkaBrokerStatusDic}
+          value={value}
+          detail={statusDetailOf(record)}
+        />
+      ),
     },
     {
       title: '启用',

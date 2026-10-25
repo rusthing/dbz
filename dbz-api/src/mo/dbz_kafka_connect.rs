@@ -14,6 +14,7 @@ pub struct Model {
     #[sea_orm(unique)]
     pub url: String,
     pub run_status: i16,
+    pub run_msg: Option<String>,
     pub remark: Option<String>,
     pub enabled: bool,
     pub creater_id: i64,

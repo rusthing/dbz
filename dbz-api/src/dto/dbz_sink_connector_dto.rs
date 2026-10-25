@@ -26,6 +26,11 @@ pub struct DbzSinkConnectorDto {
     /// 运行状态
     #[db_default]
     pub run_status: ConnectorRunStatus,
+    /// 检查结论（失败原因，由健康检查回写；成功时为空）
+    ///
+    /// 只为了让检查把「为什么失败」留下来给人看，不参与业务判断。
+    /// @len 0..=500
+    pub run_msg: Option<String>,
     /// 备注
     /// @len 0..=50
     pub remark: Option<String>,

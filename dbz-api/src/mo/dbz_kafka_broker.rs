@@ -31,6 +31,7 @@ pub struct Model {
     pub sasl_password: Option<String>,
     /// 状态，见 `KafkaBrokerStatus`
     pub run_status: i16,
+    pub run_msg: Option<String>,
     pub remark: Option<String>,
     pub enabled: bool,
     pub creater_id: i64,

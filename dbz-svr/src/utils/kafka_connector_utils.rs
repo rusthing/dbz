@@ -20,6 +20,7 @@
 //! - `DELETE /connectors/{name}/offsets` 清空位点（要求连接器先处于停止状态）
 
 use crate::dic::KafkaConnectorStatus;
+use crate::utils::trace_head;
 use crate::vo::{KafkaConnectorPluginVo, KafkaConnectorTaskVo, KafkaConnectorVo};
 use anyhow::anyhow;
 use serde::Deserialize;
@@ -30,6 +31,25 @@ use tracing::{info, warn};
 
 /// 复用的 HTTP 客户端
 static HTTP_CLIENT: LazyLock<reqwest::Client> = LazyLock::new(reqwest::Client::new);
+
+/// 失败原因首行的最大长度
+///
+/// Debezium 的首行异常通常几十个字，300 足够看出根因；再长就该去集群看完整 trace。
+const TRACE_HEAD_MAX: usize = 300;
+
+/// # 一次状态查询的结论
+///
+/// 状态、要重启的任务、以及「为什么失败」三件事一次带出来：调用方写库、告警、
+/// 修复都要用，分三次查询没有意义。
+#[derive(Debug, Clone)]
+pub struct ConnectorHealth {
+    /// 连接器状态（任务全挂时提升为 `Failed`）
+    pub state: KafkaConnectorStatus,
+    /// 异常任务ID（连接器自身异常时为空）
+    pub failed_tasks: Vec<u32>,
+    /// 失败原因（trace 首行；正常时为 `None`）
+    pub reason: Option<String>,
+}
 
 /// # 归一化 Kafka Connect 地址
 ///
@@ -167,7 +187,7 @@ impl KafkaConnectorUtils {
         Ok(())
     }
 
-    /// # 查询连接器状态（含任务状态）
+    /// # 查询连接器状态（含任务状态与失败原因）
     ///
     /// 调用 `GET /connectors/{name}/status`，把连接器与任务的状态一起读回来。
     ///
@@ -175,19 +195,23 @@ impl KafkaConnectorUtils {
     /// 仍然报 `RUNNING`。只看连接器状态会把「连接器在跑、任务全挂」判成正常，
     /// 所以这里必须同时检查 `tasks`。
     ///
+    /// 失败原因（[`ConnectorHealth::reason`]）取自 trace 首行：连接器自身异常时取
+    /// 连接器级 trace，任务异常时取第一个失败任务的 trace 并带上任务号。写库前由
+    /// [`one_line`](crate::utils::one_line) 压成一行。
+    ///
     /// ## 参数
     /// * `base_url` - Kafka Connect 地址
     /// * `connector_name` - 连接器名称
     ///
     /// ## 返回值
-    /// * `Ok((KafkaConnectorStatus, Vec<u32>))` - 连接器状态 + 异常任务ID列表。
-    ///   任务有 `FAILED` / `UNASSIGNED` 时，状态返回 `Failed` 且列表非空；
-    ///   连接器自身非 `RUNNING` 时以连接器状态为准，列表为空
+    /// * `Ok(ConnectorHealth)` - 状态 + 异常任务ID + 失败原因首行。
+    ///   任务有 `FAILED` / `UNASSIGNED` 时，`state` 返回 `Failed` 且 `failed_tasks` 非空；
+    ///   连接器自身非 `RUNNING` 时以连接器状态为准，`failed_tasks` 为空
     /// * `Err(KafkaConnectorError)` - 查询失败，可通过错误类型区分具体原因
     pub async fn fetch_connector_status(
         base_url: &str,
         connector_name: &str,
-    ) -> Result<(KafkaConnectorStatus, Vec<u32>), KafkaConnectorError> {
+    ) -> Result<ConnectorHealth, KafkaConnectorError> {
         let url = format!(
             "{}/connectors/{}/status",
             base_url.trim_end_matches('/'),
@@ -212,27 +236,52 @@ impl KafkaConnectorUtils {
         // 连接器自身不正常时以它为准（任务状态这时没有额外信息）
         let connector_state = parse_connector_state(&status_resp.connector.state);
         if connector_state != KafkaConnectorStatus::Running {
-            return Ok((connector_state, Vec::new()));
+            return Ok(ConnectorHealth {
+                state: connector_state,
+                failed_tasks: Vec::new(),
+                reason: status_resp
+                    .connector
+                    .trace
+                    .as_deref()
+                    .and_then(|trace| trace_head(trace, TRACE_HEAD_MAX)),
+            });
         }
 
         // 连接器 RUNNING 但任务可能挂了：FAILED / UNASSIGNED 都算异常。
         // 只重启这几个任务，比重启整个连接器影响小。
-        let failed_task_ids: Vec<u32> = status_resp
+        let failed_tasks: Vec<&ConnectorTaskState> = status_resp
             .tasks
             .iter()
             .filter(|task| is_task_abnormal(parse_connector_state(&task.state)))
-            .map(|task| task.id)
             .collect();
 
-        if failed_task_ids.is_empty() {
-            Ok((KafkaConnectorStatus::Running, failed_task_ids))
-        } else {
-            warn!(
-                "连接器<{connector_name}>自身为 RUNNING，但有 {} 个任务异常: {failed_task_ids:?}",
-                failed_task_ids.len()
-            );
-            Ok((KafkaConnectorStatus::Failed, failed_task_ids))
+        if failed_tasks.is_empty() {
+            return Ok(ConnectorHealth {
+                state: KafkaConnectorStatus::Running,
+                failed_tasks: Vec::new(),
+                reason: None,
+            });
         }
+
+        let failed_task_ids: Vec<u32> = failed_tasks.iter().map(|task| task.id).collect();
+        warn!(
+            "连接器<{connector_name}>自身为 RUNNING，但有 {} 个任务异常: {failed_task_ids:?}",
+            failed_task_ids.len()
+        );
+
+        // 取第一个带 trace 的失败任务：它的异常才是「为什么挂了」
+        let reason = failed_tasks.iter().find_map(|task| {
+            task.trace
+                .as_deref()
+                .and_then(|trace| trace_head(trace, TRACE_HEAD_MAX))
+                .map(|head| format!("任务 #{}: {head}", task.id))
+        });
+
+        Ok(ConnectorHealth {
+            state: KafkaConnectorStatus::Failed,
+            failed_tasks: failed_task_ids,
+            reason,
+        })
     }
 
     /// # 检查连接器是否存在
@@ -357,13 +406,15 @@ impl KafkaConnectorUtils {
                     };
                     let state = Self::fetch_connector_status(base_url, name)
                         .await
-                        .map(|(state, _)| state)
+                        .map(|health| health.state)
                         .unwrap_or(KafkaConnectorStatus::Unassigned);
                     connectors.push(KafkaConnectorVo {
                         name: name.to_string(),
                         connector_class: String::new(),
                         connector_type: String::new(),
                         state,
+                        worker_id: None,
+                        trace: None,
                         tasks: Vec::new(),
                     });
                 }
@@ -636,6 +687,12 @@ struct ConnectorState {
     /// 状态字符串，如 RUNNING / FAILED / PAUSED / UNASSIGNED / DESTROYED
     #[serde(default)]
     state: String,
+    /// 执行该连接器的 worker
+    #[serde(default)]
+    worker_id: Option<String>,
+    /// 异常堆栈（连接器自身失败时才有）
+    #[serde(default)]
+    trace: Option<String>,
 }
 
 /// # Kafka Connect 连接器的 expand 信息
@@ -714,6 +771,18 @@ fn parse_expanded_connector(
         .and_then(|status| status.connector.as_ref())
         .map(|connector| parse_connector_state(&connector.state))
         .unwrap_or(KafkaConnectorStatus::Unassigned);
+    // 连接器级的 worker 与 trace：状态失败时，页面上鼠标悬停就能看到原因，
+    // 不必再发一次 `/status` 请求
+    let worker_id = expanded
+        .status
+        .as_ref()
+        .and_then(|status| status.connector.as_ref())
+        .and_then(|connector| connector.worker_id.clone());
+    let trace = expanded
+        .status
+        .as_ref()
+        .and_then(|status| status.connector.as_ref())
+        .and_then(|connector| connector.trace.clone());
     let tasks: Vec<KafkaConnectorTaskVo> = expanded
         .status
         .map(|status| {
@@ -745,6 +814,8 @@ fn parse_expanded_connector(
         connector_class,
         connector_type,
         state,
+        worker_id,
+        trace,
         tasks,
     })
 }

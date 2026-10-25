@@ -13,6 +13,8 @@ pub struct DbzKafkaConnectVo {
     pub kafka_broker_id: Option<U64>,
     /// 状态
     pub run_status: KafkaConnectStatus,
+    /// 检查结论（最近一次检查的失败原因，成功时为空）
+    pub run_msg: Option<String>,
     /// 备注
     pub remark: Option<String>,
     /// 启用

@@ -145,9 +145,12 @@ impl DbzSourceConnectorSvc {
             } else {
                 ConnectorRunStatus::Disabled
             });
+            // 启停之后实际状态要等下一轮检查，上一轮的失败原因不再适用
+            modify_dto.run_msg = Some(None);
         } else if enabled_after && (config_changed || relocated) {
             // 连接器刚被注销或配置刚变更，实际状态要等下一轮检查确认
             modify_dto.run_status = Some(ConnectorRunStatus::None);
+            modify_dto.run_msg = Some(None);
         }
 
         // 禁用不级联停下游，但「仍有下游在跑」必须说出来，否则用户会以为已经全停了
@@ -230,30 +233,38 @@ impl DbzSourceConnectorSvc {
         Ok(id)
     }
 
-    /// # 更新上游连接器的运行状态
+    /// # 更新上游连接器的运行状态与检查结论
     ///
-    /// 供 [`DbzKafkaConnectSvc`] 在健康检查时复用。只带 `id` 与 `run_status` 调
-    /// `modify`，不会动其它字段；没有 `enabled` / `kafka_connect_id` /
+    /// 供 [`DbzKafkaConnectSvc`] 在健康检查时复用。只带 `id`、`run_status` 与
+    /// `run_msg` 调 `modify`，不会动其它字段；没有 `enabled` / `kafka_connect_id` /
     /// `connector_name`，所以 [`before_modify_hook`](Self::before_modify_hook)
     /// 会直接返回，不会触发注销。
     ///
-    /// **状态没变就不写库**：检查每轮都在跑，状态常年是「运行中」，每轮写一次只会
-    /// 让 `update_ms` 失去意义。不写之后 `update_ms` 表示的是「进入当前状态的时间」。
-    /// 本轮的情况仍由返回的 `exec_detail` 与日志体现。
+    /// **状态和结论都没变就不写库**：检查每轮都在跑，状态常年是「运行中」，每轮写
+    /// 一次只会让 `update_ms` 失去意义。结论变了要写——失败原因从「连接被拒」变成
+    /// 「认证失败」时，正是最该让人看到的时刻。
+    ///
+    /// ## 参数
+    /// * `source` - 库里的记录（用来比对是否真的有变化）
+    /// * `run_status` - 检查得出的状态
+    /// * `run_msg` - 失败原因（正常时传 `None`，库里会被清空）
     pub(crate) async fn update_run_status(
         source: &DbzSourceConnectorVo,
         run_status: ConnectorRunStatus,
+        run_msg: Option<String>,
     ) -> Result<(), anyhow::Error> {
-        if source.run_status == run_status {
+        if source.run_status == run_status && source.run_msg == run_msg {
             return Ok(());
         }
 
-        let modify_dto = DbzSourceConnectorModifyDto::builder()
+        let mut modify_dto = DbzSourceConnectorModifyDto::builder()
             .id(source.id)
             .run_status(run_status)
             ._current_user_id(U64(1))
             ._current_ms(U64(now_ms()))
             .build();
+        // 直接赋值：字段是 Option<Option<String>>，Some(None) 才是「置 NULL」
+        modify_dto.run_msg = Some(run_msg);
 
         Self::modify::<DatabaseConnection>(modify_dto, None)
             .await
