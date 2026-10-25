@@ -329,6 +329,8 @@ const page = await context.newPage();
 const pageErrors = [];
 const consoleErrors = [];
 const posted = [];
+/** 置 true 让下一次预检失败一次，用完自动复位：用来验证「预检失败能原地重试」 */
+let failNextPreview = false;
 
 page.on('pageerror', (error) => pageErrors.push(String(error)));
 page.on('console', (message) => {
@@ -370,7 +372,14 @@ await page.route('**/dbz/**', async (route) => {
   if (path === '/dbz/kafka-connector/list') return route.fulfill({ json: ro(connectors) });
   if (path === '/dbz/kafka-connector/plugins') return route.fulfill({ json: ro(plugins) });
   if (path === '/dbz/source-connector/snapshot/preview') {
-    // 没指定通道时服务端默认挑 source，这条默认顺序也要照着演
+    if (failNextPreview) {
+      failNextPreview = false;
+      return route.fulfill({
+        json: { result: 0, msg: '连接源库失败：Connection refused (10.0.0.11:3306)', timestamp: Date.now() },
+      });
+    }
+    // 没指定通道时服务端默认挑 source，这条默认顺序也要照着演；
+    // 注意 `channels` 与本次选哪条无关，切过去还能切回来
     return route.fulfill({ json: ro(snapshotPreview(url.searchParams.get('channel') ?? 'source')) });
   }
   return route.fulfill({ json: ro(null) });
@@ -618,6 +627,13 @@ try {
   await visibleModal().locator('.ant-radio-wrapper:has-text("Kafka 信号 topic")').click();
   await page.waitForTimeout(500);
   check('切到 Kafka 通道后展示落点', (await visibleModal().locator('text=dbz-signal').count()) > 0);
+  // 通道清单与本次选择无关：切过去之后两个选项得还在，否则切错了就退不回来。
+  // 注意别用 `.ant-radio-wrapper` 总数判断 —— 下面「快照类型」也是单选组
+  check(
+    '切到 Kafka 后仍能切回源库信号表',
+    (await visibleModal().locator('.ant-radio-wrapper:has-text("源库信号表")').count()) === 1 &&
+      (await visibleModal().locator('.ant-radio-wrapper-checked:has-text("Kafka 信号 topic")').count()) === 1,
+  );
   await page.screenshot({ path: `${SHOTS}/04c-snapshot.png` });
   await visibleModal().locator('.ant-modal-footer .ant-btn-primary').click();
   await page.waitForTimeout(600);
@@ -629,6 +645,38 @@ try {
     snapshotCall?.body?.channel === 'kafka' && snapshotCall?.body?.id === '201',
     JSON.stringify(snapshotCall?.body),
   );
+  // 提交成功后弹窗自己收起，等退出动画跑完再点下一行
+  await page.waitForSelector('.ant-modal-wrap', { state: 'hidden', timeout: 5000 });
+  await page.waitForTimeout(400);
+
+  /* 4d. 预检失败：说清原因，并能原地重试（不用关掉弹窗重开） */
+  failNextPreview = true;
+  await page
+    .locator('tbody tr.ant-table-row')
+    .nth(1)
+    .locator('button:has-text("重新同步")')
+    .click();
+  await visibleModal().locator('text=预检失败').waitFor();
+  check(
+    '预检失败显示原因',
+    (await visibleModal().locator('text=Connection refused').count()) > 0,
+  );
+  check('预检失败给重试按钮', (await visibleModal().locator('button:has-text("重新预检")').count()) === 1);
+  check(
+    '预检失败时不能触发快照',
+    await visibleModal().locator('.ant-modal-footer .ant-btn-primary').isDisabled(),
+  );
+  await visibleModal().locator('button:has-text("重新预检")').click();
+  await visibleModal().locator('text=信号表').first().waitFor();
+  check('重试后预检成功', (await visibleModal().locator('text=orders.debezium_signal').count()) > 0);
+  check(
+    '重试成功后可以触发快照',
+    await visibleModal().locator('.ant-modal-footer .ant-btn-primary').isEnabled(),
+  );
+  await page.screenshot({ path: `${SHOTS}/04d-snapshot-retry.png` });
+  await visibleModal().locator('.ant-modal-footer .ant-btn').first().click();
+  await page.waitForSelector('.ant-modal-wrap', { state: 'hidden', timeout: 5000 });
+  await page.waitForTimeout(400);
 
   /* 5. 下游连接器 */
   await page.click('.ant-menu-item:has-text("下游连接器")');

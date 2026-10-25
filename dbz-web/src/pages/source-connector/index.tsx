@@ -35,8 +35,11 @@ export default function SourceConnectorPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<DbzSourceConnectorVo | null>(null);
   const [preview, setPreview] = useState<DbzSourceConnectorVo | null>(null);
-  // 不为空表示「重新同步」弹窗打开，值是目标记录
+  // 不为空表示「重新同步」弹窗的目标记录
   const [snapshotTarget, setSnapshotTarget] = useState<DbzSourceConnectorVo | null>(null);
+  // 开关与记录分开存：收起弹窗时只翻开关、记录留着，退出动画期间标题还是这条连接器；
+  // 下次打开时整体换掉
+  const [snapshotOpen, setSnapshotOpen] = useState(false);
 
   const { data, loading, error, pageNum, pageSize, search, reload, setPageNum, setPageSize } =
     usePagedQuery<DbzSourceConnectorVo>((params) => sourceConnectorApi.page(params));
@@ -173,7 +176,14 @@ export default function SourceConnectorPage() {
           <Button type="link" size="small" onClick={() => setPreview(record)}>
             配置
           </Button>
-          <Button type="link" size="small" onClick={() => setSnapshotTarget(record)}>
+          <Button
+            type="link"
+            size="small"
+            onClick={() => {
+              setSnapshotTarget(record);
+              setSnapshotOpen(true);
+            }}
+          >
             重新同步
           </Button>
           <Button type="link" size="small" danger onClick={() => handleDelete(record)}>
@@ -308,9 +318,9 @@ export default function SourceConnectorPage() {
       />
 
       <SnapshotModal
-        open={Boolean(snapshotTarget)}
+        open={snapshotOpen}
         record={snapshotTarget}
-        onClose={() => setSnapshotTarget(null)}
+        onClose={() => setSnapshotOpen(false)}
       />
 
       <Drawer

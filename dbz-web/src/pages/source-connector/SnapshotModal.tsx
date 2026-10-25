@@ -13,12 +13,16 @@
  *
  * 连接器上能用的通道由服务端算出来（看 `signal.enabled.channels` 与 kafka 是否挂得上
  * broker）。只有一个就直接用；两个都能用时给一组单选，切换会重新预检 —— 两条通道能读
- * 到的表范围不一样，不能让用户看着 A 的清单去发 B 的信号。
+ * 到的表范围不一样，不能让用户看着 A 的清单去发 B 的信号。清单本身与「本次用哪条」
+ * 无关，所以切过去还能切回来。
+ *
+ * 预检失败时给一个「重新预检」按钮：连不上源库多半是暂时的，没必要关掉弹窗重开。
  */
 
 import {
   Alert,
   App as AntdApp,
+  Button,
   Descriptions,
   Modal,
   Radio,
@@ -158,7 +162,19 @@ export default function SnapshotModal({ open, record, onClose }: SnapshotModalPr
       )}
 
       {!loading && loadError && (
-        <Alert type="error" showIcon message="预检失败" description={loadError} />
+        <Alert
+          type="error"
+          showIcon
+          message="预检失败"
+          description={loadError}
+          // 预检失败的多半是「源库暂时连不上」这类可重试的事，给个按钮，
+          // 别让人只能关掉弹窗再点一次「重新同步」
+          action={
+            <Button size="small" onClick={() => void loadPreview(channel)}>
+              重新预检
+            </Button>
+          }
+        />
       )}
 
       {!loading && preview && (

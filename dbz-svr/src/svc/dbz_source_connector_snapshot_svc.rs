@@ -295,6 +295,25 @@ impl DbzSourceConnectorSnapshotSvc {
         Ok(source)
     }
 
+    /// # 这台连接器上可用的信号通道
+    ///
+    /// 按 [`DEFAULT_CHANNEL_ORDER`] 排序，只认已知的两条通道（配置里写了别的值不算可用）。
+    /// 结果与「本次走哪条」无关：同一个连接器两次预检必须给出同一份清单，否则前端
+    /// 的切换项会随选择一起缩水。
+    ///
+    /// ## 参数
+    /// * `channels` - `signal.enabled.channels` 解析出来的取值
+    ///
+    /// ## 返回值
+    /// * `Vec<String>` - 可用通道名，最多两项
+    fn available_channels(channels: &[String]) -> Vec<String> {
+        DEFAULT_CHANNEL_ORDER
+            .into_iter()
+            .filter(|channel| channels.iter().any(|item| item == channel.value()))
+            .map(|channel| channel.value().to_string())
+            .collect()
+    }
+
     /// # 选一条能用的信号通道
     ///
     /// 指定了通道就只用那一条，失败直接报错（人已经明确选了，悄悄换路更糟）；没指定
@@ -313,6 +332,10 @@ impl DbzSourceConnectorSnapshotSvc {
     ) -> Result<Resolved, anyhow::Error> {
         let channels = DbzSignalUtils::enabled_channels(&source.connector_config);
         let enabled = |channel: SignalChannel| channels.iter().any(|item| item == channel.value());
+
+        // 可用的通道与「本次走哪条」是两件事：前端拿它画切换项，一旦跟着入参收窄成
+        // 一条，用户切过去就再也切不回来（选项直接消失）。
+        let available = Self::available_channels(&channels);
 
         let order: Vec<SignalChannel> = match channel {
             Some(channel) => {
@@ -342,7 +365,6 @@ impl DbzSourceConnectorSnapshotSvc {
         }
 
         let explicit = channel.is_some();
-        let available: Vec<String> = order.iter().map(|item| item.value().to_string()).collect();
         let mut errors: Vec<String> = Vec::new();
         for channel in order {
             match Self::build_target(source, channel).await {
@@ -464,5 +486,39 @@ impl DbzSourceConnectorSnapshotSvc {
             ours.join(","),
             broker_name
         )]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 两条都开着时按默认顺序给出，前端据此画两个切换项
+    #[test]
+    fn available_channels_keeps_default_order() {
+        let channels = vec!["kafka".to_string(), "source".to_string()];
+        assert_eq!(
+            DbzSourceConnectorSnapshotSvc::available_channels(&channels),
+            ["source".to_string(), "kafka".to_string()]
+        );
+    }
+
+    /// 只开了一条时只给一条 —— 单选项没必要画
+    #[test]
+    fn available_channels_single() {
+        assert_eq!(
+            DbzSourceConnectorSnapshotSvc::available_channels(&["kafka".to_string()]),
+            vec!["kafka".to_string()]
+        );
+    }
+
+    /// 配置里写了别的通道名不算可用
+    #[test]
+    fn available_channels_ignores_unknown() {
+        let channels = vec!["source".to_string(), "outbox".to_string()];
+        assert_eq!(
+            DbzSourceConnectorSnapshotSvc::available_channels(&channels),
+            vec!["source".to_string()]
+        );
     }
 }

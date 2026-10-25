@@ -18,6 +18,8 @@ pub struct DbzSourceConnectorSnapshotVo {
     /// 连接器连的那个库（`database.dbname`）
     pub database: String,
     /// 这台连接器上可用的信号通道，按推荐顺序排列（`source` / `kafka`）
+    ///
+    /// 与 `channel` 无关：切换通道后这份清单不变，前端才能一直画出两个切换项。
     #[serde(default)]
     pub channels: Vec<String>,
     /// 本次预检实际用的通道
