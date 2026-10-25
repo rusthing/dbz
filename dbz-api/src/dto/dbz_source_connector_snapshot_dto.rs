@@ -91,10 +91,14 @@ pub struct DbzSourceConnectorSnapshotPreviewDto {
 pub struct DbzSourceConnectorSnapshotDto {
     /// 上游连接器ID
     pub id: U64,
-    /// 要快照的表（`库.表` / `模式.表`）
+    /// 要快照的表
     ///
-    /// 留空表示连接器捕获范围内的**全部**表。只写表名（不带库/模式前缀）时，
-    /// MySQL 会自动补上连接器配置里的 `database.dbname`。
+    /// 留空表示连接器捕获范围内的**全部**表。两条通道的取值形态不一样：
+    ///
+    /// * `source` 通道要具体表名（`库.表` / `模式.表`），会拼进信号表的 INSERT，
+    ///   只接受简单标识符；只写表名时 MySQL 自动补 `database.dbname`、PG 补模式。
+    /// * `kafka` 通道按 Debezium 的语义当**正则**用（`(public)\..*` 这类），
+    ///   预检返回的表范围可以原样提交回来。
     #[serde(default)]
     pub data_collections: Vec<String>,
     /// 快照类型，默认增量

@@ -655,10 +655,12 @@ fn compile_patterns(patterns: &[String]) -> Result<Vec<Regex>, anyhow::Error> {
         .collect()
 }
 
-/// # 补全并去重表名（两种信号通道共用）
+/// # 补全并去重表名（信号表通道）
 ///
 /// 只写表名时补 `default_schema` 前缀，并挡掉拼不成全限定名的写法 —— 与其让
 /// Debezium 在日志里报一句难懂的错误，不如这里说清楚。
+///
+/// 这里必须严：表名会被拼进信号表的 INSERT 语句，占位符绑不了标识符。
 ///
 /// ## 参数
 /// * `default_schema` - 补全用的前缀（MySQL 是连接器连的库，PG 是模式）
@@ -678,23 +680,98 @@ fn normalize_names(
         if item.is_empty() {
             continue;
         }
-        // 已经带了前缀就原样用；没默认前缀时（如 Kafka 通道缺 database.dbname）也只能原样用
-        let qualified = if item.contains('.') || default_schema.is_empty() {
-            item.to_string()
-        } else {
-            format!("{default_schema}.{item}")
-        };
-        if !QUALIFIED_NAME_RE.is_match(&qualified) {
-            bail!(
-                "表名<{item}>不合法：要写成 `库.表` 或 `模式.表`，且只含字母、数字、\
-                 下划线、`$`、`#`、`-`"
-            );
-        }
+        let qualified = qualify_name(default_schema, item)?;
         if seen.insert(qualified.clone()) {
             names.push(qualified);
         }
     }
     Ok(names)
+}
+
+/// # 把一条表名补成 `库.表` / `模式.表`
+///
+/// 已经带了前缀就原样用；没默认前缀时（如 Kafka 通道缺 `database.dbname`）也只能
+/// 原样用。拼完仍不是简单标识符就报错，文案要能直接告诉人该怎么写。
+///
+/// ## 参数
+/// * `default_schema` - 补全用的前缀
+/// * `item` - 单个表名（已 trim 过、非空）
+///
+/// ## 返回值
+/// * `Ok(String)` - 全限定名
+/// * `Err(anyhow::Error)` - 不是合法标识符
+fn qualify_name(default_schema: &str, item: &str) -> Result<String, anyhow::Error> {
+    let qualified = if item.contains('.') || default_schema.is_empty() {
+        item.to_string()
+    } else {
+        format!("{default_schema}.{item}")
+    };
+    if !QUALIFIED_NAME_RE.is_match(&qualified) {
+        bail!(
+            "表名<{item}>不合法：要写成 `库.表` 或 `模式.表`，且只含字母、数字、\
+             下划线、`$`、`#`、`-`"
+        );
+    }
+    Ok(qualified)
+}
+
+/// # 补全并去重表范围条目（Kafka 信号通道）
+///
+/// Kafka 信号的 `data-collections` 在 Debezium 里是**正则列表**：连接器拿每一条与
+/// 全限定名整串匹配。所以这里不能套信号表那套简单标识符白名单 —— 白名单是为了把
+/// 表名拼进 INSERT，而这里只拼进投递的 JSON，`(public)\..*` 这种写法必须是合法的。
+///
+/// 两种情况分开处理：
+///
+/// * **普通表名**（`orders` / `orders.t_order`）—— 按 [`qualify_name`] 补前缀，
+///   让人只写表名也能用；
+/// * **带正则元字符的条目**（`(public)\..*`、`orders\.bill_.*`）—— 原样交给
+///   Debezium，只校验正则编译得过。预检吐出来的表范围就是这种正则，照抄回来必须能用。
+///
+/// ## 参数
+/// * `default_schema` - 补全用的前缀（MySQL 是连接器连的库，PG 是模式）
+/// * `requested` - 调用方给的表名或正则
+///
+/// ## 返回值
+/// * `Ok(Vec<String>)` - 去重后的条目，保持调用方给的顺序
+/// * `Err(anyhow::Error)` - 有条目既不是合法表名，也不是合法正则
+fn normalize_patterns(
+    default_schema: &str,
+    requested: &[String],
+) -> Result<Vec<String>, anyhow::Error> {
+    let mut seen = HashSet::new();
+    let mut items = Vec::new();
+    for item in requested {
+        let item = item.trim();
+        if item.is_empty() {
+            continue;
+        }
+        let normalized = if is_plain_name(item) {
+            qualify_name(default_schema, item)?
+        } else {
+            // 判正则时按整串锚定，与 Debezium 的匹配语义对齐：写 `orders` 就该只命中
+            // `orders`，不该顺带命中 `orders_x` 之类
+            Regex::new(&format!("^(?:{item})$"))
+                .map_err(|e| anyhow!("表范围<{item}>既不是 `库.表` 写法，也不是合法正则: {e}"))?;
+            item.to_string()
+        };
+        if seen.insert(normalized.clone()) {
+            items.push(normalized);
+        }
+    }
+    Ok(items)
+}
+
+/// # 一个条目能否当普通表名看待
+///
+/// 只由标识符字符与 `.` 组成的才算；出现 `\ * ( ) [ ] | ^ $ + ? { }` 任一个就是
+/// 正则（`.` 本身不算，`模式.表` 必须带它）。
+///
+/// 判错的代价是不对称的：把正则误判成表名会去套白名单并报错，把表名误判成正则则
+/// 被当成锚定正则原样使用 —— 两者都还能用，所以这里只用最简单可靠的字符集判断。
+fn is_plain_name(item: &str) -> bool {
+    item.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '$' | '#' | '-' | '.'))
 }
 
 /// # MySQL 的 TLS 模式
@@ -1110,24 +1187,25 @@ impl DbzSignalUtils {
         })
     }
 
-    /// # 补全并去重调用方给的表名（Kafka 通道）
+    /// # 补全并去重调用方给的表范围（Kafka 通道）
     ///
     /// 与信号表那条的区别是**不连库**：只按连接器配置里的方言补前缀，不核对表是否
     /// 真的存在。Kafka 通道本来就把 `data-collections` 当正则交给 Debezium，写错的
-    /// 表名不会报错、只会被跳过，所以这里的校验只到「拼得成全限定名」为止。
+    /// 表名不会报错、只会被跳过，所以这里的校验只到「拼得成全限定名」或「正则编译
+    /// 得过」为止，见 [`normalize_patterns`]。
     ///
     /// ## 参数
     /// * `config` - Kafka 信号配置
-    /// * `requested` - 调用方给的表名，可以带前缀也可以不带
+    /// * `requested` - 调用方给的表名或正则，可以带前缀也可以不带
     ///
     /// ## 返回值
-    /// * `Ok(Vec<String>)` - 去重后的全限定名，保持调用方给的顺序
-    /// * `Err(anyhow::Error)` - 有条目不是合法标识符
+    /// * `Ok(Vec<String>)` - 去重后的条目，保持调用方给的顺序
+    /// * `Err(anyhow::Error)` - 有条目既不是合法表名，也不是合法正则
     pub fn normalize_kafka_data_collections(
         config: &KafkaSignalConfig,
         requested: &[String],
     ) -> Result<Vec<String>, anyhow::Error> {
-        normalize_names(config.default_schema(), requested)
+        normalize_patterns(config.default_schema(), requested)
     }
 
     /// # 拼 Kafka 信号的消息体
@@ -1300,6 +1378,89 @@ mod tests {
         )
         .unwrap();
         assert_eq!(names, vec!["orders.orders", "settle.bill"]);
+    }
+
+    /// 信号表通道不接受正则：表名要拼进 INSERT，只放行简单标识符
+    #[test]
+    fn source_channel_rejects_regex() {
+        let config = DbzSignalUtils::parse_connector_config(&mysql_config_with_signal("")).unwrap();
+        let error =
+            DbzSignalUtils::normalize_data_collections(&config, &[r"orders\..*".to_string()])
+                .unwrap_err();
+        assert!(error.to_string().contains("不合法"), "{error}");
+    }
+
+    /// Kafka 通道的 `data-collections` 是正则：预检吐出来的范围照抄回来必须能用
+    ///
+    /// 前端把预检结果全选后原样提交，PG 连接器的范围就是 `(public)\..*` 这种写法 ——
+    /// 套信号表那套白名单会直接把「重新同步」按死。
+    #[test]
+    fn kafka_accepts_preview_patterns() {
+        let config = r#"{
+            "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+            "topic.prefix": "dtw",
+            "database.dbname": "dtw",
+            "signal.kafka.topic": "dbz-signal",
+            "signal.kafka.bootstrap.servers": "10.0.0.21:9092",
+            "signal.enabled.channels": ["source", "kafka"]
+        }"#;
+        let parsed = DbzSignalUtils::parse_kafka_config(config).unwrap();
+        let patterns = parsed.data_collection_patterns();
+        assert_eq!(patterns, vec![r"(public)\..*"]);
+
+        let names = DbzSignalUtils::normalize_kafka_data_collections(&parsed, &patterns).unwrap();
+        assert_eq!(names, patterns, "预检给的正则要能原样提交");
+    }
+
+    /// Kafka 通道下普通表名照样补前缀，正则条目原样保留，重复条目去掉
+    #[test]
+    fn kafka_mixes_names_and_patterns() {
+        let config = r#"{
+            "connector.class": "io.debezium.connector.mysql.MySqlConnector",
+            "topic.prefix": "orders",
+            "database.dbname": "orders",
+            "signal.kafka.topic": "dbz-signal",
+            "signal.enabled.channels": ["kafka"]
+        }"#;
+        let parsed = DbzSignalUtils::parse_kafka_config(config).unwrap();
+        let names = DbzSignalUtils::normalize_kafka_data_collections(
+            &parsed,
+            &[
+                "t_order".to_string(),
+                "settle.bill".to_string(),
+                "orders".to_string(),
+                r"orders\.tmp_.*".to_string(),
+                ".*".to_string(),
+            ],
+        )
+        .unwrap();
+        assert_eq!(
+            names,
+            vec![
+                "orders.t_order",
+                "settle.bill",
+                "orders.orders",
+                r"orders\.tmp_.*",
+                ".*"
+            ]
+        );
+    }
+
+    /// 既不是表名也编译不成正则的条目要报错，而不是塞给 Debezium 被静默忽略
+    #[test]
+    fn kafka_rejects_broken_regex() {
+        let config = r#"{
+            "connector.class": "io.debezium.connector.mysql.MySqlConnector",
+            "topic.prefix": "orders",
+            "database.dbname": "orders",
+            "signal.kafka.topic": "dbz-signal",
+            "signal.enabled.channels": ["kafka"]
+        }"#;
+        let parsed = DbzSignalUtils::parse_kafka_config(config).unwrap();
+        let error =
+            DbzSignalUtils::normalize_kafka_data_collections(&parsed, &["orders[".to_string()])
+                .unwrap_err();
+        assert!(error.to_string().contains("合法正则"), "{error}");
     }
 
     /// 捕获范围按 include / exclude / 信号表三方过滤
