@@ -5,14 +5,15 @@
 //! `kafka_connect_id` 指明它跑在哪台集群上。下游（sink）连接器通过
 //! `source_connector_id` 归属于它，见 [`DbzSinkConnectorSvc`](crate::svc::DbzSinkConnectorSvc)。
 //!
-//! 本服务只负责自身记录的写操作：新增/修改/删除时把改动同步到 Kafka Connect
-//! （搬家要先注销旧连接器、改配置要主动下发）。健康检查以集群为入口，见
-//! [`DbzKafkaConnectSvc::check_all_connectors`](crate::svc::DbzKafkaConnectSvc::check_all_connectors)。
+//! 本服务只负责自身记录的写操作，而且每个写操作都**当场**同步到 Kafka Connect：
+//! 新增后立即部署、启用后立即部署、改配置/搬家先注销再下发、禁用与删除先注销。
+//! 定时健康检查只做兜底（发现集群上没有才补一次部署），
+//! 见 [`DbzKafkaConnectSvc::check_all_connectors`](crate::svc::DbzKafkaConnectSvc::check_all_connectors)。
 
 use crate::dic::ConnectorRunStatus;
 use crate::dto::DbzSinkConnectorQueryDto;
 use crate::svc::{DbzKafkaBrokerSvc, DbzKafkaConnectSvc, DbzSinkConnectorSvc};
-use crate::utils::{DbzSignalUtils, KafkaConnectorUtils, normalize_url};
+use crate::utils::{DbzSignalUtils, KafkaConnectorUtils, normalize_url, should_deploy};
 use anyhow::anyhow;
 use robotech::macros::svc;
 use sea_orm::DatabaseConnection;
@@ -21,6 +22,7 @@ use wheel_rs::time_utils::now_ms;
 
 #[svc(
     before_add = DbzSourceConnectorSvc::before_add_hook,
+    after_add = DbzSourceConnectorSvc::after_add_hook,
     before_modify = DbzSourceConnectorSvc::before_modify_hook,
     before_del_by_id = DbzSourceConnectorSvc::before_del_by_id_hook
 )]
@@ -55,6 +57,76 @@ impl DbzSourceConnectorSvc {
             add_dto.connector_config = Some(filled);
         }
         Ok(add_dto)
+    }
+
+    /// # 新增后钩子：立刻把连接器部署到集群
+    ///
+    /// 只存记录不动集群的话，用户点完「新增」看到的是「无状态」，要等最长一个
+    /// 检查间隔才知道成没成、错在哪。这里当场下发一次（`PUT /connectors/{name}/config`
+    /// 对不存在的是创建），把 Kafka Connect 的答复变成「注册失败 + 原因」写进记录，
+    /// 列表里悬停就能看到。
+    ///
+    /// 部署失败**不用错误收场**：钩子跑在写库之后，此时报错只会让人以为没建成、
+    /// 再点一次撞唯一约束。写回状态更诚实，而且下一轮检查发现集群上没有这个连接器
+    /// 时会自己再部署一次。
+    ///
+    /// 禁用的记录不部署：启用时会部署（见 [`before_modify_hook`](Self::before_modify_hook)）。
+    ///
+    /// ## 返回值
+    /// * `Ok(Vo)` - 原样返回新记录，不做修改
+    async fn after_add_hook(
+        _add_dto: DbzSourceConnectorAddDto,
+        one: DbzSourceConnectorVo,
+    ) -> Result<DbzSourceConnectorVo, SvcError> {
+        if !one.enabled {
+            return Ok(one);
+        }
+        if let Err(error) = Self::deploy_now(&one).await {
+            warn!(
+                "上游连接器<{}>(id={}) 新增后立即下发失败: {error}",
+                one.name,
+                one.id.value()
+            );
+            let reason = format!("{error:#}");
+            if let Err(e) = Self::update_run_status(
+                &one,
+                ConnectorRunStatus::RegisterFailed,
+                Some(reason.clone()),
+            )
+            .await
+            {
+                warn!(
+                    "上游连接器<{}>(id={}) 下发失败的结论没能写回: {e}",
+                    one.name,
+                    one.id.value()
+                );
+            }
+        }
+        Ok(one)
+    }
+
+    /// # 把这条记录下发到它所在的集群
+    ///
+    /// 新增后钩子用：地址取不到、PUT 被拒都在这里变成人话。修改钩子不走它 ——
+    /// 那边要下发的可能是「换位置后的新地址 + 新名字」，参数不一样。
+    ///
+    /// ## 参数
+    /// * `one` - 连接器记录，用它的 `kafka_connect_id` / `connector_name` / `connector_config`
+    ///
+    /// ## 返回值
+    /// * `Ok(())` - 已被集群接受
+    /// * `Err(anyhow::Error)` - 集群地址缺失或集群拒绝该配置
+    async fn deploy_now(one: &DbzSourceConnectorVo) -> Result<(), anyhow::Error> {
+        let url = DbzKafkaConnectSvc::get_url(one.kafka_connect_id).await?;
+        info!(
+            "上游连接器<{}>(id={}): 下发到 <{url}> 的连接器<{}>",
+            one.name,
+            one.id.value(),
+            one.connector_name
+        );
+        KafkaConnectorUtils::deploy_connector(&url, &one.connector_name, &one.connector_config)
+            .await
+            .map_err(|e| anyhow!("下发上游连接器<{}>配置失败: {e}", one.name))
     }
 
     /// # 补上 kafka 信号通道的 broker 地址
@@ -109,7 +181,7 @@ impl DbzSourceConnectorSvc {
         Ok(filled)
     }
 
-    /// # 修改前钩子：换集群、改名、下发配置、禁用注销与状态同步
+    /// # 修改前钩子：换集群、改名、下发配置、启用部署、禁用注销与状态同步
     ///
     /// 由 `#[svc]` 宏在 `modify` 写库**之前**调用。记录上的改动必须同步到
     /// Kafka Connect，否则就只是改了库：
@@ -123,9 +195,11 @@ impl DbzSourceConnectorSvc {
     ///    时也顺带在新位置建好，不必等下一轮检查。下发的是一份「补好 kafka 信号通道
     ///    broker 地址」的配置（见 [`fill_signal_bootstrap`](Self::fill_signal_bootstrap)），
     ///    配方里留空也部署得起来。配置非法则请求失败，不会把一条跑不起来的配置留在库里。
-    /// 3. **禁用**：先注销连接器再写库。注销失败则整个修改请求失败，宁可禁用不成，
+    /// 3. **启用**：禁用时连接器已被注销，重新启用要立刻再部署回去。同样不等下一轮
+    ///    检查 —— 开关显示「已启用」而集群上还没有这个连接器，是最容易让人误判的状态。
+    /// 4. **禁用**：先注销连接器再写库。注销失败则整个修改请求失败，宁可禁用不成，
     ///    也不允许出现「库里已禁用、连接器还在跑」。
-    /// 4. **状态**：禁用置「已禁用」；重新启用、换位置或重新下发配置置「无状态」，
+    /// 5. **状态**：禁用置「已禁用」；重新启用、换位置或重新下发配置置「无状态」，
     ///    等下一轮检查判定。开关只有**真的变化**才改写 —— 普通编辑常会带上原有的
     ///    `enabled`，不能因此把检查得出的状态覆盖掉。
     ///
@@ -188,6 +262,9 @@ impl DbzSourceConnectorSvc {
         }
         let config_changed = config_after != old.connector_config;
         let disabling = modify_dto.enabled == Some(false) && old.enabled;
+        // 禁用时连接器已被注销，重新启用必须再部署回去 —— 否则要等下一轮检查，
+        // 用户在开关上看到「已启用」，集群上却还没有这个连接器
+        let enabling = modify_dto.enabled == Some(true) && !old.enabled;
         let enabled_after = modify_dto.enabled.unwrap_or(old.enabled);
 
         // 旧地址为空说明这台集群上从未部署过连接器，没有可注销的东西，直接放行
@@ -201,11 +278,12 @@ impl DbzSourceConnectorSvc {
             KafkaConnectorUtils::delete_connector(&old_url, &old.connector_name).await?;
         }
 
-        // 配置改动或换位置后主动下发一次，避免等下一轮检查（最长一个检查间隔）。
+        // 配置改动、换位置或重新启用后主动下发一次，避免等下一轮检查（最长一个检查间隔）。
         // 禁用状态下不下发，否则会把连接器重新创建出来，与「已禁用」矛盾。
-        if enabled_after && (config_changed || relocated) && !new_url.is_empty() {
+        if should_deploy(enabled_after, config_changed, relocated, enabling) && !new_url.is_empty()
+        {
             info!(
-                "上游连接器<{}>(id={}): 位置或配置已变更，下发到 <{new_url}> 的连接器<{new_name}>",
+                "上游连接器<{}>(id={}): 启用或位置/配置变更，下发到 <{new_url}> 的连接器<{new_name}>",
                 old.name,
                 old.id.value()
             );

@@ -59,6 +59,35 @@ pub fn normalize_url(url: &str) -> String {
     url.trim().trim_end_matches('/').to_string()
 }
 
+/// # 这次修改要不要主动下发
+///
+/// 上游、下游的修改钩子共用这一处判定。三种情况要下发：
+///
+/// * **配置变了** —— 健康检查只在「集群上没有这个连接器」时才部署，不下发就永远
+///   不会生效；
+/// * **换了位置或改了名** —— 旧位置上的那个刚被注销，新位置上还没有；
+/// * **从禁用改为启用** —— 禁用时连接器已被注销，不重新部署的话，开关显示「已启用」
+///   而集群上一直没有它，要等下一轮检查才补上。
+///
+/// 禁用状态下恒不下发：那会把刚注销的连接器又建回来，与「已禁用」矛盾。
+///
+/// ## 参数
+/// * `enabled_after` - 这次修改之后的启用状态
+/// * `config_changed` - 配置是否变化
+/// * `relocated` - 集群地址或连接器名是否变化
+/// * `enabling` - 是否由禁用改为启用
+///
+/// ## 返回值
+/// * `bool` - 需要下发时为 `true`
+pub fn should_deploy(
+    enabled_after: bool,
+    config_changed: bool,
+    relocated: bool,
+    enabling: bool,
+) -> bool {
+    enabled_after && (config_changed || relocated || enabling)
+}
+
 /// # 连接器操作错误
 ///
 /// 用于区分 Kafka Connect 调用失败的具体原因，便于业务层映射为不同的运行状态。
@@ -848,5 +877,46 @@ fn parse_connector_state(state: &str) -> KafkaConnectorStatus {
         "STOPPED" => KafkaConnectorStatus::Stopped,
         "DESTROYED" => KafkaConnectorStatus::Destroyed,
         _ => KafkaConnectorStatus::Unassigned,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 换集群/改名、改配置都要下发，否则新位置上什么也没有、旧配置永远不生效
+    #[test]
+    fn deploy_on_relocate_or_config_change() {
+        assert!(should_deploy(true, false, true, false));
+        assert!(should_deploy(true, true, false, false));
+        assert!(should_deploy(true, true, true, false));
+    }
+
+    /// 什么都不变就别下发：PUT 一次会重建 task，白折腾一次数据流
+    #[test]
+    fn skip_when_nothing_changed() {
+        assert!(!should_deploy(true, false, false, false));
+    }
+
+    /// 重新启用必须下发 —— 禁用时连接器已被注销，不部署就一直是「已启用但集群上没有」
+    #[test]
+    fn deploy_when_enabling() {
+        assert!(should_deploy(true, false, false, true));
+    }
+
+    /// 禁用状态下任何理由都不下发，否则刚注销的连接器又被建回来
+    #[test]
+    fn never_deploy_when_disabled() {
+        assert!(!should_deploy(false, true, true, false));
+        assert!(!should_deploy(false, true, true, true));
+    }
+
+    /// 地址末尾斜杠与空白不影响「是不是同一台集群」的判断
+    #[test]
+    fn normalize_trims_slash_and_space() {
+        assert_eq!(
+            normalize_url(" http://10.0.0.1:8083/ "),
+            "http://10.0.0.1:8083"
+        );
     }
 }

@@ -138,7 +138,7 @@ export default function SinkConnectorPage() {
         <EnabledSwitch
           enabled={enabled}
           name={record.name}
-          confirmContent="禁用后该连接器不参与健康检查，并会先从集群上注销；重新启用后由下一轮检查重新部署。"
+          confirmContent="禁用后该连接器不参与健康检查，并会先从集群上注销；重新启用时再当场部署回去。"
           onToggle={async (next) => {
             await sinkConnectorApi.modify({ id: record.id, enabled: next });
             reload();

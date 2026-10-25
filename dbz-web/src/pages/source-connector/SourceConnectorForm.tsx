@@ -131,7 +131,7 @@ export default function SourceConnectorForm({
         <Form.Item
           name="kafkaConnectId"
           label="Kafka Connect 集群"
-          extra="连接器会部署到这台集群上；改挂集群后，下一轮检查会在新集群重新部署。"
+          extra="保存时会当场把连接器部署到这台集群上；改挂集群则先注销旧位置，再在新集群部署。"
           rules={[{ required: true, message: '请选择集群' }]}
         >
           <Select
