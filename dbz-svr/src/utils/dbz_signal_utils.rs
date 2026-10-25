@@ -215,7 +215,7 @@ impl DbzSignalUtils {
         }
 
         // source 通道是增量快照的必备通道；配了 kafka 却漏了 source 时，信号表插了也没人读
-        let channels = list(text(&config, "signal.enabled.channels").as_deref());
+        let channels = list_config(&config, "signal.enabled.channels");
         if !channels.is_empty() && !channels.iter().any(|channel| channel == "source") {
             bail!(
                 "连接器的 signal.enabled.channels 是 [{}]，不含 source：信号表里的信号读不到。\
@@ -254,7 +254,7 @@ impl DbzSignalUtils {
         // 就是连接器连的那个库；PG 的默认模式是 public
         let schema_patterns = match dialect {
             SourceDialect::MySql => {
-                let databases = list(text(&config, "database.include.list").as_deref());
+                let databases = list_config(&config, "database.include.list");
                 if databases.is_empty() {
                     vec![database.clone()]
                 } else {
@@ -262,7 +262,7 @@ impl DbzSignalUtils {
                 }
             }
             SourceDialect::PostgreSql => {
-                let schemas = list(text(&config, "schema.include.list").as_deref());
+                let schemas = list_config(&config, "schema.include.list");
                 if schemas.is_empty() {
                     vec!["public".to_string()]
                 } else {
@@ -281,8 +281,8 @@ impl DbzSignalUtils {
             ssl_mode,
             signal_collection,
             schema_patterns,
-            table_include: list(text(&config, "table.include.list").as_deref()),
-            table_exclude: list(text(&config, "table.exclude.list").as_deref()),
+            table_include: list_config(&config, "table.include.list"),
+            table_exclude: list_config(&config, "table.exclude.list"),
         })
     }
 
@@ -791,6 +791,53 @@ fn list(value: Option<&str>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// # 读一个列表型配置项（逗号串或 JSON 数组都认）
+///
+/// Debezium 的列表类配置两种写法等价：`"orders,settle"` 与 `["orders","settle"]`。
+/// 后者在 JSON 里更自然，从官方文档或别的连接器上抄配置时经常出现，而只认字符串
+/// 会把「写了数组」当成「没配」—— 后果不是报错，而是捕获范围被悄悄放大成整库
+/// （`database.include.list` 缺失时按 `database.dbname` 算），或者预检报「没有可快照的表」。
+///
+/// 数组的每个元素就是一个条目，不再按逗号二次切分：Debezium 就是这么解释的，
+/// 元素里的逗号属于条目本身。
+///
+/// ## 参数
+/// * `config` - 连接器配置
+/// * `key` - 配置键
+///
+/// ## 返回值
+/// * `Vec<String>` - 各条目，已去首尾空白并丢掉空项；未配置时为空
+fn list_config(config: &HashMap<String, Value>, key: &str) -> Vec<String> {
+    match config.get(key) {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| match item {
+                Value::String(item) => {
+                    let item = item.trim();
+                    (!item.is_empty()).then(|| item.to_string())
+                }
+                // 端口一类纯数字项写成数字也收，省得为一个类型报「没配」
+                Value::Number(item) => Some(item.to_string()),
+                _ => None,
+            })
+            .collect(),
+        _ => list(text(config, key).as_deref()),
+    }
+}
+
+/// # 一个配置值是否等于「没填」
+///
+/// 只判值，不管键在不在。空串、纯空白、`null`、空数组（或元素全空）都算没填 ——
+/// 前端把输入框清空时写的是 `""`，从别处抄来的配置偶尔是 `[]`。
+fn is_blank_value(value: &Value) -> bool {
+    match value {
+        Value::Null => true,
+        Value::String(value) => value.trim().is_empty(),
+        Value::Array(items) => items.iter().all(is_blank_value),
+        _ => false,
+    }
+}
+
 // ==========================================================================
 // Kafka 信号通道
 // ==========================================================================
@@ -876,12 +923,91 @@ impl DbzSignalUtils {
             return Vec::new();
         };
         let config: HashMap<String, Value> = object.into_iter().collect();
-        let channels = list(text(&config, "signal.enabled.channels").as_deref());
+        let channels = list_config(&config, "signal.enabled.channels");
         if channels.is_empty() {
             vec!["source".to_string()]
         } else {
             channels
         }
+    }
+
+    /// # 补上 kafka 信号通道的 broker 地址
+    ///
+    /// `signal.kafka.bootstrap.servers` 在 Debezium 里是必填项、**没有默认值**，也不会
+    /// 沿用 worker 自己的地址：留空时老版本在建 task 的路上直接
+    /// `Properties.setProperty(key, null)` 抛 NPE，整个连接器起不来（3.1.2 起才改成
+    /// 校验报错）。而 dbz 里开了 kafka 通道的配置，绝大多数就是「关联了哪个集群就发到
+    /// 哪个」，所以由调用方把集群地址传进来，留空就填上，让人不用记这个键。
+    ///
+    /// 只填空值（缺失 / 空串 / 空数组）。用户自己填过的地址一律不动 —— 哪怕和集群
+    /// 记录不一致，那也是他的选择，预检会提醒，不该在这里悄悄改掉。
+    ///
+    /// 序列化用 `to_string_pretty` 且键按字母序重排（`serde_json` 没开
+    /// `preserve_order`）：只改这一处，值一个不丢。
+    ///
+    /// ## 参数
+    /// * `connector_config` - 连接器配置 JSON
+    /// * `bootstrap_servers` - 关联 Kafka 集群的地址（逗号分隔）
+    ///
+    /// ## 返回值
+    /// * `Ok(None)` - 不用改（没开 kafka 通道，或已经有地址）
+    /// * `Ok(Some(String))` - 补好地址的配置
+    /// * `Err(anyhow::Error)` - 配置不是合法 JSON 对象，或集群地址为空
+    pub fn fill_kafka_bootstrap(
+        connector_config: &str,
+        bootstrap_servers: &str,
+    ) -> Result<Option<String>, anyhow::Error> {
+        let bootstrap_servers = bootstrap_servers.trim();
+        if !Self::enabled_channels(connector_config)
+            .iter()
+            .any(|channel| channel == "kafka")
+        {
+            return Ok(None);
+        }
+        if bootstrap_servers.is_empty() {
+            bail!("关联的 Kafka 集群没有配置 broker 地址，没法补 signal.kafka.bootstrap.servers");
+        }
+
+        let mut value: Value = serde_json::from_str(connector_config)
+            .map_err(|e| anyhow!("连接器配置不是合法的 JSON: {e}"))?;
+        let Value::Object(object) = &mut value else {
+            bail!("连接器配置必须是 JSON 对象");
+        };
+        const KEY: &str = "signal.kafka.bootstrap.servers";
+        if object.get(KEY).is_some_and(|value| !is_blank_value(value)) {
+            return Ok(None);
+        }
+        object.insert(
+            KEY.to_string(),
+            Value::String(bootstrap_servers.to_string()),
+        );
+        Ok(Some(serde_json::to_string_pretty(&value)?))
+    }
+
+    /// # 开了 kafka 通道但 broker 地址是空的
+    ///
+    /// 用来在下发前拦一道：这种配置在老版本 Debezium 上会直接抛 NPE，报错信息里
+    /// 看不出跟这个键有关，先自己说清楚比等它崩强。
+    ///
+    /// 配置不是合法 JSON 时返回 `false` —— 那种情况由解析路径自己去报错。
+    ///
+    /// ## 参数
+    /// * `connector_config` - 连接器配置 JSON
+    ///
+    /// ## 返回值
+    /// * `bool` - 需要 kafka 通道且没填地址时为 `true`
+    pub fn kafka_bootstrap_missing(connector_config: &str) -> bool {
+        if !Self::enabled_channels(connector_config)
+            .iter()
+            .any(|channel| channel == "kafka")
+        {
+            return false;
+        }
+        let Ok(Value::Object(object)) = serde_json::from_str::<Value>(connector_config) else {
+            return false;
+        };
+        let config: HashMap<String, Value> = object.into_iter().collect();
+        list_config(&config, "signal.kafka.bootstrap.servers").is_empty()
     }
 
     /// # 解析 Kafka 信号通道配置
@@ -949,7 +1075,7 @@ impl DbzSignalUtils {
             .to_string();
         let schema_patterns = match dialect {
             SourceDialect::MySql => {
-                let databases = list(text(&config, "database.include.list").as_deref());
+                let databases = list_config(&config, "database.include.list");
                 if databases.is_empty() {
                     if database.is_empty() {
                         Vec::new()
@@ -961,7 +1087,7 @@ impl DbzSignalUtils {
                 }
             }
             SourceDialect::PostgreSql => {
-                let schemas = list(text(&config, "schema.include.list").as_deref());
+                let schemas = list_config(&config, "schema.include.list");
                 if schemas.is_empty() {
                     vec!["public".to_string()]
                 } else {
@@ -975,10 +1101,10 @@ impl DbzSignalUtils {
             topic: topic.to_string(),
             topic_prefix: topic_prefix.to_string(),
             database,
-            bootstrap_servers: list(text(&config, "signal.kafka.bootstrap.servers").as_deref()),
+            bootstrap_servers: list_config(&config, "signal.kafka.bootstrap.servers"),
             schema_patterns,
-            table_include: list(text(&config, "table.include.list").as_deref()),
-            table_exclude: list(text(&config, "table.exclude.list").as_deref()),
+            table_include: list_config(&config, "table.include.list"),
+            table_exclude: list_config(&config, "table.exclude.list"),
         })
     }
 
@@ -1089,6 +1215,66 @@ mod tests {
         assert!(error.to_string().contains("source"), "{error}");
     }
 
+    /// 列表类配置写成 JSON 数组与逗号串等价
+    ///
+    /// 只认字符串时，数组会被当成「没配」：捕获范围从 `orders,settle` 悄悄退化成
+    /// `database.dbname` 一个库，预检出来的表清单就不是用户以为的那些。
+    #[test]
+    fn accept_list_as_json_array() {
+        let config = r#"{
+            "connector.class": "io.debezium.connector.mysql.MySqlConnector",
+            "database.hostname": "10.0.0.1",
+            "database.user": "debezium",
+            "database.dbname": "orders",
+            "database.include.list": ["orders", "settle"],
+            "table.include.list": ["orders\\..*", "settle\\.bill"],
+            "table.exclude.list": ["orders\\.tmp_.*"],
+            "signal.data.collection": "orders.debezium_signal",
+            "signal.enabled.channels": ["source", "kafka"]
+        }"#;
+        let parsed = DbzSignalUtils::parse_connector_config(config).unwrap();
+        assert_eq!(parsed.schema_patterns, vec!["orders", "settle"]);
+        assert_eq!(parsed.table_include.len(), 2);
+        assert_eq!(parsed.table_exclude.len(), 1);
+        assert_eq!(
+            DbzSignalUtils::enabled_channels(config),
+            vec!["source", "kafka"]
+        );
+    }
+
+    /// 数组里只写了 kafka 一样要被拦住 —— 通道判断走的是同一个解析
+    #[test]
+    fn reject_channels_without_source_in_array() {
+        let config = r#"{
+            "connector.class": "io.debezium.connector.mysql.MySqlConnector",
+            "database.hostname": "10.0.0.1",
+            "database.user": "debezium",
+            "database.dbname": "orders",
+            "signal.data.collection": "orders.debezium_signal",
+            "signal.enabled.channels": ["kafka"]
+        }"#;
+        let error = DbzSignalUtils::parse_connector_config(config).unwrap_err();
+        assert!(error.to_string().contains("source"), "{error}");
+    }
+
+    /// Kafka 通道：broker 地址与捕获范围写成数组也要认
+    #[test]
+    fn kafka_config_accepts_arrays() {
+        let config = r#"{
+            "connector.class": "io.debezium.connector.mysql.MySqlConnector",
+            "topic.prefix": "orders",
+            "database.dbname": "orders",
+            "signal.kafka.topic": "dbz-signal",
+            "signal.kafka.bootstrap.servers": ["10.0.0.21:9092", "10.0.0.22:9092"],
+            "signal.enabled.channels": ["source", "kafka"],
+            "table.include.list": ["orders\\..*"]
+        }"#;
+        let parsed = DbzSignalUtils::parse_kafka_config(config).unwrap();
+        assert_eq!(parsed.bootstrap_servers.len(), 2);
+        assert_eq!(parsed.table_include.len(), 1);
+        assert_eq!(parsed.database, "orders");
+    }
+
     /// 不是能用信号表的方言就直说
     #[test]
     fn reject_unsupported_dialect() {
@@ -1167,5 +1353,74 @@ mod tests {
         );
         assert_eq!(format!("{:?}", pg_ssl_mode(None)), "Disable");
         assert_eq!(format!("{:?}", pg_ssl_mode(Some("verify-full"))), "Require");
+    }
+
+    /// 开了 kafka 通道又没填地址时补上，其它键一个都不能丢
+    #[test]
+    fn fill_kafka_bootstrap_when_missing() {
+        let config = mysql_config_with_signal(r#", "signal.enabled.channels": "source,kafka""#);
+        let filled = DbzSignalUtils::fill_kafka_bootstrap(&config, "10.0.0.21:9092,10.0.0.22:9092")
+            .unwrap()
+            .expect("开了 kafka 通道又没地址，应该补");
+        let value: Value = serde_json::from_str(&filled).unwrap();
+        assert_eq!(
+            value["signal.kafka.bootstrap.servers"],
+            "10.0.0.21:9092,10.0.0.22:9092"
+        );
+        assert_eq!(value["database.dbname"], "orders");
+        assert_eq!(value["signal.enabled.channels"], "source,kafka");
+    }
+
+    /// 空串与空数组都算没填
+    #[test]
+    fn fill_kafka_bootstrap_when_blank() {
+        for blank in ["\"\"", "[]"] {
+            let config = mysql_config_with_signal(&format!(
+                r#", "signal.enabled.channels": "kafka", "signal.kafka.bootstrap.servers": {blank}"#
+            ));
+            assert!(
+                DbzSignalUtils::fill_kafka_bootstrap(&config, "10.0.0.21:9092")
+                    .unwrap()
+                    .is_some(),
+                "地址写成 {blank} 也该补"
+            );
+        }
+    }
+
+    /// 用户自己填的地址不能改，哪怕和集群记录不一致
+    #[test]
+    fn fill_kafka_bootstrap_keeps_user_value() {
+        let config = mysql_config_with_signal(
+            r#", "signal.enabled.channels": "kafka", "signal.kafka.bootstrap.servers": "10.9.9.9:9092""#,
+        );
+        assert!(
+            DbzSignalUtils::fill_kafka_bootstrap(&config, "10.0.0.21:9092")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// 没开 kafka 通道时不该往配置里塞这个键
+    #[test]
+    fn fill_kafka_bootstrap_skips_source_only() {
+        let config = mysql_config_with_signal(r#", "signal.enabled.channels": "source""#);
+        assert!(
+            DbzSignalUtils::fill_kafka_bootstrap(&config, "10.0.0.21:9092")
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    /// 下发前的拦截与补齐用同一份判断
+    #[test]
+    fn detect_missing_kafka_bootstrap() {
+        let missing = mysql_config_with_signal(r#", "signal.enabled.channels": "source,kafka""#);
+        assert!(DbzSignalUtils::kafka_bootstrap_missing(&missing));
+        let filled = mysql_config_with_signal(
+            r#", "signal.enabled.channels": "source,kafka", "signal.kafka.bootstrap.servers": "10.0.0.21:9092""#,
+        );
+        assert!(!DbzSignalUtils::kafka_bootstrap_missing(&filled));
+        let source_only = mysql_config_with_signal(r#", "signal.enabled.channels": "source""#);
+        assert!(!DbzSignalUtils::kafka_bootstrap_missing(&source_only));
     }
 }

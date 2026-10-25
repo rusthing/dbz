@@ -11,8 +11,8 @@
 
 use crate::dic::ConnectorRunStatus;
 use crate::dto::DbzSinkConnectorQueryDto;
-use crate::svc::{DbzKafkaConnectSvc, DbzSinkConnectorSvc};
-use crate::utils::{KafkaConnectorUtils, normalize_url};
+use crate::svc::{DbzKafkaBrokerSvc, DbzKafkaConnectSvc, DbzSinkConnectorSvc};
+use crate::utils::{DbzSignalUtils, KafkaConnectorUtils, normalize_url};
 use anyhow::anyhow;
 use robotech::macros::svc;
 use sea_orm::DatabaseConnection;
@@ -30,16 +30,83 @@ pub struct DbzSourceConnectorSvc;
 // 无法改成 Box 包裹，这里统一放行该 lint
 #[allow(clippy::result_large_err)]
 impl DbzSourceConnectorSvc {
-    /// # 新增前钩子：新建即禁用时直接落为「已禁用」
+    /// # 新增前钩子：新建即禁用时直接落为「已禁用」，并补上信号 broker 地址
     ///
     /// 被禁用的记录不参与健康检查，不在这里写状态就会一直停在「无状态」。
+    ///
+    /// 补地址见 [`fill_signal_bootstrap`](Self::fill_signal_bootstrap)：kafka 信号通道
+    /// 的 broker 地址留空时连接器根本起不来，所以保存这一刻就填成关联集群的地址。
     async fn before_add_hook(
         mut add_dto: DbzSourceConnectorAddDto,
     ) -> Result<DbzSourceConnectorAddDto, SvcError> {
         if add_dto.enabled == Some(false) {
             add_dto.run_status = Some(ConnectorRunStatus::Disabled);
         }
+        let filled = match (
+            add_dto.connector_config.as_deref(),
+            add_dto.kafka_connect_id,
+        ) {
+            (Some(config), Some(kafka_connect_id)) => {
+                Self::fill_signal_bootstrap(config, kafka_connect_id).await?
+            }
+            _ => None,
+        };
+        if let Some(filled) = filled {
+            add_dto.connector_config = Some(filled);
+        }
         Ok(add_dto)
+    }
+
+    /// # 补上 kafka 信号通道的 broker 地址
+    ///
+    /// 开了 kafka 通道却把 `signal.kafka.bootstrap.servers` 留空时，用这台连接器所在
+    /// Kafka Connect 关联集群的地址填上去。这个键在 Debezium 里必填、没有默认值，
+    /// 也不会沿用 worker 的地址：留空只会让连接器建 task 时抛 NPE，整条连接器起不来。
+    ///
+    /// 拿不到集群时**报错而不是放过**：放过的结果是保存成功、等健康检查才失败，而失败
+    /// 原因是一条 Java 调用栈，看不出跟「没关联集群」有关。在这里报错能把话说清楚。
+    ///
+    /// ## 参数
+    /// * `config` - 连接器配置 JSON
+    /// * `kafka_connect_id` - 连接器所在的 Kafka Connect
+    ///
+    /// ## 返回值
+    /// * `Ok(None)` - 不用改（没开 kafka 通道，或已经有地址）
+    /// * `Ok(Some(String))` - 补好地址的配置
+    /// * `Err(SvcError)` - 配置不合法，或取不到关联集群的地址
+    async fn fill_signal_bootstrap(
+        config: &str,
+        kafka_connect_id: U64,
+    ) -> Result<Option<String>, SvcError> {
+        if !DbzSignalUtils::enabled_channels(config)
+            .iter()
+            .any(|channel| channel == "kafka")
+        {
+            return Ok(None);
+        }
+
+        let connect = DbzKafkaConnectSvc::get_by_id::<DatabaseConnection>(kafka_connect_id, None)
+            .await?
+            .extra
+            .ok_or_else(|| anyhow!("Kafka Connect<{}>不存在", kafka_connect_id.value()))?;
+        let broker_id = connect.kafka_broker_id.ok_or_else(|| {
+            anyhow!(
+                "连接器启用了 kafka 信号通道，但它所在的 Kafka Connect<{}>没有关联 Kafka 集群：\
+                 请先给这台 Connect 选一个集群，或者在配置里自己填 \
+                 signal.kafka.bootstrap.servers",
+                connect.name
+            )
+        })?;
+        let broker = DbzKafkaBrokerSvc::load_conn(broker_id).await?;
+
+        let filled = DbzSignalUtils::fill_kafka_bootstrap(config, &broker.bootstrap_servers)?;
+        if filled.is_some() {
+            info!(
+                "连接器配置开了 kafka 信号通道但没有 broker 地址，用集群<{}>的地址 [{}] 补上",
+                broker.name, broker.bootstrap_servers
+            );
+        }
+        Ok(filled)
     }
 
     /// # 修改前钩子：换集群、改名、下发配置、禁用注销与状态同步
@@ -53,8 +120,9 @@ impl DbzSourceConnectorSvc {
     /// 2. **下发**：健康检查只在连接器「不存在」时才部署，改了 `connector_config`
     ///    若不主动下发就永远不会生效。这里按新配置 PUT 一次（`PUT
     ///    /connectors/{name}/config` 对已存在的是更新、对不存在的是创建），换位置
-    ///    时也顺带在新位置建好，不必等下一轮检查。配置非法则请求失败，不会把一条
-    ///    跑不起来的配置留在库里。
+    ///    时也顺带在新位置建好，不必等下一轮检查。下发的是一份「补好 kafka 信号通道
+    ///    broker 地址」的配置（见 [`fill_signal_bootstrap`](Self::fill_signal_bootstrap)），
+    ///    配方里留空也部署得起来。配置非法则请求失败，不会把一条跑不起来的配置留在库里。
     /// 3. **禁用**：先注销连接器再写库。注销失败则整个修改请求失败，宁可禁用不成，
     ///    也不允许出现「库里已禁用、连接器还在跑」。
     /// 4. **状态**：禁用置「已禁用」；重新启用、换位置或重新下发配置置「无状态」，
@@ -104,10 +172,21 @@ impl DbzSourceConnectorSvc {
             .to_string();
         let relocated =
             normalize_url(&new_url) != normalize_url(&old_url) || new_name != old.connector_name;
-        let config_changed = modify_dto
+        // 最终要下发的配置：这次带了就用它，没带沿用库里那份
+        let mut config_after = modify_dto
             .connector_config
-            .as_deref()
-            .is_some_and(|config| config != old.connector_config);
+            .clone()
+            .unwrap_or_else(|| old.connector_config.clone());
+        // 开了 kafka 信号通道却没填 broker 地址时补成关联集群的地址：这个键留空，
+        // Debezium 建 task 时直接 NPE，整条连接器起不来。补出来的配置要写回库里，
+        // 否则下次下发还是那份没有地址的。
+        if let Some(filled) =
+            Self::fill_signal_bootstrap(&config_after, new_kafka_connect_id).await?
+        {
+            config_after = filled;
+            modify_dto.connector_config = Some(config_after.clone());
+        }
+        let config_changed = config_after != old.connector_config;
         let disabling = modify_dto.enabled == Some(false) && old.enabled;
         let enabled_after = modify_dto.enabled.unwrap_or(old.enabled);
 
@@ -125,16 +204,12 @@ impl DbzSourceConnectorSvc {
         // 配置改动或换位置后主动下发一次，避免等下一轮检查（最长一个检查间隔）。
         // 禁用状态下不下发，否则会把连接器重新创建出来，与「已禁用」矛盾。
         if enabled_after && (config_changed || relocated) && !new_url.is_empty() {
-            let config = modify_dto
-                .connector_config
-                .clone()
-                .unwrap_or_else(|| old.connector_config.clone());
             info!(
                 "上游连接器<{}>(id={}): 位置或配置已变更，下发到 <{new_url}> 的连接器<{new_name}>",
                 old.name,
                 old.id.value()
             );
-            KafkaConnectorUtils::deploy_connector(&new_url, &new_name, &config)
+            KafkaConnectorUtils::deploy_connector(&new_url, &new_name, &config_after)
                 .await
                 .map_err(|e| anyhow!("下发上游连接器<{}>配置失败: {e}", old.name))?;
         }

@@ -294,6 +294,11 @@ scripts/smoke.mjs        # 冒烟测试
 必填项之外还有一条「前后矛盾」提醒：下游选了 `insert.mode=upsert/update` 却把主键来源留成
 `record_value` 又不填 `primary.key.fields` 时，表单会直接点出来——这个错原本要到部署阶段才暴露。
 
+`signal.kafka.bootstrap.servers` 可以留空：保存时服务端会用这颗连接器所在 Connect 关联集群的地址
+补上，并写进配置（下次编辑能看到）。这个键在 Debezium 里必填、**没有默认值，也不会沿用 worker 的
+地址**，留空老版本直接 NPE、整条连接器起不来。自己填过的地址不会被改；关联的 Connect 没有选集群时
+保存会直接报错，而不是存下一条注定起不来的配置。
+
 ## 页面与接口对照
 
 | 页面 | 用到的接口 |

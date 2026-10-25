@@ -213,7 +213,7 @@ const SOURCE_GROUPS: FieldGroup[] = [
   },
   {
     title: '捕获范围',
-    desc: '都是逗号分隔的正则，写窄了会漏表、写宽了会多读；dbz 的再同步预检也按这里算范围。',
+    desc: '都是逗号分隔的正则（写成 JSON 数组也认），写窄了会漏表、写宽了会多读；dbz 的再同步预检也按这里算范围。',
     fields: [
       {
         key: 'database.include.list',
@@ -249,7 +249,7 @@ const SOURCE_GROUPS: FieldGroup[] = [
         label: '启用的信号通道',
         kind: 'select',
         options: ['source', 'source,kafka', 'kafka'],
-        help: '不填等价于 source。选 kafka 时必须同时配下面的 topic 与 broker 地址。',
+        help: '不填等价于 source。选 kafka 时要配下面的 topic；broker 地址留空会自动填成这颗连接器所在 Connect 关联集群的地址。',
       },
       {
         key: 'signal.data.collection',
@@ -269,7 +269,7 @@ const SOURCE_GROUPS: FieldGroup[] = [
         label: '信号 broker 地址（kafka 通道）',
         kind: 'text',
         placeholder: '10.0.0.1:9092',
-        help: '留空时连接器沿用 worker 的 bootstrap.servers；填了要和 dbz 里的 Kafka 集群一致，否则信号投过去没人读。',
+        help: '留空会在保存时自动填成关联 Kafka 集群的地址（Debezium 这个键没有默认值，也不会沿用 worker，留空老版本会直接起不来）。填了就要和集群地址一致，否则信号投过去没人读。',
       },
     ],
   },

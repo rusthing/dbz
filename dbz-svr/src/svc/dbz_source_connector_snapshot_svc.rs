@@ -343,7 +343,8 @@ impl DbzSourceConnectorSnapshotSvc {
                     bail!(
                         "连接器<{}>没有启用 {} 信号通道（signal.enabled.channels = [{}]）：\
                          source 通道要在源库建信号表并配 signal.data.collection，\
-                         kafka 通道要配上 signal.kafka.topic 与 signal.kafka.bootstrap.servers",
+                         kafka 通道要配好 signal.kafka.topic（broker 地址保存时会按\
+                         关联集群自动补）",
                         source.name,
                         channel.value(),
                         channels.join(",")
@@ -457,19 +458,26 @@ impl DbzSourceConnectorSnapshotSvc {
 
     /// # 连接器消费信号用的地址与我们投递的集群是否一致
     ///
-    /// `signal.kafka.bootstrap.servers` 没配时连接器沿用 worker 自己的地址，多半就是
-    /// 同一个集群，不用提醒；配了却和集群记录不一样，说明两边看的不是一套 Kafka，
-    /// 信号投出去也没人读 —— 这种错不报出来只能靠翻连接器日志。
+    /// 地址为空时要提醒：这个键在 Debezium 里必填、没有默认值，也**不会**沿用 worker
+    /// 的地址，老版本留空会让连接器在建 task 时直接 NPE。保存配置时会自动补成关联
+    /// 集群的地址，还出现空值说明是早先存的记录 —— 重新保存一次就好。
+    ///
+    /// 配了却和集群记录不一样，说明两边看的不是一套 Kafka，信号投出去也没人读 ——
+    /// 这种错不报出来只能靠翻连接器日志。
     ///
     /// ## 返回值
-    /// * `Vec<String>` - 不一致时的提醒，一致或没配时为空
+    /// * `Vec<String>` - 空值或不一致时的提醒，一致时为空
     fn broker_mismatch_warning(
         config: &KafkaSignalConfig,
         conn: &BrokerConn,
         broker_name: &str,
     ) -> Vec<String> {
         if config.bootstrap_servers.is_empty() {
-            return Vec::new();
+            return vec![format!(
+                "连接器配置里没有 signal.kafka.bootstrap.servers：Debezium 在这个键上没有\
+                 默认值，留空会让连接器起不来（不是沿用 worker 的地址）。在页面上重新保存\
+                 一次配置，会自动填成集群<{broker_name}>的地址"
+            )];
         }
         let mut ours = KafkaBrokerUtils::split_servers(&conn.bootstrap_servers);
         let mut theirs = config.bootstrap_servers.clone();

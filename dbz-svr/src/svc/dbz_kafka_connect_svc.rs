@@ -18,8 +18,8 @@ use crate::dic::{ConnectorRunStatus, KafkaConnectStatus, KafkaConnectorStatus};
 use crate::dto::{DbzSinkConnectorQueryDto, DbzSourceConnectorQueryDto};
 use crate::svc::{DbzKafkaBrokerSvc, DbzSinkConnectorSvc, DbzSourceConnectorSvc};
 use crate::utils::{
-    ConnectorHealth, DbzAlarmUtils, KafkaConnectorError, KafkaConnectorUtils, RUN_MSG_MAX,
-    normalize_url, one_line,
+    ConnectorHealth, DbzAlarmUtils, DbzSignalUtils, KafkaConnectorError, KafkaConnectorUtils,
+    RUN_MSG_MAX, normalize_url, one_line,
 };
 use crate::vo::{DbzSinkConnectorVo, DbzSourceConnectorVo};
 use anyhow::anyhow;
@@ -620,6 +620,23 @@ impl DbzKafkaConnectSvc {
             })?;
 
         if !exists {
+            // 配置开了 kafka 信号通道却没填 broker 地址：Debezium 在这个键上没有默认值，
+            // 老版本直接在建 task 时 NPE，报错里看不出跟这个键有关。先自己拦下来，
+            // 别让它去撞一次 Connect 再回一段 Java 调用栈。
+            if DbzSignalUtils::kafka_bootstrap_missing(connector_config) {
+                warn!(
+                    "{label}: 配置开了 kafka 信号通道但没有 signal.kafka.bootstrap.servers，跳过部署"
+                );
+                return Err(ConnectorFault::new(
+                    ConnectorRunStatus::RegisterFailed,
+                    RepairAction::None,
+                )
+                .with_reason(
+                    "配置启用了 kafka 信号通道，但 signal.kafka.bootstrap.servers 为空：\
+                     Debezium 在这个键上没有默认值，留空会让连接器起不来。\
+                     在页面上保存一次配置，会自动填成关联 Kafka 集群的地址",
+                ));
+            }
             info!("{label}: 连接器<{connector_name}>不存在，开始部署...");
             KafkaConnectorUtils::deploy_connector(base_url, connector_name, connector_config)
                 .await
