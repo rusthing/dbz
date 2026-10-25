@@ -742,8 +742,10 @@ fn describe_insert_error(error: sqlx::Error, config: &SourceSignalConfig) -> any
     let message = database_error.message();
     let hint = match (config.dialect, code.as_str()) {
         (SourceDialect::MySql, "1146") | (SourceDialect::PostgreSql, "42P01") => format!(
-            "信号表<{collection}>不存在，请先在源库建表：CREATE TABLE {collection} \
-             (id VARCHAR(42) PRIMARY KEY, type VARCHAR(32) NOT NULL, data VARCHAR(2048) NULL)"
+            "信号表<{collection}>不存在。dbz 是连源库 {}:{}/{} 去写信号的，表要建在那边\
+             （不是 dbz 自己的库）：CREATE TABLE {collection} \
+             (id VARCHAR(42) PRIMARY KEY, type VARCHAR(32) NOT NULL, data VARCHAR(2048) NULL)",
+            config.host, config.port, config.database
         ),
         (SourceDialect::MySql, "1044" | "1142") | (SourceDialect::PostgreSql, "42501") => {
             format!(
