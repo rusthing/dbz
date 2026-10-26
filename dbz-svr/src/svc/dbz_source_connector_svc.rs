@@ -161,14 +161,7 @@ impl DbzSourceConnectorSvc {
             .await?
             .extra
             .ok_or_else(|| anyhow!("Kafka Connect<{}>不存在", kafka_connect_id.value()))?;
-        let broker_id = connect.kafka_broker_id.ok_or_else(|| {
-            anyhow!(
-                "连接器启用了 kafka 信号通道，但它所在的 Kafka Connect<{}>没有关联 Kafka 集群：\
-                 请先给这台 Connect 选一个集群，或者在配置里自己填 \
-                 signal.kafka.bootstrap.servers",
-                connect.name
-            )
-        })?;
+        let broker_id = connect.kafka_broker_id;
         let broker = DbzKafkaBrokerSvc::load_conn(broker_id).await?;
 
         let filled = DbzSignalUtils::fill_kafka_bootstrap(config, &broker.bootstrap_servers)?;

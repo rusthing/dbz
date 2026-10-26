@@ -17,9 +17,8 @@ pub struct DbzKafkaConnectDto {
     pub url: String,
     /// 对应的 Kafka 集群
     ///
-    /// 库列可空（老记录没有可回填的值），但**新增时必填**：没有 broker 地址就发不了
-    /// Kafka 信号，也查不了 topic。修改时不传表示不改挂。
-    pub kafka_broker_id: Option<U64>,
+    /// 必填：没有 broker 地址就发不了 Kafka 信号，也查不了 topic。修改时不传表示不改挂。
+    pub kafka_broker_id: U64,
     /// 状态
     #[db_default]
     pub run_status: KafkaConnectStatus,

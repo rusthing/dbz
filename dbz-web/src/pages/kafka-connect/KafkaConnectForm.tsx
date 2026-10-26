@@ -8,8 +8,7 @@
  * 1. **地址**（`url`）—— 健康检查的探测目标。服务端在改地址时会先把旧地址上的
  *    连接器全部注销，所以这里给出明确提示，避免运维误以为只是换个字符串。
  * 2. **Kafka 集群**（`kafkaBrokerId`）—— 这台 worker 上的连接器把信号投到哪个
- *    集群。「再同步」走 Kafka 通道时要顺着它找 broker，所以新增必填；老记录可能
- *    还空着，编辑时补上即可。
+ *    集群。「再同步」走 Kafka 通道时要顺着它找 broker，所以新增、编辑都必填。
  *
  * 「启用」不在这里：它在列表的启用列上切换（见 `EnabledSwitch`），因为禁用会连带
  * 注销集群上的连接器，不适合混在「改个名字、改个地址」的表单里一起提交。
@@ -85,7 +84,7 @@ export default function KafkaConnectForm({
       form.setFieldsValue({
         name: record.name,
         url: record.url,
-        kafkaBrokerId: record.kafkaBrokerId ?? undefined,
+        kafkaBrokerId: record.kafkaBrokerId,
         remark: record.remark ?? '',
       });
     } else {

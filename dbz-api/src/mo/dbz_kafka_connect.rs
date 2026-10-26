@@ -9,6 +9,8 @@ use serde::{Deserialize, Serialize};
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false, unique)]
     pub id: i64,
+    /// 对应的 broker 记录（必填：没有 broker 地址就发不了 Kafka 信号、查不了 topic）
+    pub kafka_broker_id: i64,
     #[sea_orm(unique)]
     pub name: String,
     #[sea_orm(unique)]
@@ -21,9 +23,6 @@ pub struct Model {
     pub create_ms: i64,
     pub updater_id: i64,
     pub update_ms: i64,
-    /// 对应的 broker 记录。可空是老数据的缘故：这张表先于 dbz_kafka_broker 存在，
-    /// 已有记录没有可回填的值，迁移不能硬加非空；新增/修改时由服务层要求必填。
-    pub kafka_broker_id: Option<i64>,
     #[sea_orm(has_many)]
     pub dbz_sink_connectors: HasMany<super::dbz_sink_connector::Entity>,
     #[sea_orm(has_many)]

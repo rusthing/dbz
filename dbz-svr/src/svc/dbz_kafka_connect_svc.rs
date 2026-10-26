@@ -108,18 +108,15 @@ struct KafkaConnectorCheck<'a> {
 // 无法改成 Box 包裹，这里统一放行该 lint
 #[allow(clippy::result_large_err)]
 impl DbzKafkaConnectSvc {
-    /// # 新增前钩子：要求绑定 Kafka 集群，新建即禁用时直接落为「已禁用」
+    /// # 新增前钩子：新建即禁用时直接落为「已禁用」
     ///
-    /// `kafka_broker_id` 在库列上可空（老记录没有可回填的值），但新增必须给：没有
-    /// broker 地址就发不了 Kafka 信号、查不了 topic，建一条查不到后端的记录没有意义。
+    /// `kafka_broker_id` 由 DTO 与库列双重保证必填（没有 broker 地址就发不了 Kafka
+    /// 信号、查不了 topic，建一条查不到后端的记录没有意义），这里不再重复校验。
     ///
     /// 被禁用的集群不参与健康检查，不在这里写状态就会一直停在「无状态」。
     async fn before_add_hook(
         mut add_dto: DbzKafkaConnectAddDto,
     ) -> Result<DbzKafkaConnectAddDto, SvcError> {
-        if add_dto.kafka_broker_id.is_none() {
-            return Err(anyhow!("新增 Kafka Connect 时必须选择对应的 Kafka 集群（broker）").into());
-        }
         if add_dto.enabled == Some(false) {
             add_dto.run_status = Some(KafkaConnectStatus::Disabled);
         }
@@ -906,7 +903,7 @@ impl DbzKafkaConnectSvc {
     /// 删 broker 之前用：还有 Connect 记录指着它时不允许删（数据库侧是 restrict）。
     pub(crate) async fn count_by_kafka_broker(kafka_broker_id: U64) -> Result<usize, SvcError> {
         let query_dto = DbzKafkaConnectQueryDto::builder()
-            .kafka_broker_id(Some(kafka_broker_id))
+            .kafka_broker_id(kafka_broker_id)
             .build();
         Ok(
             Self::list_by_query_dto::<DatabaseConnection>(query_dto, None)

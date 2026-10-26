@@ -420,12 +420,11 @@ impl DbzSourceConnectorSnapshotSvc {
     /// # 找连接器所在 Kafka Connect 关联的集群
     ///
     /// 信号 topic 在哪个集群上，连接器就部署在哪台 worker 上，所以顺着
-    /// `kafka_connect_id → kafka_broker_id` 找过去。老记录可能没挂集群，这里给出
-    /// 可执行的提示而不是「为空」。
+    /// `kafka_connect_id → kafka_broker_id` 找过去。
     ///
     /// ## 返回值
     /// * `Ok((String, BrokerConn))` - 集群名 + 连接参数（含认证）
-    /// * `Err(anyhow::Error)` - Connect 不存在、没挂集群、集群记录不存在
+    /// * `Err(anyhow::Error)` - Connect 不存在、集群记录不存在
     async fn load_broker(
         source: &DbzSourceConnectorVo,
     ) -> Result<(String, BrokerConn), anyhow::Error> {
@@ -443,13 +442,7 @@ impl DbzSourceConnectorSnapshotSvc {
                     anyhow!("Kafka Connect<{}>不存在", source.kafka_connect_id.value())
                 })?;
 
-        let broker_id = kafka_connect.kafka_broker_id.ok_or_else(|| {
-            anyhow!(
-                "Kafka Connect<{}>没有关联 Kafka 集群：Kafka 信号要投到某个集群上，\
-                 请先给这台 Connect 选一个集群",
-                kafka_connect.name
-            )
-        })?;
+        let broker_id = kafka_connect.kafka_broker_id;
 
         let conn = DbzKafkaBrokerSvc::load_conn(broker_id).await?;
         let name = conn.name.clone();

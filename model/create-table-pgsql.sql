@@ -1,11 +1,12 @@
 /*==============================================================*/
 /* DBMS name:      PostgreSQL 9.x                               */
-/* Created on:     2026/10/21 9:41:44                           */
+/* Created on:     2026/10/26 21:46:46                          */
 /*==============================================================*/
 
 
 /*==============================================================*/
 /* Table: dbz_kafka_broker                                      */
+/*==============================================================*/
 create table dbz_kafka_broker (
    id                   INT8                 not null,
    name                 VARCHAR(50)          not null,
@@ -96,6 +97,7 @@ comment on column dbz_kafka_broker.update_ms is
 
 /*==============================================================*/
 /* Index: dbz_kafka_broker_PK                                   */
+/*==============================================================*/
 create unique index dbz_kafka_broker_PK on dbz_kafka_broker (
 id
 );
@@ -105,6 +107,7 @@ id
 /*==============================================================*/
 create table dbz_kafka_connect (
    id                   INT8                 not null,
+   kafka_broker_id      INT8                 not null,
    name                 VARCHAR(50)          not null,
    url                  VARCHAR(100)         not null,
    run_status           INT2                 not null default 0,
@@ -115,7 +118,6 @@ create table dbz_kafka_connect (
    create_ms            INT8                 not null,
    updater_id           INT8                 not null,
    update_ms            INT8                 not null,
-   kafka_broker_id      INT8                 null,
    constraint PK_DBZ_KAFKA_CONNECT primary key (id),
    constraint AK_NAME_DBZ_KAFKA_CONNECT unique (name),
    constraint AK_URL_DBZ_KAFKA_CONNECT unique (url)
@@ -126,6 +128,9 @@ comment on table dbz_kafka_connect is
 
 comment on column dbz_kafka_connect.id is
 'ID';
+
+comment on column dbz_kafka_connect.kafka_broker_id is
+'Kafka Broker ID';
 
 comment on column dbz_kafka_connect.name is
 '名称
@@ -166,21 +171,19 @@ comment on column dbz_kafka_connect.updater_id is
 comment on column dbz_kafka_connect.update_ms is
 '更新时间戳';
 
-comment on column dbz_kafka_connect.kafka_broker_id is
-'Kafka Broker ID';
-
 /*==============================================================*/
 /* Index: dbz_kafka_connect_PK                                  */
 /*==============================================================*/
 create unique index dbz_kafka_connect_PK on dbz_kafka_connect (
 id
 );
+
 /*==============================================================*/
 /* Index: Relationship_4_FK                                     */
+/*==============================================================*/
 create  index Relationship_4_FK on dbz_kafka_connect (
 kafka_broker_id
 );
-
 
 /*==============================================================*/
 /* Table: dbz_sink_connector                                    */
@@ -379,6 +382,11 @@ create  index Relationship_2_FK on dbz_source_connector (
 kafka_connect_id
 );
 
+alter table dbz_kafka_connect
+   add constraint fk_kafka_broker_id__from__dbz_kafka_broker foreign key (kafka_broker_id)
+      references dbz_kafka_broker (id)
+      on delete restrict on update restrict;
+
 alter table dbz_sink_connector
    add constraint fk_source_connector_id__from__dbz_source_connector foreign key (source_connector_id)
       references dbz_source_connector (id)
@@ -393,11 +401,4 @@ alter table dbz_source_connector
    add constraint fk_kafka_connect_id__from__dbz_kafka_connect foreign key (kafka_connect_id)
       references dbz_kafka_connect (id)
       on delete restrict on update restrict;
-
-alter table dbz_kafka_connect
-   add constraint fk_kafka_broker_id__from__dbz_kafka_broker foreign key (kafka_broker_id)
-      references dbz_kafka_broker (id)
-      on delete restrict on update restrict;
-
-
 

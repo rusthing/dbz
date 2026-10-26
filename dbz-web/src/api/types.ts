@@ -138,8 +138,8 @@ export interface DbzKafkaConnectVo extends AuditFields {
   id: Id;
   name: string;
   url: string;
-  /** 关联的 Kafka 集群（broker）；老记录可能为空 */
-  kafkaBrokerId?: Id | null;
+  /** 关联的 Kafka 集群（broker） */
+  kafkaBrokerId: Id;
   runStatus: KafkaConnectStatus;
   /** 检查结论：最近一次探测的失败原因，正常时为空 */
   runMsg?: string | null;

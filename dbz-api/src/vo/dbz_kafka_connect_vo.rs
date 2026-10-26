@@ -9,8 +9,8 @@ pub struct DbzKafkaConnectVo {
     pub name: String,
     /// 地址
     pub url: String,
-    /// 对应的 Kafka 集群（老记录可能为空）
-    pub kafka_broker_id: Option<U64>,
+    /// 对应的 Kafka 集群
+    pub kafka_broker_id: U64,
     /// 状态
     pub run_status: KafkaConnectStatus,
     /// 检查结论（最近一次检查的失败原因，成功时为空）
