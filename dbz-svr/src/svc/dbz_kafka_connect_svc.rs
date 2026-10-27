@@ -114,8 +114,9 @@ impl DbzKafkaConnectSvc {
     /// 信号、查不了 topic，建一条查不到后端的记录没有意义），这里不再重复校验。
     ///
     /// 被禁用的集群不参与健康检查，不在这里写状态就会一直停在「无状态」。
-    async fn before_add_hook(
+    async fn before_add_hook<C: ConnectionTrait>(
         mut add_dto: DbzKafkaConnectAddDto,
+        _db: &C,
     ) -> Result<DbzKafkaConnectAddDto, SvcError> {
         if add_dto.enabled == Some(false) {
             add_dto.run_status = Some(KafkaConnectStatus::Disabled);
@@ -139,8 +140,9 @@ impl DbzKafkaConnectSvc {
     /// ## 返回值
     /// * `Ok(ModifyDto)` - 补好 `run_status` 的修改参数
     /// * `Err(SvcError)` - 查询原记录失败，或注销连接器失败
-    async fn before_modify_hook(
+    async fn before_modify_hook<C: ConnectionTrait>(
         mut modify_dto: DbzKafkaConnectModifyDto,
+        _db: &C,
     ) -> Result<DbzKafkaConnectModifyDto, SvcError> {
         let Some(id) = modify_dto.id else {
             return Ok(modify_dto);
@@ -222,7 +224,7 @@ impl DbzKafkaConnectSvc {
     /// ## 返回值
     /// * `Ok(U64)` - 可以删除，原样返回 ID
     /// * `Err(SvcError)` - 该集群下仍有连接器
-    async fn before_del_by_id_hook(id: U64) -> Result<U64, SvcError> {
+    async fn before_del_by_id_hook<C: ConnectionTrait>(id: U64, _db: &C) -> Result<U64, SvcError> {
         let source_count = Self::list_sources_of(id).await?.len();
         let sink_count = Self::list_sinks_of(id).await?.len();
         if source_count > 0 || sink_count > 0 {

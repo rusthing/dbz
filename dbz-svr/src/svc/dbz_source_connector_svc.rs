@@ -38,8 +38,9 @@ impl DbzSourceConnectorSvc {
     ///
     /// 补地址见 [`fill_signal_bootstrap`](Self::fill_signal_bootstrap)：kafka 信号通道
     /// 的 broker 地址留空时连接器根本起不来，所以保存这一刻就填成关联集群的地址。
-    async fn before_add_hook(
+    async fn before_add_hook<C: ConnectionTrait>(
         mut add_dto: DbzSourceConnectorAddDto,
+        _db: &C,
     ) -> Result<DbzSourceConnectorAddDto, SvcError> {
         if add_dto.enabled == Some(false) {
             add_dto.run_status = Some(ConnectorRunStatus::Disabled);
@@ -74,9 +75,10 @@ impl DbzSourceConnectorSvc {
     ///
     /// ## 返回值
     /// * `Ok(Vo)` - 原样返回新记录，不做修改
-    async fn after_add_hook(
+    async fn after_add_hook<C: ConnectionTrait>(
         _add_dto: DbzSourceConnectorAddDto,
         one: DbzSourceConnectorVo,
+        _db: &C,
     ) -> Result<DbzSourceConnectorVo, SvcError> {
         if !one.enabled {
             return Ok(one);
@@ -205,8 +207,9 @@ impl DbzSourceConnectorSvc {
     /// ## 返回值
     /// * `Ok(ModifyDto)` - 补好 `run_status` 的修改参数
     /// * `Err(SvcError)` - 查询原记录失败，或注销/下发配置失败
-    async fn before_modify_hook(
+    async fn before_modify_hook<C: ConnectionTrait>(
         mut modify_dto: DbzSourceConnectorModifyDto,
+        _db: &C,
     ) -> Result<DbzSourceConnectorModifyDto, SvcError> {
         let Some(id) = modify_dto.id else {
             return Ok(modify_dto);
@@ -342,7 +345,7 @@ impl DbzSourceConnectorSvc {
     /// ## 返回值
     /// * `Ok(U64)` - 连接器已注销（或本来就不存在），原样返回 ID
     /// * `Err(SvcError)` - 该上游下仍有下游连接器，或注销连接器失败
-    async fn before_del_by_id_hook(id: U64) -> Result<U64, SvcError> {
+    async fn before_del_by_id_hook<C: ConnectionTrait>(id: U64, _db: &C) -> Result<U64, SvcError> {
         let query_dto = DbzSinkConnectorQueryDto::builder()
             .source_connector_id(id)
             .build();

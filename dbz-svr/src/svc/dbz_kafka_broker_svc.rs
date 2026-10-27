@@ -107,8 +107,9 @@ impl DbzKafkaBrokerSvc {
     ///
     /// `#[crud_dto]` 把每个字段都包成 `Option`，可空列再包一层，所以这里读写都要
     /// 显式拆一层；写回用 `Some(..)`，`Some(None)` 才是「置 NULL」。
-    async fn before_add_hook(
+    async fn before_add_hook<C: ConnectionTrait>(
         mut add_dto: DbzKafkaBrokerAddDto,
+        _db: &C,
     ) -> Result<DbzKafkaBrokerAddDto, SvcError> {
         let name = add_dto
             .name
@@ -150,8 +151,9 @@ impl DbzKafkaBrokerSvc {
     /// # 修改前钩子：合并旧值后整组校验，判断要不要重置状态
     ///
     /// 只改名字/备注时走不掉查询，省一次读库。
-    async fn before_modify_hook(
+    async fn before_modify_hook<C: ConnectionTrait>(
         mut modify_dto: DbzKafkaBrokerModifyDto,
+        _db: &C,
     ) -> Result<DbzKafkaBrokerModifyDto, SvcError> {
         let Some(id) = modify_dto.id else {
             return Ok(modify_dto);
@@ -240,7 +242,7 @@ impl DbzKafkaBrokerSvc {
     /// # 删除前钩子：还有 Connect 记录挂着时拒绝删除
     ///
     /// 数据库侧已经是 `on delete restrict`，这里提前拦一道把外键错误换成可读提示。
-    async fn before_del_by_id_hook(id: U64) -> Result<U64, SvcError> {
+    async fn before_del_by_id_hook<C: ConnectionTrait>(id: U64, _db: &C) -> Result<U64, SvcError> {
         let count = Self::count_kafka_connects_of(id).await?;
         if count > 0 {
             return Err(anyhow!(

@@ -36,8 +36,9 @@ impl DbzSinkConnectorSvc {
     /// # 新增前钩子：新建即禁用时直接落为「已禁用」
     ///
     /// 被禁用的记录不参与健康检查，不在这里写状态就会一直停在「无状态」。
-    async fn before_add_hook(
+    async fn before_add_hook<C: ConnectionTrait>(
         mut add_dto: DbzSinkConnectorAddDto,
+        _db: &C,
     ) -> Result<DbzSinkConnectorAddDto, SvcError> {
         if add_dto.enabled == Some(false) {
             add_dto.run_status = Some(ConnectorRunStatus::Disabled);
@@ -60,9 +61,10 @@ impl DbzSinkConnectorSvc {
     ///
     /// ## 返回值
     /// * `Ok(Vo)` - 原样返回新记录，不做修改
-    async fn after_add_hook(
+    async fn after_add_hook<C: ConnectionTrait>(
         _add_dto: DbzSinkConnectorAddDto,
         one: DbzSinkConnectorVo,
+        _db: &C,
     ) -> Result<DbzSinkConnectorVo, SvcError> {
         if !one.enabled {
             return Ok(one);
@@ -144,8 +146,9 @@ impl DbzSinkConnectorSvc {
     /// ## 返回值
     /// * `Ok(ModifyDto)` - 补好 `run_status` 的修改参数
     /// * `Err(SvcError)` - 查询原记录失败，或注销/下发配置失败
-    async fn before_modify_hook(
+    async fn before_modify_hook<C: ConnectionTrait>(
         mut modify_dto: DbzSinkConnectorModifyDto,
+        _db: &C,
     ) -> Result<DbzSinkConnectorModifyDto, SvcError> {
         let Some(id) = modify_dto.id else {
             return Ok(modify_dto);
@@ -248,7 +251,7 @@ impl DbzSinkConnectorSvc {
     /// ## 返回值
     /// * `Ok(U64)` - 连接器已注销（或本来就不存在），原样返回 ID
     /// * `Err(SvcError)` - 注销连接器失败
-    async fn before_del_by_id_hook(id: U64) -> Result<U64, SvcError> {
+    async fn before_del_by_id_hook<C: ConnectionTrait>(id: U64, _db: &C) -> Result<U64, SvcError> {
         let Some(one) = Self::get_by_id::<DatabaseConnection>(id, None).await?.extra else {
             return Ok(id);
         };
