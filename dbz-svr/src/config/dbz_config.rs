@@ -55,6 +55,14 @@ const HEALTH_CHECK_EXECUTOR_CODE_DEFAULT: &str = "dbz.health-check";
 const HEALTH_CHECK_JOB_NAME_DEFAULT: &str = "Debezium健康检查";
 /// 默认健康检查的间隔时间
 const HEALTH_CHECK_INTERVAL_DEFAULT: Duration = Duration::from_secs(60);
+/// 默认健康检查计划的「任务保留时长」
+///
+/// 这个计划每 60s 跑一次，`jobx_task` 每天长 1440 行、一年 50 万行。健康检查的历史
+/// 只有「最近有没有出过问题」这一个用途，7 天足够覆盖一个周末加两个工作日；更早的
+/// 记录留着只会拖慢任务列表与概览统计。
+///
+/// 由 jobx-svr 的 `jobx-task-cleaner` 按 `jobx_task.create_ms` 判定并删除。
+const HEALTH_CHECK_TASK_EXPIRE_DEFAULT: Duration = Duration::from_hours(24 * 7);
 /// 默认健康检查计划的 Stream 长度上限
 ///
 /// 比 `JobxJobConfig` 的全局默认值（10000）小两个数量级，理由是健康检查这个计划的
@@ -85,6 +93,7 @@ fn health_check_job_default() -> JobxJobConfig {
         .executor_code(health_check_executor_code_default())
         .interval_duration(Some(HEALTH_CHECK_INTERVAL_DEFAULT.clone()))
         .stream_max_len(Some(HEALTH_CHECK_STREAM_MAX_LEN_DEFAULT))
+        .task_expire_duration(Some(HEALTH_CHECK_TASK_EXPIRE_DEFAULT))
         .build()
 }
 
