@@ -37,9 +37,9 @@ rskafka = { version = "0.6.0", default-features = false, features = ["compressio
 dbz-api = { version = "1.0.0", path = "./dbz-api" }
 dbz-api-client = { version = "1.0.0", path = "./dbz-api-client" }
 idworker = "1.4.0"
-wheel-rs = "1.12.0"
-robotech = "1.16.0"
-robotech-macros = "1.16.0"
+wheel-rs = "1.14.0"
+robotech = "1.17.0"
+robotech-macros = "1.17.0"
 jobx-api = "1.0.0"
 jobx-api-client = "1.0.0"
 jobx-wkr = "1.0.0"
