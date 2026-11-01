@@ -12,13 +12,29 @@ url = "redis://:xxxxxxxx@redis:6379"
 type = "MicroSvc"
 svc-name = "jobx-svr"
 
-# 告警配置（对应 AppConfig::alarm）
-[alarm]
-base-url = "http://localhost:8083/api"
-# 告警事件编码（需在 alarm-svr 中预先配置对应的事件来源与策略）
-event-code = "dbz-connector-status"
-# 告警ID（对应 alarm-svr 中的 alarm_alert.id，取消注释并填写后才会真正上报告警）
-# alert-id = 1
+# 报警中心：连接器异常告警的接收方，报警中心再转给消息中心投递
+#
+# 事件来源、报警级别、事件策略不需要在这里写：首次启动时由 dbz 自己按
+# `[alarm]` 段的默认值（见 `config/alarm_config.rs`）登记到报警中心，之后
+# 只补不改。要换级别/窗口/文案，就在下面三小段里覆盖对应字段。
+#
+# `timeout` 必须配：不配就是「永不超时」。巡检是串行的，报警中心卡住（慢查询、
+# 锁等待、网络半开）会一直等下去，整轮检查停摆。800ms 对一次
+# `alarm/alert/trigger` 足够宽裕（正常 2~20ms）。
+[api.alarm]
+type = "MicroSvc"
+svc-name = "alarm-svr"
+timeout = "800ms"
+
+# 告警配置（对应 AppConfig::alarm），三段都有默认值，按需覆盖：
+#
+#   [alarm.event-source]  事件来源 code / name / remark
+#   [alarm.alert-level]   级别分组 + 级别（默认复用报警中心的
+#                         industrial_control 组、2 级「严重」）
+#   [alarm.policy]        事件编码、标题/内容模板、合并窗口、重复提醒间隔
+#
+# 消息队列不配：按级别值拼 `msg.publish.alarm.{value}` 去报警中心查。
+#[alarm]
 
 [micro-svc.consul]
 base-url = "http://consul:8500"
