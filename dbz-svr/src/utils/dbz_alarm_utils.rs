@@ -18,6 +18,7 @@ use alarm_api_client::AlarmEventLogApiClient;
 use robotech::api::U64;
 use robotech::api_client::ApiClientConfig;
 use robotech::micro_svc::FeignApiClient;
+use std::time::Duration;
 use tracing::{info, warn};
 use wheel_rs::time_utils::now_ms;
 
@@ -109,6 +110,8 @@ impl DbzAlarmUtils {
         let api_config = ApiClientConfig::Simple {
             base_url: app_config.alarm.base_url.clone(),
             auth: None,
+            // 与框架默认值一致：告警上报不能把调用方（连接器巡检循环）卡住
+            timeout: Duration::from_secs(3),
         };
         let alarm_client = AlarmEventLogApiClient::new(FeignApiClient::new(api_config).await);
 

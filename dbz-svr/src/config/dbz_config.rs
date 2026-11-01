@@ -91,7 +91,7 @@ fn health_check_job_default() -> JobxJobConfig {
     JobxJobConfig::builder()
         .name(HEALTH_CHECK_JOB_NAME_DEFAULT.to_string())
         .executor_code(health_check_executor_code_default())
-        .interval_duration(Some(HEALTH_CHECK_INTERVAL_DEFAULT.clone()))
+        .interval_duration(Some(HEALTH_CHECK_INTERVAL_DEFAULT))
         .stream_max_len(Some(HEALTH_CHECK_STREAM_MAX_LEN_DEFAULT))
         .task_expire_duration(Some(HEALTH_CHECK_TASK_EXPIRE_DEFAULT))
         .build()
