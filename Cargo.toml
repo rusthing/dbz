@@ -48,6 +48,8 @@ alarm-api-client = "1.0.0"
 
 [patch.crates-io]
 wheel-rs = { path = "../wheel-rs" }
+# 本地 idworker（1.5.0 尚未发布）：worker node 默认位宽 4 → 6 在这里生效
+idworker = { path = "../idworker" }
 robotech = { path = "../robotech-rs/robotech" }
 robotech-macros = { path = "../robotech-rs/robotech-macros" }
 dbz-api = { path = "./dbz-api" }
