@@ -28,6 +28,7 @@ pub struct DbzKafkaBrokerDto {
     pub sasl_username: Option<String>,
     /// 认证密码（留空表示不修改）
     /// @len 0..=200
+    /// @secret
     pub sasl_password: Option<String>,
     /// 状态
     #[db_default]

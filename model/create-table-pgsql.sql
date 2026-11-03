@@ -62,7 +62,8 @@ comment on column dbz_kafka_broker.sasl_username is
 
 comment on column dbz_kafka_broker.sasl_password is
 '认证密码(明文存储，读写窗口只对运维开放)
-@len 0..=200';
+@len 0..=200
+@secret';
 
 comment on column dbz_kafka_broker.run_status is
 '状态

@@ -6054,7 +6054,8 @@ DAT 1792852288</a:History>
 <a:ModificationDate>1793022392</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
 <a:Comment>认证密码(明文存储，读写窗口只对运维开放)
-@len 0..=200</a:Comment>
+@len 0..=200
+@secret</a:Comment>
 <a:History>ORG {FF3550DC-A1CC-46F6-A6AC-5AFF5055D53C}
 DAT 1792852288</a:History>
 <a:DataType>VARCHAR(200)</a:DataType>

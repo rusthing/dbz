@@ -2552,7 +2552,8 @@ LABL 0 新宋体,8,N</a:FontList>
 <a:ModificationDate>1792852329</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
 <a:Comment>认证密码(明文存储，读写窗口只对运维开放)
-@len 0..=200</a:Comment>
+@len 0..=200
+@secret</a:Comment>
 <a:DataType>VA200</a:DataType>
 <a:Length>200</a:Length>
 <a:GlobalObjectID/>
