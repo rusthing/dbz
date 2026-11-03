@@ -148,7 +148,7 @@ impl Direction {
         }
     }
 
-    /// 文案里的方向（`{directionName}`）
+    /// 文案里的方向（`{{directionName}}`）
     const fn name(self) -> &'static str {
         match self {
             Direction::Source => "上游",
@@ -189,7 +189,7 @@ struct ConnectorAlarmSubject<'a> {
 impl ConnectorAlarmSubject<'_> {
     /// # 拼上报用的 labels
     ///
-    /// 键名用 camelCase，模板里按 `{key}` 取。`direction` 与 `connectorId` 同时
+    /// 键名用 camelCase，模板里按 `{{key}}` 取。`direction` 与 `connectorId` 同时
     /// 是事件策略的 `finger_print_labels`（见 `[alarm.policy]` 的默认值）。
     fn to_labels(&self) -> HashMap<String, String> {
         let mut labels = HashMap::with_capacity(11);
@@ -789,7 +789,7 @@ mod tests {
     }
 
     /// 内容模板里的变量必须都在 labels 里：模板没有条件判断，缺变量会留下
-    /// `{xxx}` 占位符
+    /// `{{xxx}}` 占位符
     #[test]
     fn content_template_variables_all_present() {
         let labels = subject(Direction::Source).to_labels();
@@ -811,12 +811,12 @@ mod tests {
         }
     }
 
-    /// 取出 `{key}` 形式的模板变量（`{key:json}` 也算同一个 key）
+    /// 取出 `{{key}}` 形式的模板变量（`{{key:json}}` 也算同一个 key）
     fn template_variables(template: &str) -> Vec<&str> {
         template
-            .split('{')
+            .split("{{")
             .skip(1)
-            .filter_map(|seg| seg.split('}').next())
+            .filter_map(|seg| seg.split("}}").next())
             .map(|key| key.split(':').next().unwrap_or(key))
             .collect()
     }

@@ -253,17 +253,17 @@ const CONNECTOR_ERROR_REMARK_DEFAULT: &str =
 const CONNECTOR_ERROR_FINGER_PRINT_LABELS_DEFAULT: &str = "direction,connectorId";
 /// 标题模板
 const CONNECTOR_ERROR_TITLE_TEMPLATE_DEFAULT: &str =
-    "Debezium {directionName}连接器<{connectorName}>异常";
+    "Debezium {{directionName}}连接器<{{connectorName}}>异常";
 /// 内容模板
 ///
 /// 变量全部取自上报的 `labels`（见 `dbz_alarm_utils` 里的 `to_labels`）。
 /// `relation` 是上游关系的短语：上游连接器填「无上游连接器」，下游填
 /// 「上游连接器<xxx>」——模板没有条件判断，只能由发布方先拼好这一段。
-const CONNECTOR_ERROR_CONTENT_TEMPLATE_DEFAULT: &str = "{directionName}连接器<{connectorName}>运行状态异常：\
-{runStatusName}（{runStatusValue}）；\
-Debezium 连接器 {connectorNameOnCluster}；\
-{relation}；\
-所属 Kafka Connect<{kafkaConnectName}>：{kafkaConnectUrl}";
+const CONNECTOR_ERROR_CONTENT_TEMPLATE_DEFAULT: &str = "{{directionName}}连接器<{{connectorName}}>运行状态异常：\
+{{runStatusName}}（{{runStatusValue}}）；\
+Debezium 连接器 {{connectorNameOnCluster}}；\
+{{relation}}；\
+所属 Kafka Connect<{{kafkaConnectName}}>：{{kafkaConnectUrl}}";
 /// 重复提醒间隔（毫秒）
 const CONNECTOR_ERROR_REPEAT_INTERVAL_MS_DEFAULT: u64 = 30 * 60 * 1000;
 /// 合并窗口（毫秒）
