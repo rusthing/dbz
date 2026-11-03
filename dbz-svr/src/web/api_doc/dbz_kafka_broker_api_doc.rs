@@ -4,6 +4,7 @@ use robotech::macros::api_doc;
     add,
     modify,
     save,
+    upsert,
     del_by_id,
     del_by_query_dto,
     get_by_id,
