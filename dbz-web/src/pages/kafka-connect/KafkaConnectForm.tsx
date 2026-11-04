@@ -14,11 +14,12 @@
  * 注销集群上的连接器，不适合混在「改个名字、改个地址」的表单里一起提交。
  */
 
-import { App as AntdApp, Form, Input, Modal, Select } from 'antd';
-import { useEffect, useState } from 'react';
+import { Alert, App as AntdApp, Button, Form, Input, Modal, Select } from 'antd';
+import { useCallback, useEffect, useState } from 'react';
 import { kafkaBrokerApi } from '../../api/kafka-broker';
 import { kafkaConnectApi } from '../../api/kafka-connect';
 import type { DbzKafkaConnectVo, Id } from '../../api/types';
+import { useCancelConfirm } from '../../hooks/useCancelConfirm';
 import { errorMessage } from '../../utils/format';
 
 interface KafkaConnectFormProps {
@@ -46,28 +47,38 @@ export default function KafkaConnectForm({
   const [form] = Form.useForm<FormValues>();
   const [submitting, setSubmitting] = useState(false);
   const [brokerOptions, setBrokerOptions] = useState<{ value: Id; label: string }[]>([]);
+  const [brokerError, setBrokerError] = useState<string | null>(null);
   const isEdit = Boolean(record);
+  const { handleCancel, markPristine } = useCancelConfirm(form, onCancel);
 
   /**
    * 打开时拉一次 Kafka 集群列表：集群数量不多，而选项要显示「名称 + 地址」，
    * 由页面传进来会多一层参数传递，这里自己取更省事。
    */
-  useEffect(() => {
-    if (!open) {
-      return;
-    }
+  const loadBrokers = useCallback(() => {
+    setBrokerError(null);
     kafkaBrokerApi
       .list()
-      .then((brokers) =>
+      .then((brokers) => {
         setBrokerOptions(
           brokers.map((broker) => ({
             value: broker.id,
             label: `${broker.name}（${broker.bootstrapServers}）`,
           })),
-        ),
-      )
-      .catch(() => setBrokerOptions([]));
-  }, [open]);
+        );
+      })
+      .catch((error: unknown) => {
+        // 空下拉 + 「还没有记录」会让人误以为真的没建过集群，必须说清是加载失败
+        setBrokerOptions([]);
+        setBrokerError(errorMessage(error));
+      });
+  }, []);
+
+  useEffect(() => {
+    if (open) {
+      loadBrokers();
+    }
+  }, [open, loadBrokers]);
 
   /**
    * # 弹窗完全打开后同步表单
@@ -80,6 +91,8 @@ export default function KafkaConnectForm({
     if (!visible) {
       return;
     }
+    // 先清空上一次的取值与 touched，避免「新建 -> 立刻编辑」时残留状态
+    form.resetFields();
     if (record) {
       form.setFieldsValue({
         name: record.name,
@@ -87,9 +100,9 @@ export default function KafkaConnectForm({
         kafkaBrokerId: record.kafkaBrokerId,
         remark: record.remark ?? '',
       });
-    } else {
-      form.resetFields();
     }
+    // 回填完成，记录基线；此后值有变化才算脏
+    markPristine();
   };
 
   const handleSubmit = async () => {
@@ -131,7 +144,7 @@ export default function KafkaConnectForm({
       cancelText="取消"
       confirmLoading={submitting}
       onOk={handleSubmit}
-      onCancel={onCancel}
+      onCancel={handleCancel}
       afterOpenChange={syncForm}
       width={600}
     >
@@ -140,8 +153,9 @@ export default function KafkaConnectForm({
           name="name"
           label="名称"
           rules={[
-            { required: true, message: '请填写名称' },
-            { max: 64, message: '名称不能超过 64 个字符' },
+            { required: true, whitespace: true, message: '请填写名称' },
+            // 库列 `name` 是 varchar(50)
+            { max: 50, message: '名称不能超过 50 个字符' },
           ]}
         >
           <Input placeholder="例如 生产集群-华东" allowClear />
@@ -152,12 +166,29 @@ export default function KafkaConnectForm({
           label="地址"
           extra="Kafka Connect REST 地址，形如 http://host:8083。修改地址会先注销旧地址上的全部连接器，再由下一轮检查重新部署。"
           rules={[
-            { required: true, message: '请填写地址' },
+            { required: true, whitespace: true, message: '请填写地址' },
+            // 库列 `url` 是 varchar(100)
+            { max: 100, message: '地址不能超过 100 个字符' },
             { pattern: /^https?:\/\/.+/, message: '地址需以 http:// 或 https:// 开头' },
           ]}
         >
           <Input placeholder="http://10.0.0.1:8083" allowClear />
         </Form.Item>
+
+        {brokerError && (
+          <Alert
+            type="error"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="Kafka 集群列表加载失败"
+            description={brokerError}
+            action={
+              <Button size="small" onClick={loadBrokers}>
+                重试
+              </Button>
+            }
+          />
+        )}
 
         <Form.Item
           name="kafkaBrokerId"
@@ -168,14 +199,14 @@ export default function KafkaConnectForm({
           <Select
             showSearch
             optionFilterProp="label"
-            placeholder="选择 Kafka 集群"
+            placeholder={brokerError ? '列表加载失败，请先重试' : '选择 Kafka 集群'}
             options={brokerOptions}
-            notFoundContent="还没有 Kafka 集群记录"
+            notFoundContent={brokerError ? '加载失败' : '还没有 Kafka 集群记录'}
           />
         </Form.Item>
 
         <Form.Item name="remark" label="备注">
-          <Input.TextArea rows={2} maxLength={255} showCount placeholder="选填" />
+          <Input.TextArea rows={2} maxLength={50} showCount placeholder="选填" />
         </Form.Item>
       </Form>
     </Modal>

@@ -16,7 +16,7 @@ import StatusTag from '../../components/StatusTag';
 import { connectorRunStatusDic, dicOptions } from '../../dic';
 import { useClusterOptions } from '../../hooks/useOptions';
 import { usePagedQuery } from '../../hooks/usePagedQuery';
-import { errorMessage, formatMs, orDash, prettyJson } from '../../utils/format';
+import { errorMessage, formatMs, orDash, prettyJson, shortId } from '../../utils/format';
 import SnapshotModal from './SnapshotModal';
 import SourceConnectorForm from './SourceConnectorForm';
 
@@ -59,7 +59,9 @@ export default function SourceConnectorPage() {
   const handleDelete = (record: DbzSourceConnectorVo) => {
     modal.confirm({
       title: `删除上游连接器「${record.name}」？`,
-      content: '删除记录不会自动注销集群上的连接器；若不再需要，请在「远端连接器」里一并处理。',
+      // 与 README「删除时先注销、再删记录」以及服务端 before_del 的行为保持一致
+      content:
+        '删除会先从集群注销该连接器，成功后再删除记录；注销失败则本次删除失败。若仍有下游挂载在本连接器上，服务端会拒绝删除，请先处理下游。',
       okText: '删除',
       okButtonProps: { danger: true },
       cancelText: '取消',
@@ -82,10 +84,14 @@ export default function SourceConnectorPage() {
       width: 150,
       render: (name: string, record) => (
         <Space direction="vertical" size={0}>
-          <span style={{ fontWeight: 500 }}>{name}</span>
-          <span className="dbz-mono" style={{ color: 'rgba(0,0,0,0.45)' }}>
-            #{record.id}
+          <span className="dbz-ellipsis" style={{ fontWeight: 500 }} title={orDash(name)}>
+            {orDash(name)}
           </span>
+          <Tooltip title={`完整 ID：${record.id}`}>
+            <span className="dbz-mono dbz-id" tabIndex={0}>
+              #{shortId(record.id)}
+            </span>
+          </Tooltip>
         </Space>
       ),
     },
@@ -105,7 +111,8 @@ export default function SourceConnectorPage() {
       dataIndex: 'kafkaConnectId',
       width: 120,
       ellipsis: true,
-      render: (id: Id) => cluster.byId.get(id)?.name ?? `#${id}`,
+      render: (id: Id) =>
+        cluster.byId.get(id)?.name ?? (id ? <span className="dbz-mono">#{shortId(id)}</span> : orDash(null)),
     },
     {
       title: '状态',
@@ -118,8 +125,11 @@ export default function SourceConnectorPage() {
           detail={{
             summary: `运行详情 · ${record.name}`,
             rows: [
-              { label: '连接器', value: <span className="dbz-mono">{record.connectorName}</span> },
-              { label: '所属集群', value: cluster.byId.get(record.kafkaConnectId)?.name ?? `#${record.kafkaConnectId}` },
+              { label: '连接器', value: <span className="dbz-mono">{orDash(record.connectorName)}</span> },
+              {
+                label: '所属集群',
+                value: cluster.byId.get(record.kafkaConnectId)?.name ?? `#${shortId(record.kafkaConnectId)}`,
+              },
               { label: '结论时间', value: formatMs(record.updateMs) },
             ],
             // 失败原因由健康检查写回：部署被拒的响应体、异常任务的 trace 首行都在这里
@@ -148,12 +158,17 @@ export default function SourceConnectorPage() {
       title: '备注',
       dataIndex: 'remark',
       ellipsis: true,
-      render: (remark?: string | null) => orDash(remark),
+      render: (remark?: string | null) => (
+        <span className="dbz-ellipsis" title={orDash(remark)}>
+          {orDash(remark)}
+        </span>
+      ),
     },
     {
       title: '更新时间',
       dataIndex: 'updateMs',
       width: 150,
+      className: 'dbz-num',
       render: (ms: string) => formatMs(ms),
     },
     {
@@ -212,6 +227,10 @@ export default function SourceConnectorPage() {
           placeholder="集群"
           style={{ width: 160 }}
           options={cluster.options}
+          loading={cluster.loading}
+          notFoundContent={
+            cluster.error ? '集群列表加载失败，请刷新重试' : cluster.loading ? '加载中…' : '暂无集群'
+          }
           value={draft.kafkaConnectId}
           onChange={(value) => {
             const next = { ...draft, kafkaConnectId: value };
@@ -258,7 +277,13 @@ export default function SourceConnectorPage() {
 
         <span className="dbz-toolbar-spacer" />
 
-        <Button icon={<ReloadOutlined />} onClick={reload}>
+        <Button
+          icon={<ReloadOutlined />}
+          onClick={() => {
+            reload();
+            cluster.reload();
+          }}
+        >
           刷新
         </Button>
         <Button
@@ -279,7 +304,12 @@ export default function SourceConnectorPage() {
           showIcon
           style={{ marginBottom: 16 }}
           message="加载上游连接器失败"
-          description={error.message}
+          description={errorMessage(error)}
+          action={
+            <Button size="small" onClick={reload}>
+              重试
+            </Button>
+          }
         />
       )}
 
@@ -289,6 +319,7 @@ export default function SourceConnectorPage() {
         loading={loading}
         columns={columns}
         dataSource={data.list}
+        locale={{ emptyText: loading ? '加载中…' : '暂无上游连接器' }}
         scroll={{ x: 1120 }}
         pagination={{
           current: pageNum,
@@ -326,7 +357,7 @@ export default function SourceConnectorPage() {
       <Drawer
         open={Boolean(preview)}
         title={preview ? `连接器配置 · ${preview.connectorName}` : '连接器配置'}
-        width={640}
+        width="min(640px, 92vw)"
         onClose={() => setPreview(null)}
       >
         <pre className="dbz-json-view">{prettyJson(preview?.connectorConfig)}</pre>

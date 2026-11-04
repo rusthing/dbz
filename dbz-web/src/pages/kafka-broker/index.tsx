@@ -29,7 +29,7 @@ import {
   kafkaSecurityProtocolDic,
 } from '../../dic';
 import { usePagedQuery } from '../../hooks/usePagedQuery';
-import { errorMessage, formatMs, orDash } from '../../utils/format';
+import { errorMessage, formatDuration, formatMs, orDash, shortId } from '../../utils/format';
 import KafkaBrokerForm from './KafkaBrokerForm';
 
 /** 筛选表单的草稿状态 */
@@ -55,7 +55,7 @@ function statusDetailOf(record: DbzKafkaBrokerVo): StatusDetail {
   return {
     summary: `运行详情 · ${record.name}`,
     rows: [
-      { label: '地址', value: <span className="dbz-mono">{record.bootstrapServers}</span> },
+      { label: '地址', value: <span className="dbz-mono">{orDash(record.bootstrapServers)}</span> },
       { label: '认证', value: auth },
       { label: '结论时间', value: formatMs(record.updateMs) },
       ...(record.runStatus === 0
@@ -100,7 +100,10 @@ export default function KafkaBrokerPage() {
     try {
       const result = await kafkaBrokerApi.check(record.id);
       if (result.reachable) {
-        message.success(`「${record.name}」连接正常，${result.topicCount} 个 topic，耗时 ${result.elapsedMs}ms`);
+        // 数字带单位，避免出现「耗时 34ms」与「耗时 34」两种写法
+        message.success(
+          `「${record.name}」连接正常，${result.topicCount} 个 topic，耗时 ${formatDuration(result.elapsedMs)}`,
+        );
       } else {
         modal.warning({
           title: `「${record.name}」连接失败`,
@@ -142,10 +145,14 @@ export default function KafkaBrokerPage() {
       width: 150,
       render: (name: string, record) => (
         <Space direction="vertical" size={0}>
-          <span style={{ fontWeight: 500 }}>{name}</span>
-          <span className="dbz-mono" style={{ color: 'rgba(0,0,0,0.45)' }}>
-            #{record.id}
+          <span className="dbz-ellipsis" style={{ fontWeight: 500 }} title={orDash(name)}>
+            {orDash(name)}
           </span>
+          <Tooltip title={`完整 ID：${record.id}`}>
+            <span className="dbz-mono dbz-id" tabIndex={0}>
+              #{shortId(record.id)}
+            </span>
+          </Tooltip>
         </Space>
       ),
     },
@@ -207,7 +214,11 @@ export default function KafkaBrokerPage() {
       title: '备注',
       dataIndex: 'remark',
       ellipsis: true,
-      render: (remark?: string | null) => orDash(remark),
+      render: (remark?: string | null) => (
+        <span className="dbz-ellipsis" title={orDash(remark)}>
+          {orDash(remark)}
+        </span>
+      ),
     },
     {
       title: '操作',
@@ -314,7 +325,12 @@ export default function KafkaBrokerPage() {
           showIcon
           style={{ marginBottom: 16 }}
           message="加载 Kafka 集群列表失败"
-          description={error.message}
+          description={errorMessage(error)}
+          action={
+            <Button size="small" onClick={reload}>
+              重试
+            </Button>
+          }
         />
       )}
 
@@ -324,6 +340,7 @@ export default function KafkaBrokerPage() {
         loading={loading}
         columns={columns}
         dataSource={data.list}
+        locale={{ emptyText: loading ? '加载中…' : '暂无 Kafka 集群' }}
         scroll={{ x: 1120 }}
         pagination={{
           current: pageNum,

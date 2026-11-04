@@ -19,6 +19,7 @@ import type {
   KafkaSaslMechanism,
   KafkaSecurityProtocol,
 } from '../api/types';
+import { EMPTY_TEXT } from '../utils/format';
 
 /** # 字典项 */
 export interface DicItem<V extends number = number> {
@@ -54,7 +55,8 @@ export const kafkaConnectorStatusDic: DicItem<KafkaConnectorStatus>[] = [
   { value: 0, label: '运行中', color: 'success' },
   { value: 1, label: '已失败', color: 'error' },
   { value: 2, label: '已暂停', color: 'warning' },
-  { value: 3, label: '未分配', color: 'processing' },
+  // 未分配意味着任务没跑起来，与「处理中」不是一回事，按异常色提醒
+  { value: 3, label: '未分配', color: 'warning' },
   { value: 4, label: '已销毁', color: 'default' },
   { value: 5, label: '已停止', color: 'warning' },
 ];
@@ -75,15 +77,16 @@ export const kafkaBrokerStatusDic: DicItem<KafkaBrokerStatus>[] = [
  */
 export const kafkaSecurityProtocolDic: DicItem<KafkaSecurityProtocol>[] = [
   { value: 0, label: 'PLAINTEXT', color: 'default' },
-  { value: 1, label: 'SASL_PLAINTEXT', color: 'processing' },
+  // 认证方式不是健康状态：用中性蓝色，避免和 success / error 的语义混淆
+  { value: 1, label: 'SASL_PLAINTEXT', color: 'blue' },
 ];
 
 /** # Kafka SASL 机制 */
 export const kafkaSaslMechanismDic: DicItem<KafkaSaslMechanism>[] = [
   { value: 0, label: '不使用', color: 'default' },
-  { value: 1, label: 'SASL/PLAIN', color: 'processing' },
-  { value: 2, label: 'SCRAM-SHA-256', color: 'processing' },
-  { value: 3, label: 'SCRAM-SHA-512', color: 'processing' },
+  { value: 1, label: 'SASL/PLAIN', color: 'blue' },
+  { value: 2, label: 'SCRAM-SHA-256', color: 'blue' },
+  { value: 3, label: 'SCRAM-SHA-512', color: 'blue' },
 ];
 
 /** # 取字典项 */
@@ -94,7 +97,7 @@ export function dicItem<V extends number>(dic: DicItem<V>[], value: V | null | u
 /** # 取字典文案，未命中时给出可读兜底 */
 export function dicLabel<V extends number>(dic: DicItem<V>[], value: V | null | undefined): string {
   if (value === null || value === undefined) {
-    return '-';
+    return EMPTY_TEXT;
   }
   return dicItem(dic, value)?.label ?? `未知状态(${value})`;
 }

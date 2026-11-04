@@ -53,7 +53,7 @@ import type { StatusDetail } from '../../components/StatusTag';
 import { kafkaConnectorStatusDic } from '../../dic';
 import { useAsync } from '../../hooks/useAsync';
 import { useClusterOptions } from '../../hooks/useOptions';
-import { errorMessage, orDash } from '../../utils/format';
+import { EMPTY_TEXT, errorMessage, orDash } from '../../utils/format';
 
 /** 任务的异常状态：FAILED 与 UNASSIGNED（与后端 `is_task_abnormal` 同一套判定） */
 const ABNORMAL_TASK_STATES: KafkaConnectorStatus[] = [1, 3];
@@ -121,6 +121,9 @@ export default function RemoteConnectorPage() {
           style={{ width: 320 }}
           loading={cluster.loading}
           options={cluster.options}
+          notFoundContent={
+            cluster.error ? '集群列表加载失败，请点「刷新集群」重试' : cluster.loading ? '加载中…' : '暂无集群'
+          }
           value={selectedId}
           onChange={(value) => setSearchParams({ kafkaConnectId: String(value) })}
         />
@@ -253,7 +256,11 @@ function ConnectorsPanel({ kafkaConnectId }: { kafkaConnectId: Id }) {
       title: '连接器名称',
       dataIndex: 'name',
       width: 240,
-      render: (name: string) => <span className="dbz-mono">{name}</span>,
+      render: (name: string) => (
+        <span className="dbz-mono dbz-ellipsis" title={orDash(name)}>
+          {orDash(name)}
+        </span>
+      ),
     },
     {
       title: '类型',
@@ -265,7 +272,7 @@ function ConnectorsPanel({ kafkaConnectId }: { kafkaConnectId: Id }) {
         ) : type === 'sink' ? (
           <Tag color="purple">sink</Tag>
         ) : (
-          <Tag>{orDash(type)}</Tag>
+          <Tag>{EMPTY_TEXT}</Tag>
         ),
     },
     {
@@ -284,7 +291,11 @@ function ConnectorsPanel({ kafkaConnectId }: { kafkaConnectId: Id }) {
       title: '类名',
       dataIndex: 'connectorClass',
       ellipsis: true,
-      render: (value: string) => <span className="dbz-mono">{orDash(value)}</span>,
+      render: (value: string) => (
+        <span className="dbz-mono dbz-ellipsis" title={orDash(value)}>
+          {orDash(value)}
+        </span>
+      ),
     },
     {
       title: '操作',
@@ -360,7 +371,7 @@ function ConnectorsPanel({ kafkaConnectId }: { kafkaConnectId: Id }) {
         type="error"
         showIcon
         message="查询集群上的连接器失败"
-        description={error.message}
+        description={errorMessage(error)}
         action={
           <Button size="small" onClick={reload}>
             重试
@@ -388,6 +399,8 @@ function ConnectorsPanel({ kafkaConnectId }: { kafkaConnectId: Id }) {
         columns={columns}
         dataSource={data}
         pagination={false}
+        scroll={{ x: 'max-content' }}
+        locale={{ emptyText: loading ? '加载中…' : '集群上没有连接器' }}
         expandable={{
           rowExpandable: (record) => record.tasks.length > 0,
           expandedRowRender: (record) => (
@@ -399,7 +412,7 @@ function ConnectorsPanel({ kafkaConnectId }: { kafkaConnectId: Id }) {
       <Modal
         open={Boolean(resetTarget)}
         title={`重置位点 · ${resetTarget?.name ?? ''}`}
-        width={580}
+        width="min(580px, 92vw)"
         okText="清空位点"
         okButtonProps={{ danger: true }}
         cancelText="取消"
@@ -461,7 +474,7 @@ function TaskTable({
   };
 
   const columns: ColumnsType<KafkaConnectorTaskVo> = [
-    { title: '任务ID', dataIndex: 'id', width: 90 },
+    { title: '任务ID', dataIndex: 'id', width: 90, align: 'center', className: 'dbz-num' },
     {
       title: '状态',
       dataIndex: 'state',
@@ -485,7 +498,7 @@ function TaskTable({
             {trace.split('\n')[0]}
           </Typography.Text>
         ) : (
-          '-'
+          orDash(null)
         ),
     },
     {
@@ -514,6 +527,8 @@ function TaskTable({
       columns={columns}
       dataSource={tasks}
       pagination={false}
+      scroll={{ x: 'max-content' }}
+      locale={{ emptyText: '该连接器没有任务' }}
     />
   );
 }
@@ -530,7 +545,11 @@ function PluginsPanel({ kafkaConnectId }: { kafkaConnectId: Id }) {
     {
       title: '类名',
       dataIndex: 'class',
-      render: (value: string) => <span className="dbz-mono">{value}</span>,
+      render: (value: string) => (
+        <span className="dbz-mono dbz-ellipsis" title={orDash(value)}>
+          {orDash(value)}
+        </span>
+      ),
     },
     {
       title: '类型',
@@ -542,7 +561,7 @@ function PluginsPanel({ kafkaConnectId }: { kafkaConnectId: Id }) {
         ) : type === 'sink' ? (
           <Tag color="purple">sink</Tag>
         ) : (
-          <Tag>{orDash(type)}</Tag>
+          <Tag>{EMPTY_TEXT}</Tag>
         ),
     },
     {
@@ -559,7 +578,7 @@ function PluginsPanel({ kafkaConnectId }: { kafkaConnectId: Id }) {
         type="error"
         showIcon
         message="查询连接器插件失败"
-        description={error.message}
+        description={errorMessage(error)}
         action={
           <Button size="small" onClick={reload}>
             重试
@@ -587,6 +606,8 @@ function PluginsPanel({ kafkaConnectId }: { kafkaConnectId: Id }) {
         columns={columns}
         dataSource={data}
         pagination={false}
+        scroll={{ x: 'max-content' }}
+        locale={{ emptyText: loading ? '加载中…' : '该集群没有已安装的插件' }}
       />
     </>
   );

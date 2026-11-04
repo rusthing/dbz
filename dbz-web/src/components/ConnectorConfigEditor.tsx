@@ -70,7 +70,7 @@ interface FieldSpec {
   optionHints?: Record<string, string>;
   /** 允许在候选项之外自己填（`connector.class` 这类） */
   freeform?: boolean;
-  /** 图形化里标红，不做强制校验（语义正确性由集群反馈） */
+  /** 必填：图形化里标红星，保存时由 {@link checkConnectorConfig} 阻断 */
   required?: boolean;
   /** 只在这家库里显示；不写表示两家都显示 */
   dialects?: Dialect[];
@@ -568,6 +568,65 @@ function parseObject(text: string): Record<string, unknown> | null {
   }
 }
 
+/**
+ * # 提交前的配置校验
+ *
+ * 图形化里的「必填」原先只是黄条提示，表单仍可保存；等到检查任务部署时才失败，
+ * 用户已经离开页面了。这里把「必须是 JSON 对象、必填项齐全、数值合法」收成一条
+ * 错误，供 Form.Item 的 validator 直接阻断保存。
+ *
+ * 只校验**当前方言可见的**字段：MySQL 配置不该被 PostgreSQL 的 `plugin.name` 卡住。
+ */
+export function checkConnectorConfig(kind: ConnectorKind, text: string): string | null {
+  if (!text.trim()) {
+    return '请填写连接器配置（可套用模板后补全）';
+  }
+  let parsed: Record<string, unknown> | null;
+  try {
+    const value: unknown = JSON.parse(text);
+    parsed =
+      value !== null && typeof value === 'object' && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : null;
+  } catch {
+    return '连接器配置不是合法的 JSON，请补全括号或给值加上引号';
+  }
+  if (!parsed) {
+    return '连接器配置必须是 JSON 对象（不能是数组或 null）';
+  }
+
+  const profile = PROFILES[kind];
+  const dialect = profile.dialect?.(parsed) ?? null;
+  const fields = profile.groups
+    .flatMap((group) => group.fields)
+    .filter((field) => !field.dialects || dialect === null || field.dialects.includes(dialect));
+
+  const missing = fields
+    .filter((field) => field.required && toText(parsed?.[field.key]).trim() === '')
+    .map((field) => field.label);
+  if (missing.length > 0) {
+    return `还缺必填项：${missing.join('、')}`;
+  }
+
+  const port = toText(parsed['database.port']).trim();
+  if (kind === 'source' && port !== '') {
+    const value = Number(port);
+    if (!Number.isInteger(value) || value < 1 || value > 65535) {
+      return '数据库端口必须是 1–65535 之间的整数';
+    }
+  }
+  const tasks = toText(parsed['tasks.max']).trim();
+  if (kind === 'sink' && tasks !== '') {
+    const value = Number(tasks);
+    if (!Number.isInteger(value) || value < 1) {
+      return '任务数必须是正整数';
+    }
+  }
+
+  const warnings = profile.warnings?.(parsed) ?? [];
+  return warnings.length > 0 ? warnings.join('；') : null;
+}
+
 /** 把 JSON 里的值转成输入框能显示的字符串 */
 function toText(value: unknown): string {
   if (value === undefined || value === null) {
@@ -870,7 +929,7 @@ export default function ConnectorConfigEditor({
               type="warning"
               showIcon
               message="配置前后矛盾"
-              description={warnings.join('')}
+              description={warnings.join('；')}
             />
           )}
           {visibleGroups.map((group) => (

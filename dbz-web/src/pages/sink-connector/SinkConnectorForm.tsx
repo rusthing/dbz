@@ -16,7 +16,8 @@ import { App as AntdApp, Form, Input, Modal, Select } from 'antd';
 import { useState } from 'react';
 import { sinkConnectorApi } from '../../api/sink-connector';
 import type { DbzSinkConnectorVo, Id } from '../../api/types';
-import ConnectorConfigEditor from '../../components/ConnectorConfigEditor';
+import ConnectorConfigEditor, { checkConnectorConfig } from '../../components/ConnectorConfigEditor';
+import { useCancelConfirm } from '../../hooks/useCancelConfirm';
 import { errorMessage } from '../../utils/format';
 
 interface SinkConnectorFormProps {
@@ -37,15 +38,11 @@ interface FormValues {
   remark?: string;
 }
 
-/** 校验连接器配置是否为合法 JSON */
+/** 校验连接器配置：JSON 对象、必填项与数值范围（规则同步自 Kafka Connect 参数） */
 async function validateJson(_rule: unknown, value?: string): Promise<void> {
-  if (!value || !value.trim()) {
-    throw new Error('请填写连接器配置');
-  }
-  try {
-    JSON.parse(value);
-  } catch {
-    throw new Error('连接器配置不是合法的 JSON');
+  const problem = checkConnectorConfig('sink', value ?? '');
+  if (problem) {
+    throw new Error(problem);
   }
 }
 
@@ -61,6 +58,7 @@ export default function SinkConnectorForm({
   const [form] = Form.useForm<FormValues>();
   const [submitting, setSubmitting] = useState(false);
   const isEdit = Boolean(record);
+  const { handleCancel, markPristine } = useCancelConfirm(form, onCancel);
 
   /**
    * # 弹窗完全打开后同步表单
@@ -73,6 +71,8 @@ export default function SinkConnectorForm({
     if (!visible) {
       return;
     }
+    // 先清空上一次的取值与 touched，避免「新建 -> 立刻编辑」时残留状态
+    form.resetFields();
     if (record) {
       form.setFieldsValue({
         sourceConnectorId: record.sourceConnectorId,
@@ -82,9 +82,9 @@ export default function SinkConnectorForm({
         connectorConfig: record.connectorConfig,
         remark: record.remark ?? '',
       });
-    } else {
-      form.resetFields();
     }
+    // 回填完成，记录基线；此后值有变化才算脏
+    markPristine();
   };
 
   const handleSubmit = async () => {
@@ -127,7 +127,7 @@ export default function SinkConnectorForm({
       cancelText="取消"
       confirmLoading={submitting}
       onOk={handleSubmit}
-      onCancel={onCancel}
+      onCancel={handleCancel}
       afterOpenChange={syncForm}
       width={860}
     >
@@ -164,8 +164,9 @@ export default function SinkConnectorForm({
           name="name"
           label="名称"
           rules={[
-            { required: true, message: '请填写名称' },
-            { max: 64, message: '名称不能超过 64 个字符' },
+            { required: true, whitespace: true, message: '请填写名称' },
+            // 库列 `name` 是 varchar(50)，前端超长会在服务端被截断/拒绝
+            { max: 50, message: '名称不能超过 50 个字符' },
           ]}
         >
           <Input placeholder="业务侧名称，例如 订单库同步到数仓" allowClear />
@@ -176,8 +177,9 @@ export default function SinkConnectorForm({
           label="连接器名称"
           extra="Kafka Connect 上的连接器名称，全局唯一，形如 jdbc-orders-sink。"
           rules={[
-            { required: true, message: '请填写连接器名称' },
-            { max: 128, message: '连接器名称不能超过 128 个字符' },
+            { required: true, whitespace: true, message: '请填写连接器名称' },
+            // 库列 `connector_name` 是 varchar(50)，且 Kafka Connect 侧全局唯一
+            { max: 50, message: '连接器名称不能超过 50 个字符' },
           ]}
         >
           <Input placeholder="jdbc-orders-sink" allowClear className="dbz-mono" />
@@ -192,7 +194,7 @@ export default function SinkConnectorForm({
         </Form.Item>
 
         <Form.Item name="remark" label="备注">
-          <Input.TextArea rows={2} maxLength={255} showCount placeholder="选填" />
+          <Input.TextArea rows={2} maxLength={50} showCount placeholder="选填" />
         </Form.Item>
       </Form>
     </Modal>

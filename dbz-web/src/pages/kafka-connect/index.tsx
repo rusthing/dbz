@@ -18,7 +18,7 @@ import StatusTag from '../../components/StatusTag';
 import type { StatusDetail } from '../../components/StatusTag';
 import { dicOptions, kafkaConnectStatusDic } from '../../dic';
 import { usePagedQuery } from '../../hooks/usePagedQuery';
-import { errorMessage, formatMs, orDash } from '../../utils/format';
+import { errorMessage, formatMs, orDash, shortId } from '../../utils/format';
 import KafkaConnectForm from './KafkaConnectForm';
 
 /** 筛选表单的草稿状态 */
@@ -38,7 +38,7 @@ function statusDetailOf(record: DbzKafkaConnectVo): StatusDetail {
   return {
     summary: `运行详情 · ${record.name}`,
     rows: [
-      { label: '地址', value: <span className="dbz-mono">{record.url}</span> },
+      { label: '地址', value: <span className="dbz-mono">{orDash(record.url)}</span> },
       { label: '结论时间', value: formatMs(record.updateMs) },
       ...(record.runStatus === 0
         ? [{ label: '说明', value: '刚新增或改过地址，等下一轮检查给结论' }]
@@ -96,10 +96,14 @@ export default function KafkaConnectPage() {
       width: 170,
       render: (name: string, record) => (
         <Space direction="vertical" size={0}>
-          <span style={{ fontWeight: 500 }}>{name}</span>
-          <span className="dbz-mono" style={{ color: 'rgba(0,0,0,0.45)' }}>
-            #{record.id}
+          <span className="dbz-ellipsis" style={{ fontWeight: 500 }} title={orDash(name)}>
+            {orDash(name)}
           </span>
+          <Tooltip title={`完整 ID：${record.id}`}>
+            <span className="dbz-mono dbz-id" tabIndex={0}>
+              #{shortId(record.id)}
+            </span>
+          </Tooltip>
         </Space>
       ),
     },
@@ -146,12 +150,17 @@ export default function KafkaConnectPage() {
       title: '备注',
       dataIndex: 'remark',
       ellipsis: true,
-      render: (remark?: string | null) => orDash(remark),
+      render: (remark?: string | null) => (
+        <span className="dbz-ellipsis" title={orDash(remark)}>
+          {orDash(remark)}
+        </span>
+      ),
     },
     {
       title: '更新时间',
       dataIndex: 'updateMs',
       width: 160,
+      className: 'dbz-num',
       render: (ms: string) => formatMs(ms),
     },
     {
@@ -257,7 +266,12 @@ export default function KafkaConnectPage() {
           showIcon
           style={{ marginBottom: 16 }}
           message="加载集群列表失败"
-          description={error.message}
+          description={errorMessage(error)}
+          action={
+            <Button size="small" onClick={reload}>
+              重试
+            </Button>
+          }
         />
       )}
 
@@ -267,6 +281,7 @@ export default function KafkaConnectPage() {
         loading={loading}
         columns={columns}
         dataSource={data.list}
+        locale={{ emptyText: loading ? '加载中…' : '暂无集群' }}
         scroll={{ x: 1080 }}
         pagination={{
           current: pageNum,

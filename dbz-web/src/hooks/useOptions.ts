@@ -6,6 +6,7 @@
  */
 
 import { useMemo } from 'react';
+import type { ApiError } from '../api/client';
 import { kafkaConnectApi } from '../api/kafka-connect';
 import { sourceConnectorApi } from '../api/source-connector';
 import type { DbzKafkaConnectVo, DbzSourceConnectorVo, Id } from '../api/types';
@@ -19,12 +20,14 @@ export interface ClusterOptions {
   /** id → 集群 */
   byId: Map<Id, DbzKafkaConnectVo>;
   loading: boolean;
+  /** 加载失败的原因，供筛选器给出提示而不是显示成「没有集群」 */
+  error: ApiError | null;
   reload: () => void;
 }
 
 /** # 取集群选项 */
 export function useClusterOptions(): ClusterOptions {
-  const { data, loading, reload } = useAsync<DbzKafkaConnectVo[]>(
+  const { data, loading, error, reload } = useAsync<DbzKafkaConnectVo[]>(
     () => kafkaConnectApi.list(),
     [],
     [],
@@ -40,7 +43,7 @@ export function useClusterOptions(): ClusterOptions {
 
   const byId = useMemo(() => new Map(data.map((cluster) => [cluster.id, cluster])), [data]);
 
-  return { clusters: data, options, byId, loading, reload };
+  return { clusters: data, options, byId, loading, error, reload };
 }
 
 /** # 上游连接器选项集合 */
@@ -51,12 +54,14 @@ export interface SourceOptions {
   /** id → 上游连接器 */
   byId: Map<Id, DbzSourceConnectorVo>;
   loading: boolean;
+  /** 加载失败的原因，供筛选器给出提示而不是显示成「没有上游连接器」 */
+  error: ApiError | null;
   reload: () => void;
 }
 
 /** # 取上游连接器选项 */
 export function useSourceOptions(): SourceOptions {
-  const { data, loading, reload } = useAsync<DbzSourceConnectorVo[]>(
+  const { data, loading, error, reload } = useAsync<DbzSourceConnectorVo[]>(
     () => sourceConnectorApi.list(),
     [],
     [],
@@ -72,5 +77,5 @@ export function useSourceOptions(): SourceOptions {
 
   const byId = useMemo(() => new Map(data.map((source) => [source.id, source])), [data]);
 
-  return { sources: data, options, byId, loading, reload };
+  return { sources: data, options, byId, loading, error, reload };
 }

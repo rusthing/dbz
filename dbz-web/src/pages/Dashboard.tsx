@@ -35,7 +35,7 @@ import StatusTag from '../components/StatusTag';
 import type { DicItem } from '../dic';
 import { connectorRunStatusDic, kafkaBrokerStatusDic, kafkaConnectStatusDic } from '../dic';
 import { useAsync } from '../hooks/useAsync';
-import { formatMs } from '../utils/format';
+import { errorMessage, formatMs, orDash, shortId } from '../utils/format';
 
 /** 一条异常记录，四个来源统一成同一行结构 */
 interface AnomalyRow {
@@ -212,7 +212,7 @@ export default function Dashboard() {
           key: `source-${item.id}`,
           kind: '上游连接器',
           name: item.name,
-          cluster: clusterById.get(item.kafkaConnectId) ?? `#${item.kafkaConnectId}`,
+          cluster: clusterById.get(item.kafkaConnectId) ?? `#${shortId(item.kafkaConnectId)}`,
           status: item.runStatus,
           dic: connectorRunStatusDic,
           updateMs: item.updateMs,
@@ -226,7 +226,7 @@ export default function Dashboard() {
           key: `sink-${item.id}`,
           kind: '下游连接器',
           name: item.name,
-          cluster: clusterById.get(item.kafkaConnectId) ?? `#${item.kafkaConnectId}`,
+          cluster: clusterById.get(item.kafkaConnectId) ?? `#${shortId(item.kafkaConnectId)}`,
           status: item.runStatus,
           dic: connectorRunStatusDic,
           updateMs: item.updateMs,
@@ -251,12 +251,25 @@ export default function Dashboard() {
         return <Tag color={color}>{kind}</Tag>;
       },
     },
-    { title: '名称', dataIndex: 'name', width: 220 },
+    {
+      title: '名称',
+      dataIndex: 'name',
+      width: 220,
+      render: (name: string) => (
+        <span className="dbz-ellipsis" title={orDash(name)}>
+          {orDash(name)}
+        </span>
+      ),
+    },
     {
       title: '所属集群 / 地址',
       dataIndex: 'cluster',
       ellipsis: true,
-      render: (cluster: string) => <span className="dbz-mono">{cluster}</span>,
+      render: (cluster: string) => (
+        <span className="dbz-mono dbz-ellipsis" title={orDash(cluster)}>
+          {orDash(cluster)}
+        </span>
+      ),
     },
     {
       title: '状态',
@@ -268,6 +281,7 @@ export default function Dashboard() {
       title: '进入该状态时间',
       dataIndex: 'updateMs',
       width: 180,
+      className: 'dbz-num',
       render: (ms: Id) => formatMs(ms),
     },
   ];
@@ -298,7 +312,20 @@ export default function Dashboard() {
           type="error"
           showIcon
           message="加载统计数据失败"
-          description={error.message}
+          description={errorMessage(error)}
+          action={
+            <Button
+              size="small"
+              onClick={() => {
+                brokers.reload();
+                clusters.reload();
+                sources.reload();
+                sinks.reload();
+              }}
+            >
+              重试
+            </Button>
+          }
         />
       )}
 
@@ -351,6 +378,8 @@ export default function Dashboard() {
           columns={columns}
           dataSource={anomalies}
           pagination={false}
+          // 窄屏可横向滚动；桌面端列宽合计小于容器，不会强制溢出
+          scroll={{ x: 'max-content' }}
           locale={{ emptyText: '当前没有异常对象' }}
         />
       </Card>

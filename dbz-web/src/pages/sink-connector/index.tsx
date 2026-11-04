@@ -13,7 +13,7 @@ import StatusTag from '../../components/StatusTag';
 import { connectorRunStatusDic, dicOptions } from '../../dic';
 import { useClusterOptions, useSourceOptions } from '../../hooks/useOptions';
 import { usePagedQuery } from '../../hooks/usePagedQuery';
-import { errorMessage, formatMs, orDash, prettyJson } from '../../utils/format';
+import { errorMessage, formatMs, orDash, prettyJson, shortId } from '../../utils/format';
 import SinkConnectorForm from './SinkConnectorForm';
 
 /** 筛选草稿 */
@@ -53,7 +53,8 @@ export default function SinkConnectorPage() {
   const handleDelete = (record: DbzSinkConnectorVo) => {
     modal.confirm({
       title: `删除下游连接器「${record.name}」？`,
-      content: '删除记录不会自动注销集群上的连接器；若不再需要，请在「远端连接器」里一并处理。',
+      // 与 README 及服务端 before_del 行为一致：先注销集群上的连接器，再删记录
+      content: '删除会先从集群注销该连接器，成功后再删除记录；注销失败则本次删除失败。',
       okText: '删除',
       okButtonProps: { danger: true },
       cancelText: '取消',
@@ -76,10 +77,14 @@ export default function SinkConnectorPage() {
       width: 160,
       render: (name: string, record) => (
         <Space direction="vertical" size={0}>
-          <span style={{ fontWeight: 500 }}>{name}</span>
-          <span className="dbz-mono" style={{ color: 'rgba(0,0,0,0.45)' }}>
-            #{record.id}
+          <span className="dbz-ellipsis" style={{ fontWeight: 500 }} title={orDash(name)}>
+            {orDash(name)}
           </span>
+          <Tooltip title={`完整 ID：${record.id}`}>
+            <span className="dbz-mono dbz-id" tabIndex={0}>
+              #{shortId(record.id)}
+            </span>
+          </Tooltip>
         </Space>
       ),
     },
@@ -99,14 +104,16 @@ export default function SinkConnectorPage() {
       dataIndex: 'sourceConnectorId',
       width: 130,
       ellipsis: true,
-      render: (id: Id) => source.byId.get(id)?.name ?? `#${id}`,
+      render: (id: Id) =>
+        source.byId.get(id)?.name ?? (id ? <span className="dbz-mono">#{shortId(id)}</span> : orDash(null)),
     },
     {
       title: '运行集群',
       dataIndex: 'kafkaConnectId',
       width: 120,
       ellipsis: true,
-      render: (id: Id) => cluster.byId.get(id)?.name ?? `#${id}`,
+      render: (id: Id) =>
+        cluster.byId.get(id)?.name ?? (id ? <span className="dbz-mono">#{shortId(id)}</span> : orDash(null)),
     },
     {
       title: '状态',
@@ -119,9 +126,15 @@ export default function SinkConnectorPage() {
           detail={{
             summary: `运行详情 · ${record.name}`,
             rows: [
-              { label: '连接器', value: <span className="dbz-mono">{record.connectorName}</span> },
-              { label: '所属集群', value: cluster.byId.get(record.kafkaConnectId)?.name ?? `#${record.kafkaConnectId}` },
-              { label: '上游连接器', value: source.byId.get(record.sourceConnectorId)?.name ?? `#${record.sourceConnectorId}` },
+              { label: '连接器', value: <span className="dbz-mono">{orDash(record.connectorName)}</span> },
+              {
+                label: '所属集群',
+                value: cluster.byId.get(record.kafkaConnectId)?.name ?? `#${shortId(record.kafkaConnectId)}`,
+              },
+              {
+                label: '上游连接器',
+                value: source.byId.get(record.sourceConnectorId)?.name ?? `#${shortId(record.sourceConnectorId)}`,
+              },
               { label: '结论时间', value: formatMs(record.updateMs) },
             ],
             // 失败原因由健康检查写回：部署被拒的响应体、异常任务的 trace 首行都在这里
@@ -150,6 +163,7 @@ export default function SinkConnectorPage() {
       title: '更新时间',
       dataIndex: 'updateMs',
       width: 160,
+      className: 'dbz-num',
       render: (ms: string) => formatMs(ms),
     },
     {
@@ -198,6 +212,10 @@ export default function SinkConnectorPage() {
           placeholder="上游连接器"
           style={{ width: 150 }}
           options={source.options}
+          loading={source.loading}
+          notFoundContent={
+            source.error ? '上游连接器列表加载失败，请刷新重试' : source.loading ? '加载中…' : '暂无上游连接器'
+          }
           value={draft.sourceConnectorId}
           onChange={(value) => {
             const next = { ...draft, sourceConnectorId: value };
@@ -212,6 +230,10 @@ export default function SinkConnectorPage() {
           placeholder="运行集群"
           style={{ width: 140 }}
           options={cluster.options}
+          loading={cluster.loading}
+          notFoundContent={
+            cluster.error ? '集群列表加载失败，请刷新重试' : cluster.loading ? '加载中…' : '暂无集群'
+          }
           value={draft.kafkaConnectId}
           onChange={(value) => {
             const next = { ...draft, kafkaConnectId: value };
@@ -258,7 +280,14 @@ export default function SinkConnectorPage() {
 
         <span className="dbz-toolbar-spacer" />
 
-        <Button icon={<ReloadOutlined />} onClick={reload}>
+        <Button
+          icon={<ReloadOutlined />}
+          onClick={() => {
+            reload();
+            cluster.reload();
+            source.reload();
+          }}
+        >
           刷新
         </Button>
         <Button
@@ -279,7 +308,12 @@ export default function SinkConnectorPage() {
           showIcon
           style={{ marginBottom: 16 }}
           message="加载下游连接器失败"
-          description={error.message}
+          description={errorMessage(error)}
+          action={
+            <Button size="small" onClick={reload}>
+              重试
+            </Button>
+          }
         />
       )}
 
@@ -289,6 +323,7 @@ export default function SinkConnectorPage() {
         loading={loading}
         columns={columns}
         dataSource={data.list}
+        locale={{ emptyText: loading ? '加载中…' : '暂无下游连接器' }}
         scroll={{ x: 1120 }}
         pagination={{
           current: pageNum,
@@ -321,7 +356,7 @@ export default function SinkConnectorPage() {
       <Drawer
         open={Boolean(preview)}
         title={preview ? `连接器配置 · ${preview.connectorName}` : '连接器配置'}
-        width={640}
+        width="min(640px, 92vw)"
         onClose={() => setPreview(null)}
       >
         <pre className="dbz-json-view">{prettyJson(preview?.connectorConfig)}</pre>

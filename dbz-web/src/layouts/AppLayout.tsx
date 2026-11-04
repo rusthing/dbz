@@ -71,7 +71,14 @@ export default function AppLayout() {
 
   return (
     <Layout style={{ height: '100vh' }}>
-      <Sider width={216} theme="light" className="dbz-sider">
+      {/* 窄屏（< lg）自动收起，给内容区留出可读宽度；trigger 保留，随时可展开 */}
+      <Sider
+        width={216}
+        theme="light"
+        className="dbz-sider"
+        breakpoint="lg"
+        collapsedWidth={0}
+      >
         <div className="dbz-brand">
           <div className="dbz-brand-logo">dbz</div>
           <div className="dbz-brand-text">

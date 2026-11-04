@@ -158,13 +158,15 @@ curl -s http://xxx:xxx/dbz-svr/dbz/kafka-connect/list | head -c 200             
 - 页面渲染、表格行数、状态标签、字典翻译、时间列格式化；
 - **悬停状态弹出运行详情**：失败原因确实从 `runMsg` / trace 渲染出来了（漏传 `detail` 会 FAIL）；
 - 写接口带了 `X-User-Id`、请求体是 camelCase 且已 trim；
-- 表单默认值、编辑回填、提交后自动关闭；
+- 表单默认值、编辑回填、提交后自动关闭；**改过字段再取消会先弹「放弃修改」确认**；
 - 重新同步弹窗：两条通道切换会重新预检、切过去还能切回来、预检失败能原地重试；
-- 布局体检：顶栏标题不被裁、表格不横向溢出、工具栏不换行。
+- 布局体检：顶栏标题不被裁、表格不横向溢出、工具栏不换行；空值统一显示 `--`。
 
 ```bash
 ./node_modules/.bin/playwright install chromium chromium-headless-shell   # 首次，约 100MB
 corepack pnpm smoke
+# 系统不支持 Playwright 自带浏览器时，复用已有 Chromium：
+# SMOKE_CHROME=/path/to/chrome-headless-shell corepack pnpm smoke
 ```
 
 脚本自己 `createServer()` 起 vite（默认 5199）并在结束时关闭，截图输出到系统临时目录
@@ -197,7 +199,7 @@ src/
 │   └── kafka-connector.ts  # /dbz/kafka-connector（远端运维）
 ├── components/          # StatusTag / EnabledSwitch / JsonEditor / ConnectorConfigEditor
 ├── dic/                 # 状态枚举的整数判别式 → 文案/颜色
-├── hooks/               # usePagedQuery / useAsync / useOptions
+├── hooks/               # usePagedQuery / useAsync / useOptions / useCancelConfirm（脏表单确认）
 ├── layouts/AppLayout.tsx
 ├── pages/
 │   ├── Dashboard.tsx            # 总览 + 异常清单
@@ -267,6 +269,27 @@ scripts/smoke.mjs        # 冒烟测试
 
 改后端枚举时必须同步 `src/dic/index.ts`，否则页面显示「未知状态」。
 
+### 展示约定
+
+这些规则收敛在 `src/utils/format.ts`，新增页面/列时直接复用，别各写一套：
+
+| 场景 | 约定 | 入口 |
+| --- | --- | --- |
+| 空值 | 一律 `--`（`null`、`undefined`、空串、纯空白），不再混用 `-` | `orDash` / `EMPTY_TEXT` |
+| 时间 | `YYYY-MM-DD HH:mm:ss`；无效或非正数时间戳显示 `--` | `formatMs` |
+| 时长 | `< 1s` 用 `N ms`，`< 1min` 用 `N.N s`，更长用 `N 分 N 秒` | `formatDuration` |
+| 长 ID | 头 6 位 + `…` + 尾 4 位，完整值放 Tooltip / `title`；仍禁止 `Number()` | `shortId` |
+| 数字 | 表格数字列加 `.dbz-num`（等宽数字），统计卡同样；数量带单位（`个 topic`、`台`） | `formatDuration` + CSS |
+| 状态色 | `success` 正常、`warning` 需关注/未分配/已停止、`error` 失败、`default` 中性、`blue` 仅用于标识认证方式等非健康语义 | `src/dic` |
+| 长文本 | 单行 `ellipsis` + `title`；异常栈等宽、`pre-wrap`、限定高度内部滚动 | `.dbz-ellipsis` / `.dbz-status-reason` |
+| 错误文案 | 服务端 `msg` 为主，已知编码补一句「怎么办」；HTTP 状态兜底中文提示 | `errorMessage` |
+
+### 错误码到提示
+
+`client.ts` 抛出的 `ApiError` 保留 `result` / `code` / `status` / `detail`。展示层按以下顺序补提示：
+业务编码命中优先（`RTW00001` 唯一键、`RTW00002` 关联对象不存在、`RTW00003` 仍有关联记录），
+其次按 HTTP 状态（401 / 403 / 404 / 409 / 5xx），都没有时原样展示服务端文案。
+
 ## 连接器配置：图形化与 JSON
 
 上游、下游表单的配置区都是 `components/ConnectorConfigEditor.tsx`，**两种写法共享同一份 JSON 文本**：
@@ -291,8 +314,22 @@ scripts/smoke.mjs        # 冒烟测试
 是 PostgreSQL 时只出现 `schema.include.list` 与 `plugin.name`；认不出连接器类（自定义类）时全部显示，
 不做猜测。
 
-必填项之外还有一条「前后矛盾」提醒：下游选了 `insert.mode=upsert/update` 却把主键来源留成
+**保存前会校验，不只是提示**（`checkConnectorConfig`）：配置必须是 JSON 对象（数组/`null` 不接受）、
+当前方言的必填项齐全、`database.port` 在 1–65535、`tasks.max` 为正整数。必填与数值不满足时
+`Form.Item` 直接拦下保存，不再等集群部署失败才反馈。
+
+还有一条「前后矛盾」提醒：下游选了 `insert.mode=upsert/update` 却把主键来源留成
 `record_value` 又不填 `primary.key.fields` 时，表单会直接点出来——这个错原本要到部署阶段才暴露。
+
+文字长度与库列长度对齐（前端不再允许提交必被截断的值）：
+
+| 字段 | 上限 | 对应列 |
+| --- | --- | --- |
+| 名称 | 50 | `name varchar(50)` |
+| 连接器名称 | 50 | `connector_name varchar(50)` |
+| 备注 | 50 | `remark varchar(50)` |
+| Connect 地址 | 100 | `url varchar(100)` |
+| broker 地址 | 500 | `bootstrap_servers varchar(500)` |
 
 `signal.kafka.bootstrap.servers` 可以留空：保存时服务端会用这颗连接器所在 Connect 关联集群的地址
 补上，并写进配置（下次编辑能看到）。这个键在 Debezium 里必填、**没有默认值，也不会沿用 worker 的
@@ -365,3 +402,8 @@ scripts/smoke.mjs        # 冒烟测试
   只适用于内网/开发环境。
 - **子路径靠变量切**：`VITE_PUBLIC_BASE` 一次驱动 `base` / favicon / `basename` 三处；变量和网关前缀不一致就会出现
   白屏或刷新 404（对照「部署后自检」那张表）。
+- **列表暂不支持时间范围筛选**：`#[router(crud)]` 的 QueryDto 只支持字段等值匹配，`updateMs` 只能传精确值，
+  所以搜索行没有「更新时间起止」控件。需要后端先在 QueryDto 增加区间参数（如 `updateMsFrom` / `updateMsTo`）
+  并在 DAO 拼 `>=` / `<` 条件，前端再补控件；本次未改后端契约。
+- **远端连接器为全量列表**：`GET /dbz/kafka-connector/list` 不带分页，集群上连接器很多时一次拉全量；
+  需要后端加 `/page` 后再改前端。

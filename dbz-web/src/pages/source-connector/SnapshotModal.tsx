@@ -40,7 +40,7 @@ import type {
   SignalChannel,
   SnapshotType,
 } from '../../api/types';
-import { errorMessage } from '../../utils/format';
+import { EMPTY_TEXT, errorMessage, orDash } from '../../utils/format';
 
 interface SnapshotModalProps {
   open: boolean;
@@ -142,7 +142,7 @@ export default function SnapshotModal({ open, record, onClose }: SnapshotModalPr
     <Modal
       open={open}
       title={`重新同步 · ${record?.name ?? ''}`}
-      width={760}
+      width="min(760px, 94vw)"
       okText="触发快照"
       cancelText="取消"
       confirmLoading={submitting}
@@ -219,19 +219,25 @@ export default function SnapshotModal({ open, record, onClose }: SnapshotModalPr
             size="small"
             column={2}
             items={[
-              { key: 'dialect', label: '源库', children: `${preview.dialect} · ${preview.database}` },
+              {
+                key: 'dialect',
+                label: '源库',
+                children: preview.dialect
+                  ? `${orDash(preview.dialect)} · ${orDash(preview.database)}`
+                  : orDash(preview.database),
+              },
               isKafka
                 ? {
                     key: 'signal',
                     label: '信号落点',
                     children: (
                       <Space size={4}>
-                        <Tag color="processing">{preview.kafkaBroker}</Tag>
-                        <span className="dbz-mono">{preview.kafkaTopic}</span>
+                        <Tag color="blue">{orDash(preview.kafkaBroker)}</Tag>
+                        <span className="dbz-mono">{orDash(preview.kafkaTopic)}</span>
                       </Space>
                     ),
                   }
-                : { key: 'signal', label: '信号表', children: preview.signalCollection },
+                : { key: 'signal', label: '信号表', children: preview.signalCollection ? <span className="dbz-mono">{preview.signalCollection}</span> : EMPTY_TEXT },
             ]}
           />
 

@@ -13,6 +13,7 @@ import { Popover, Tag } from 'antd';
 import type { ReactNode } from 'react';
 import type { DicItem } from '../dic';
 import { dicItem } from '../dic';
+import { EMPTY_TEXT } from '../utils/format';
 
 /** 悬停详情：一句话概括 + 明细行 + 失败原因 */
 export interface StatusDetail {
@@ -48,7 +49,8 @@ export default function StatusTag({ dic, value, detail }: StatusTagProps) {
 
   return (
     <Popover
-      trigger="hover"
+      // hover 之外补 focus：键盘 Tab 到状态标签时同样能看到失败原因
+      trigger={['hover', 'focus']}
       mouseEnterDelay={0.25}
       // 原因可能很长：限制宽度后让它在内部滚动，不把整页撑开
       styles={{ body: { maxWidth: 380, padding: '10px 12px' } }}
@@ -65,7 +67,13 @@ export default function StatusTag({ dic, value, detail }: StatusTagProps) {
         </div>
       }
     >
-      <span className="dbz-status-hover">{tag}</span>
+      <span
+        className="dbz-status-hover"
+        tabIndex={0}
+        aria-label={detail.summary ?? '查看状态详情'}
+      >
+        {tag}
+      </span>
     </Popover>
   );
 }
@@ -73,7 +81,7 @@ export default function StatusTag({ dic, value, detail }: StatusTagProps) {
 /** 按字典渲染标签；未知取值也要显式说出来，别让单元格变成空白 */
 function renderTag(dic: DicItem[], value?: number | null) {
   if (value === null || value === undefined) {
-    return <Tag>-</Tag>;
+    return <Tag>{EMPTY_TEXT}</Tag>;
   }
   const item = dicItem(dic, value);
   if (!item) {

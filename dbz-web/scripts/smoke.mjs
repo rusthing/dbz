@@ -17,6 +17,8 @@
  * ```bash
  * npx playwright install chromium   # 首次，约 100MB
  * npm run smoke
+ * # 系统不支持 Playwright 自带浏览器时，可复用已有 Chromium：
+ * SMOKE_CHROME=/path/to/chrome-headless-shell npm run smoke
  * ```
  *
  * 截图输出到系统临时目录 `dbz-web-smoke/shots`，失败时按截图定位问题。
@@ -133,7 +135,8 @@ const sources = [
     updateMs: '1760000100000',
   },
   {
-    id: '202',
+    // 19 位雪花 ID：验证列表里的长 ID 截断（完整值仍放 Tooltip）
+    id: '1928374650123456789',
     kafkaConnectId: '102',
     name: '用户库增量',
     connectorName: 'mysql-users-source',
@@ -283,6 +286,51 @@ async function layoutCheck(target, label) {
 const visibleModal = () => page.locator('.ant-modal-wrap:visible');
 
 /**
+ * # 点「取消」关表单弹窗
+ *
+ * 改过字段的表单会先弹「放弃未保存的修改？」（脏状态确认）；只浏览过的编辑表单
+ * 不应该弹。这里按预期断言，避免以后把确认逻辑删了却没人发现。
+ */
+async function waitNoVisibleModal() {
+  try {
+    await page.waitForFunction(
+      () =>
+        Array.from(document.querySelectorAll('.ant-modal-wrap')).every((element) => {
+          const style = window.getComputedStyle(element);
+          return style.display === 'none' || style.visibility === 'hidden';
+        }),
+      undefined,
+      { timeout: 10000 },
+    );
+  } catch (error) {
+    const openModals = await page.locator('.ant-modal-wrap:visible').evaluateAll((wrappers) =>
+      wrappers.map((wrapper) => ({
+        className: wrapper.firstElementChild?.className ?? '',
+        text: wrapper.innerText.slice(0, 120),
+      })),
+    );
+    console.log('DIAG visible modals', JSON.stringify(openModals));
+    throw error;
+  }
+}
+
+async function cancelFormModal({ expectDirty = false } = {}) {
+  // 旧弹窗的 confirm 容器会在 DOM 里留一层，取最后一个（最上层）才是当前表单
+  await visibleModal().last().locator('.ant-modal-footer .ant-btn').first().click();
+  if (expectDirty) {
+    const confirm = page.locator('.ant-modal-confirm');
+    await confirm.waitFor({ state: 'visible', timeout: 3000 });
+    check(
+      '脏表单取消先确认',
+      (await confirm.innerText()).includes('放弃未保存的修改'),
+      await confirm.innerText(),
+    );
+    await confirm.locator('.ant-btn-primary').click();
+  }
+  await waitNoVisibleModal();
+}
+
+/**
  * # 悬停状态看运行详情
  *
  * 列表里的状态是检查任务的结论，失败原因另外存（库里的 `run_msg`、远端集群返回的
@@ -322,7 +370,11 @@ const server = await createServer({
 await server.listen();
 const base = server.resolvedUrls.local[0].replace(/\/$/, '');
 
-const browser = await chromium.launch();
+// `SMOKE_CHROME` 可指向已有的 Chromium（例如 CI/本机缓存），省去重复下载；
+// 不设置时走 Playwright 默认安装路径。
+const browser = await chromium.launch({
+  executablePath: process.env.SMOKE_CHROME || undefined,
+});
 const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
 const page = await context.newPage();
 
@@ -443,9 +495,18 @@ try {
     (item) => item.method === 'POST' && item.path === '/dbz/kafka-broker/check',
   );
   check('检测发出 POST 且带记录ID', brokerCheck?.body?.id === '401', JSON.stringify(brokerCheck?.body));
+  const checkMessage = page.locator('.ant-message-notice-content:has-text("连接正常")').first();
+  let checkMessageText = '';
+  try {
+    await checkMessage.waitFor({ state: 'visible', timeout: 3000 });
+    checkMessageText = await checkMessage.innerText();
+  } catch {
+    // 保留空文案，交给下面的断言报错
+  }
   check(
-    '检测成功给出提示',
-    (await page.locator('.ant-message-notice-content:has-text("连接正常")').count()) > 0,
+    '检测成功给出提示（含耗时单位）',
+    checkMessageText.includes('12 个 topic') && checkMessageText.includes('耗时 34 ms'),
+    checkMessageText,
   );
 
   // 表单联动：明文协议不出现机制/账号/密码，选了 SASL 才出现
@@ -465,8 +526,7 @@ try {
     .textContent();
   check('切到 SASL 后机制有默认值', mechanism === 'SASL/PLAIN', String(mechanism));
   await page.screenshot({ path: `${SHOTS}/03b-broker-form.png` });
-  await page.locator('.ant-modal-footer .ant-btn').first().click();
-  await page.waitForSelector('.ant-modal-wrap', { state: 'hidden', timeout: 5000 });
+  await cancelFormModal({ expectDirty: true });
 
   /* 2. 集群列表 */
   await page.click('.ant-menu-item:has-text("Kafka Connect")');
@@ -516,8 +576,8 @@ try {
   await page.waitForTimeout(200);
   await page.screenshot({ path: `${SHOTS}/03-modal.png` });
   await page.click('.ant-modal-footer .ant-btn-primary');
-  await page.waitForSelector('.ant-modal-wrap', { state: 'hidden', timeout: 5000 });
-  check('保存后弹窗关闭', !(await page.locator('.ant-modal-wrap').isVisible().catch(() => false)));
+  await waitNoVisibleModal();
+  check('保存后弹窗关闭', (await page.locator('.ant-modal-wrap:visible').count()) === 0);
 
   const createCall = posted.find((item) => item.method === 'POST' && item.path === '/dbz/kafka-connect');
   check('新增集群发出 POST', Boolean(createCall));
@@ -545,14 +605,38 @@ try {
     (await page.locator('.ant-modal').getByRole('switch').count()) === 0,
   );
   await page.screenshot({ path: `${SHOTS}/09-edit.png` });
-  await page.locator('.ant-modal-footer .ant-btn').first().click();
-  await page.waitForSelector('.ant-modal-wrap', { state: 'hidden', timeout: 5000 });
+  // 只回填、没改：取消不应打扰用户
+  await cancelFormModal();
 
   /* 4. 上游连接器 */
   await page.click('.ant-menu-item:has-text("上游连接器")');
   await page.waitForSelector('text=订单库增量');
   check('上游列表渲染', (await page.locator('tbody tr.ant-table-row').count()) === 2);
   check('上游「所属集群」翻译成名称', (await page.locator('text=生产集群-华东').count()) > 0);
+  const orderRow = page.locator('tbody tr.ant-table-row', { hasText: '订单库增量' });
+  check(
+    '空备注统一显示 --',
+    (await orderRow.locator('td').nth(5).innerText()).trim() === '--',
+    await orderRow.locator('td').nth(5).innerText(),
+  );
+  const userRow = page.locator('tbody tr.ant-table-row', { hasText: '用户库增量' });
+  check(
+    '19 位 ID 在列表里截断',
+    (await userRow.innerText()).includes('#192837…6789'),
+    await userRow.innerText(),
+  );
+  // 删除说明必须与 README / 服务端 before_del 一致：先注销、再删记录
+  await orderRow.getByRole('button', { name: '删除' }).click();
+  const sourceDeleteConfirm = page.locator('.ant-modal-confirm:visible');
+  await sourceDeleteConfirm.waitFor({ state: 'visible', timeout: 2000 });
+  check(
+    '上游删除说明与 README 一致',
+    (await sourceDeleteConfirm.innerText()).includes('先从集群注销'),
+    await sourceDeleteConfirm.innerText(),
+  );
+  // antd 会在两个汉字之间插入空格（「取 消」），按 role 名字匹配不到，取第一个按钮
+  await sourceDeleteConfirm.locator('.ant-modal-confirm-btns .ant-btn').first().click();
+  await waitNoVisibleModal();
   await hoverStatus('用户库增量', 'Access denied for user', '上游连接器', '04b-source-status.png');
   await layoutCheck(page, '上游');
   await page.screenshot({ path: `${SHOTS}/04-source.png`, fullPage: true });
@@ -622,10 +706,37 @@ try {
     !('database.include.list' in configJson),
     JSON.stringify(Object.keys(configJson)),
   );
+
+  // 必填参数没补齐就点保存：应该被 Form 拦下，而不是等集群部署失败
+  await visibleModal().locator('.ant-modal-footer .ant-btn-primary').click();
+  await page.waitForTimeout(300);
+  const missingFieldErrors = await visibleModal().locator('.ant-form-item-explain-error').allInnerTexts();
+  check(
+    '缺少必填参数时保存被拦截',
+    missingFieldErrors.some((text) => text.includes('还缺必填项')),
+    missingFieldErrors.join(' | '),
+  );
+  check(
+    '必填校验失败不发保存请求',
+    !posted.some((item) => item.method === 'POST' && item.path === '/dbz/source-connector'),
+  );
+
+  // 非法 JSON 也必须拦在提交前；恢复合法文本后才能切回图形化
+  const originalConfigJson = await visibleModal().locator('.dbz-json-editor').inputValue();
+  await visibleModal().locator('.dbz-json-editor').fill('{"connector.class": ');
+  await visibleModal().locator('.ant-modal-footer .ant-btn-primary').click();
+  await page.waitForTimeout(300);
+  const jsonErrors = await visibleModal().locator('.ant-form-item-explain-error').allInnerTexts();
+  check(
+    '非法 JSON 保存被拦截',
+    jsonErrors.some((text) => text.includes('不是合法的 JSON')),
+    jsonErrors.join(' | '),
+  );
+  await visibleModal().locator('.dbz-json-editor').fill(originalConfigJson);
+
   await visibleModal().locator('.ant-segmented-item:has-text("图形化")').click();
   await page.waitForTimeout(150);
-  await visibleModal().locator('.ant-modal-footer .ant-btn').first().click();
-  await page.waitForSelector('.ant-modal-wrap', { state: 'hidden', timeout: 5000 });
+  await cancelFormModal({ expectDirty: true });
   // 关掉的弹窗在退出动画期间还挂在 DOM 里，等它退干净再去点列表，否则后面按文本找元素会命中它
   await page.waitForTimeout(400);
 
@@ -660,7 +771,7 @@ try {
     JSON.stringify(snapshotCall?.body),
   );
   // 提交成功后弹窗自己收起，等退出动画跑完再点下一行
-  await page.waitForSelector('.ant-modal-wrap', { state: 'hidden', timeout: 5000 });
+  await waitNoVisibleModal();
   await page.waitForTimeout(400);
 
   /* 4d. 预检失败：说清原因，并能原地重试（不用关掉弹窗重开） */
@@ -688,9 +799,10 @@ try {
     await visibleModal().locator('.ant-modal-footer .ant-btn-primary').isEnabled(),
   );
   await page.screenshot({ path: `${SHOTS}/04d-snapshot-retry.png` });
-  await visibleModal().locator('.ant-modal-footer .ant-btn').first().click();
-  await page.waitForSelector('.ant-modal-wrap', { state: 'hidden', timeout: 5000 });
+  await visibleModal().last().locator('.ant-modal-footer .ant-btn').first().click();
+  await waitNoVisibleModal();
   await page.waitForTimeout(400);
+  await page.screenshot({ path: `${SHOTS}/04e-snapshot-cancel.png` });
 
   /* 5. 下游连接器 */
   await page.click('.ant-menu-item:has-text("下游连接器")');
@@ -743,8 +855,7 @@ try {
     sinkUpsert['insert.mode'] === 'upsert' && sinkUpsert['primary.key.mode'] === 'record_value',
     JSON.stringify({ mode: sinkUpsert['insert.mode'], keyMode: sinkUpsert['primary.key.mode'] }),
   );
-  await visibleModal().locator('.ant-modal-footer .ant-btn').first().click();
-  await page.waitForSelector('.ant-modal-wrap', { state: 'hidden', timeout: 5000 });
+  await cancelFormModal({ expectDirty: true });
 
   /* 6. 远端连接器：列表、未纳管连接器、任务展开与重启 */
   await page.goto(`${base}/remote-connector?kafkaConnectId=101`, { waitUntil: 'networkidle' });
@@ -840,7 +951,9 @@ try {
 
   /* 8. 未知路由回落总览 */
   await page.goto(`${base}/not-exist`, { waitUntil: 'networkidle' });
-  check('未知路由回落总览', page.url().endsWith('/'));
+  // Navigate 在渲染时同步发生，但给浏览器一次落地机会再断言 URL
+  await page.waitForFunction(() => window.location.pathname === '/', undefined, { timeout: 3000 }).catch(() => null);
+  check('未知路由回落总览', page.url().endsWith('/'), page.url());
 } finally {
   await browser.close();
   await server.close();

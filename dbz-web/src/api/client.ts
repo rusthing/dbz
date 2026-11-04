@@ -82,6 +82,7 @@ async function request<T>(
     response = await fetch(url, {
       method,
       headers: {
+        Accept: 'application/json',
         'Content-Type': 'application/json',
         'X-User-Id': USER_ID,
       },

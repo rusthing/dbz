@@ -139,6 +139,8 @@ body {
   font-size: 26px;
   font-weight: 600;
   line-height: 1.3;
+  /* 等数字宽，刷新时数字不会左右轻微跳动 */
+  font-variant-numeric: tabular-nums;
 }
 
 .dbz-stat-hint {
@@ -149,6 +151,34 @@ body {
 .dbz-mono {
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
   font-size: 12.5px;
+}
+
+/* 单行文本在表格列宽内截断，完整值由 title / Tooltip 提供 */
+.dbz-ellipsis {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 雪花 ID 截断后仍要能聚焦查看全量值 */
+.dbz-id {
+  color: rgba(0, 0, 0, 0.45);
+  cursor: help;
+}
+
+.dbz-id:focus-visible,
+.dbz-status-hover:focus-visible {
+  outline: 2px solid #1677ff;
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+/* 数字列等宽对齐，避免 1 / 11 / 111 各占不同宽度 */
+.dbz-num {
+  font-variant-numeric: tabular-nums;
 }
 
 /* 配置项下拉里「值 + 注释」的一行：值定宽，注释才对得齐 */
@@ -228,4 +258,48 @@ body {
   line-height: 1.6;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/*
+ * 窄屏收尾：
+ * - 侧栏由 antd 的 breakpoint 收起，内容区减小留白；
+ * - 工具栏里的搜索框独占一行，避免和筛选/按钮挤成一条；
+ * - 行内小按钮加高到 40px，手指点得中（粗指针设备再抬到 44px）。
+ */
+@media (max-width: 768px) {
+  .dbz-content {
+    padding: 12px 12px 24px;
+  }
+
+  .ant-layout-header.dbz-header {
+    gap: 8px;
+    padding: 0 12px;
+  }
+
+  .dbz-header > .ant-typography {
+    display: none;
+  }
+
+  .dbz-toolbar {
+    gap: 8px;
+  }
+
+  .dbz-toolbar .ant-input-search {
+    width: 100% !important;
+  }
+
+  .ant-table-wrapper .ant-table .ant-btn-link {
+    min-height: 40px;
+    padding: 4px 6px;
+  }
+
+  .ant-modal-footer .ant-btn {
+    min-height: 40px;
+  }
+}
+
+@media (pointer: coarse) {
+  .ant-table-wrapper .ant-table .ant-btn-link {
+    min-height: 44px;
+  }
 }

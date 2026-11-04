@@ -75,8 +75,15 @@ export function usePagedQuery<T>(
     fetchRef
       .current({ ...filters, _page: pageNum, _size: pageSize })
       .then((result) => {
-        if (alive) {
-          setData(result);
+        if (!alive) {
+          return;
+        }
+        setData(result);
+        // 删掉当前页最后一条后，页码会停在空页上。回退到仍有数据的最后一页；
+        // 若总数也已归零则回到第 1 页，避免「空白列表 + 页码 3」的错觉。
+        if (result.list.length === 0 && pageNum > 1) {
+          const lastPage = Math.max(1, Math.ceil(result.total / pageSize));
+          setPageNum(result.total > 0 ? Math.min(pageNum - 1, lastPage) : 1);
         }
       })
       .catch((reason: unknown) => {

@@ -2,8 +2,9 @@
  * # 上游连接器表单
  *
  * 上游连接器的 `connectorConfig` 就是 Debezium 原样的 JSON：检查任务发现连接器不存在时，
- * 直接拿这段文本去 `POST /connectors` 部署。所以它必须是合法 JSON，且 `connector.class`
- * 等关键项要齐全——这里只做格式校验，语义正确性由集群的部署结果反馈。
+ * 直接拿这段文本去 `POST /connectors` 部署。所以提交前会校验：必须是 JSON 对象、
+ * 当前方言的必填项齐全、端口等数值合法（见 `checkConnectorConfig`）。更细的语义
+ * 正确性仍由集群的部署结果反馈。
  *
  * 配置区用 {@link ConnectorConfigEditor}：图形化填常用项、或直接写 JSON，两种模式共享
  * 同一份文本，图形化没覆盖的参数写在 JSON 里也不会被覆盖掉。
@@ -16,7 +17,8 @@ import { App as AntdApp, Form, Input, Modal, Select } from 'antd';
 import { useState } from 'react';
 import { sourceConnectorApi } from '../../api/source-connector';
 import type { DbzSourceConnectorVo, Id } from '../../api/types';
-import ConnectorConfigEditor from '../../components/ConnectorConfigEditor';
+import ConnectorConfigEditor, { checkConnectorConfig } from '../../components/ConnectorConfigEditor';
+import { useCancelConfirm } from '../../hooks/useCancelConfirm';
 import { errorMessage } from '../../utils/format';
 
 interface SourceConnectorFormProps {
@@ -36,15 +38,11 @@ interface FormValues {
   remark?: string;
 }
 
-/** 校验连接器配置是否为合法 JSON */
+/** 校验连接器配置：JSON 对象、必填项与数值范围（规则同步自 Debezium 参数） */
 async function validateJson(_rule: unknown, value?: string): Promise<void> {
-  if (!value || !value.trim()) {
-    throw new Error('请填写连接器配置');
-  }
-  try {
-    JSON.parse(value);
-  } catch {
-    throw new Error('连接器配置不是合法的 JSON');
+  const problem = checkConnectorConfig('source', value ?? '');
+  if (problem) {
+    throw new Error(problem);
   }
 }
 
@@ -59,6 +57,7 @@ export default function SourceConnectorForm({
   const [form] = Form.useForm<FormValues>();
   const [submitting, setSubmitting] = useState(false);
   const isEdit = Boolean(record);
+  const { handleCancel, markPristine } = useCancelConfirm(form, onCancel);
 
   /**
    * # 弹窗完全打开后同步表单
@@ -71,6 +70,8 @@ export default function SourceConnectorForm({
     if (!visible) {
       return;
     }
+    // 先清空上一次的取值与 touched，避免「新建 -> 立刻编辑」时残留状态
+    form.resetFields();
     if (record) {
       form.setFieldsValue({
         kafkaConnectId: record.kafkaConnectId,
@@ -79,9 +80,9 @@ export default function SourceConnectorForm({
         connectorConfig: record.connectorConfig,
         remark: record.remark ?? '',
       });
-    } else {
-      form.resetFields();
     }
+    // 回填完成，记录基线；此后值有变化才算脏
+    markPristine();
   };
 
   const handleSubmit = async () => {
@@ -123,7 +124,7 @@ export default function SourceConnectorForm({
       cancelText="取消"
       confirmLoading={submitting}
       onOk={handleSubmit}
-      onCancel={onCancel}
+      onCancel={handleCancel}
       afterOpenChange={syncForm}
       width={860}
     >
@@ -146,8 +147,9 @@ export default function SourceConnectorForm({
           name="name"
           label="名称"
           rules={[
-            { required: true, message: '请填写名称' },
-            { max: 64, message: '名称不能超过 64 个字符' },
+            { required: true, whitespace: true, message: '请填写名称' },
+            // 库列 `name` 是 varchar(50)
+            { max: 50, message: '名称不能超过 50 个字符' },
           ]}
         >
           <Input placeholder="业务侧名称，例如 订单库增量" allowClear />
@@ -158,8 +160,9 @@ export default function SourceConnectorForm({
           label="连接器名称"
           extra="Kafka Connect 上的连接器名称，全局唯一，形如 mysql-orders-source。"
           rules={[
-            { required: true, message: '请填写连接器名称' },
-            { max: 128, message: '连接器名称不能超过 128 个字符' },
+            { required: true, whitespace: true, message: '请填写连接器名称' },
+            // 库列 `connector_name` 是 varchar(50)，且 Kafka Connect 侧全局唯一
+            { max: 50, message: '连接器名称不能超过 50 个字符' },
           ]}
         >
           <Input placeholder="mysql-orders-source" allowClear className="dbz-mono" />
@@ -174,7 +177,7 @@ export default function SourceConnectorForm({
         </Form.Item>
 
         <Form.Item name="remark" label="备注">
-          <Input.TextArea rows={2} maxLength={255} showCount placeholder="选填" />
+          <Input.TextArea rows={2} maxLength={50} showCount placeholder="选填" />
         </Form.Item>
       </Form>
     </Modal>

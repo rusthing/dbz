@@ -17,6 +17,7 @@ import type {
   KafkaSecurityProtocol,
 } from '../../api/types';
 import { dicOptions, kafkaSaslMechanismDic, kafkaSecurityProtocolDic } from '../../dic';
+import { useCancelConfirm } from '../../hooks/useCancelConfirm';
 import { errorMessage } from '../../utils/format';
 
 interface KafkaBrokerFormProps {
@@ -43,6 +44,7 @@ export default function KafkaBrokerForm({ open, record, onCancel, onSuccess }: K
   const [form] = Form.useForm<FormValues>();
   const [submitting, setSubmitting] = useState(false);
   const isEdit = Boolean(record);
+  const { handleCancel, markPristine } = useCancelConfirm(form, onCancel);
   // 协议决定后面三个字段出不出现，用 watch 跟着变
   const protocol = Form.useWatch('securityProtocol', form) ?? record?.securityProtocol ?? 0;
   const needsSasl = protocol === SASL;
@@ -57,6 +59,8 @@ export default function KafkaBrokerForm({ open, record, onCancel, onSuccess }: K
     if (!visible) {
       return;
     }
+    // 先清空上一次的取值与 touched，避免「新建 -> 立刻编辑」时残留状态
+    form.resetFields();
     if (record) {
       form.setFieldsValue({
         name: record.name,
@@ -70,9 +74,10 @@ export default function KafkaBrokerForm({ open, record, onCancel, onSuccess }: K
         remark: record.remark ?? '',
       });
     } else {
-      form.resetFields();
       form.setFieldsValue({ securityProtocol: 0, saslMechanism: 0 });
     }
+    // 回填完成，记录基线；此后值有变化才算脏
+    markPristine();
   };
 
   const handleSubmit = async () => {
@@ -122,7 +127,7 @@ export default function KafkaBrokerForm({ open, record, onCancel, onSuccess }: K
       cancelText="取消"
       confirmLoading={submitting}
       onOk={handleSubmit}
-      onCancel={onCancel}
+      onCancel={handleCancel}
       afterOpenChange={syncForm}
       width={640}
     >
@@ -131,7 +136,7 @@ export default function KafkaBrokerForm({ open, record, onCancel, onSuccess }: K
           name="name"
           label="名称"
           rules={[
-            { required: true, message: '请填写名称' },
+            { required: true, whitespace: true, message: '请填写名称' },
             { max: 50, message: '名称不能超过 50 个字符' },
           ]}
         >
@@ -143,7 +148,7 @@ export default function KafkaBrokerForm({ open, record, onCancel, onSuccess }: K
           label="Broker 地址"
           extra="host:port，多个用逗号分隔；保存时会去空格、去重。信号 topic 的消息就发到这里。"
           rules={[
-            { required: true, message: '请填写 broker 地址' },
+            { required: true, whitespace: true, message: '请填写 broker 地址' },
             { max: 500, message: '地址不能超过 500 个字符' },
           ]}
         >
@@ -183,7 +188,10 @@ export default function KafkaBrokerForm({ open, record, onCancel, onSuccess }: K
             <Form.Item
               name="saslUsername"
               label="认证用户名"
-              rules={[{ required: true, message: '请填写认证用户名' }, { max: 100 }]}
+              rules={[
+                { required: true, whitespace: true, message: '请填写认证用户名' },
+                { max: 100, message: '认证用户名不能超过 100 个字符' },
+              ]}
             >
               <Input placeholder="例如 dbz" allowClear />
             </Form.Item>
@@ -192,7 +200,14 @@ export default function KafkaBrokerForm({ open, record, onCancel, onSuccess }: K
               name="saslPassword"
               label="认证密码"
               extra={isEdit ? '留空表示沿用原密码；服务端不返回密码，看不到原值。' : undefined}
-              rules={isEdit ? [{ max: 200 }] : [{ required: true, message: '请填写认证密码' }, { max: 200 }]}
+              rules={
+                isEdit
+                  ? [{ max: 200, message: '认证密码不能超过 200 个字符' }]
+                  : [
+                      { required: true, whitespace: true, message: '请填写认证密码' },
+                      { max: 200, message: '认证密码不能超过 200 个字符' },
+                    ]
+              }
             >
               <Input.Password placeholder={isEdit ? '留空表示不修改' : '认证密码'} autoComplete="new-password" />
             </Form.Item>
