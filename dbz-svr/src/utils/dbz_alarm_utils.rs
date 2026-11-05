@@ -276,6 +276,7 @@ async fn send(subject: &ConnectorAlarmSubject<'_>) -> Result<(), anyhow::Error> 
         // 文案由事件策略的模板渲染，这里不重复给一份
         title: None,
         content: None,
+        ..Default::default()
     };
 
     let ro = api_client.alert.trigger(&dto, SYS_OPERATOR_USER_ID).await?;
