@@ -4,13 +4,21 @@
 //! 该配置作为 [`crate::config::AppConfig`] 的一个配置段被读取。
 
 use arc_swap::ArcSwapOption;
-use jobx_wkr::{JobxExecutorConfig, JobxJobConfig};
+use jobx_wkr::{JobxExecutorConfig, JobxJobConfig, resolve_job_group_name};
 use robotech::cfg::CfgError;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Duration;
 
 pub const DBZ_CONFIG_KEY: &str = "dbz";
+/// Debezium 计划分组名称的默认值
+///
+/// 连接器健康检查是 dbz 自己的周期计划，注册时统一挂到这个分组下。
+/// 部署可用 `[dbz].group-name` 覆盖，留空时回落到这里。
+pub const DBZ_JOB_GROUP_NAME: &str = "Debezium";
+/// Debezium 计划分组备注
+pub const DBZ_JOB_GROUP_REMARK: &str = "Debezium 连接器健康检查计划";
+
 static DBZ_CONFIG: ArcSwapOption<DbzConfig> = ArcSwapOption::const_empty();
 
 pub fn get_dbz_config() -> Result<Arc<DbzConfig>, CfgError> {
@@ -26,12 +34,38 @@ pub fn set_dbz_config(config: &DbzConfig) {
 /// # Debezium 服务配置
 ///
 /// 对应配置文件中的 `[dbz]` 配置段。
-#[derive(Debug, Default, Serialize, Deserialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct DbzConfig {
+    /// jobx 计划分组名称；未配置或留空时使用 [`DBZ_JOB_GROUP_NAME`]
+    #[serde(default = "dbz_job_group_name_default")]
+    pub group_name: String,
     /// 健康检查配置
     #[serde(default)]
     pub health_check: HealthCheckConfig,
+}
+
+impl Default for DbzConfig {
+    fn default() -> Self {
+        Self {
+            group_name: dbz_job_group_name_default(),
+            health_check: HealthCheckConfig::default(),
+        }
+    }
+}
+
+impl DbzConfig {
+    /// 实际使用的 jobx 计划分组名称
+    ///
+    /// 配置有值时使用配置值；缺失或只有空白时回落到默认常量。注册计划与补齐
+    /// 已存在计划都从这里取，避免两处按不同的名字查重。
+    pub fn job_group_name(&self) -> String {
+        resolve_job_group_name(&self.group_name, DBZ_JOB_GROUP_NAME)
+    }
+}
+
+fn dbz_job_group_name_default() -> String {
+    DBZ_JOB_GROUP_NAME.to_string()
 }
 
 /// # 检查配置
@@ -51,6 +85,7 @@ pub struct HealthCheckConfig {
 
 /// 默认健康检查的任务执行器编码
 const HEALTH_CHECK_EXECUTOR_CODE_DEFAULT: &str = "dbz.health-check";
+
 /// 默认健康检查的计划名称
 const HEALTH_CHECK_JOB_NAME_DEFAULT: &str = "Debezium健康检查";
 /// 默认健康检查的间隔时间
@@ -107,4 +142,44 @@ fn health_check_executor_default() -> JobxExecutorConfig {
 
 fn health_check_executor_code_default() -> String {
     HEALTH_CHECK_EXECUTOR_CODE_DEFAULT.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{DBZ_JOB_GROUP_NAME, DbzConfig};
+
+    /// 配置有值时使用配置值
+    #[test]
+    fn configured_group_name_is_used() {
+        let config: DbzConfig =
+            serde_json::from_value(serde_json::json!({"group-name": "生产 Debezium"})).unwrap();
+        assert_eq!(config.job_group_name(), "生产 Debezium");
+    }
+
+    /// 配置缺失时回落到默认常量
+    #[test]
+    fn missing_group_name_falls_back_to_default() {
+        let config: DbzConfig = serde_json::from_value(serde_json::json!({})).unwrap();
+        assert_eq!(config.job_group_name(), DBZ_JOB_GROUP_NAME);
+    }
+
+    /// 配置为空或只有空白时回落到默认常量
+    #[test]
+    fn blank_group_name_falls_back_to_default() {
+        let config: DbzConfig =
+            serde_json::from_value(serde_json::json!({"group-name": "   "})).unwrap();
+        assert_eq!(config.job_group_name(), DBZ_JOB_GROUP_NAME);
+    }
+
+    /// 配置改动后再次启动仍使用同一个配置值，按名称查重不会重复建组
+    #[test]
+    fn configured_group_name_is_stable_across_restarts() {
+        let first: DbzConfig =
+            serde_json::from_value(serde_json::json!({"group-name": "生产 Debezium"})).unwrap();
+        let second: DbzConfig =
+            serde_json::from_value(serde_json::json!({"group-name": "生产 Debezium"})).unwrap();
+        assert_eq!(first.job_group_name(), second.job_group_name());
+        assert_eq!(first.job_group_name(), "生产 Debezium");
+        assert_ne!(first.job_group_name(), DBZ_JOB_GROUP_NAME);
+    }
 }

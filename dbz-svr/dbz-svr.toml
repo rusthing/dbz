@@ -36,6 +36,10 @@ timeout = "800ms"
 # 消息队列不配：按级别值拼 `msg.publish.alarm.{value}` 去报警中心查。
 #[alarm]
 
+# dbz 自身配置（对应 AppConfig::dbz）。jobx 计划分组名；不写或留空时使用默认值「Debezium」
+#[dbz]
+#group-name = "Debezium"
+
 [micro-svc.consul]
 base-url = "http://consul:8500"
 [micro-svc.consul.registry]
