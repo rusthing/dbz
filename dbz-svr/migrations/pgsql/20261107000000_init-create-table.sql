@@ -230,6 +230,20 @@ COMMENT ON COLUMN public.dbz_source_connector.update_ms IS '更新时间戳';
 COMMENT ON COLUMN public.dbz_source_connector.run_msg IS '检查结论（最近一次检查的失败原因，成功时为空）
 @len 0..=500';
 
+CREATE TABLE public.debezium_signal (
+    id character varying(42) NOT NULL,
+    type character varying(32) NOT NULL,
+    data character varying(2048)
+);
+
+COMMENT ON TABLE public.debezium_signal IS 'Debezium 信号表，用于接收并协调增量快照等控制指令';
+
+COMMENT ON COLUMN public.debezium_signal.id IS '信号唯一标识符，通常为 UUID 或自定义的字符串 ID';
+
+COMMENT ON COLUMN public.debezium_signal.type IS '信号类型，例如 execute-snapshot（触发快照）、log（打印日志）等';
+
+COMMENT ON COLUMN public.debezium_signal.data IS '信号的具体参数，通常为 JSON 格式字符串（如指定要快照的表名、快照类型等）';
+
 ALTER TABLE ONLY public.dbz_kafka_broker
     ADD CONSTRAINT ak_bootstrap_servers_dbz_kafka_broker UNIQUE (bootstrap_servers);
 
@@ -253,6 +267,9 @@ ALTER TABLE ONLY public.dbz_source_connector
 
 ALTER TABLE ONLY public.dbz_kafka_connect
     ADD CONSTRAINT ak_url_dbz_kafka_connect UNIQUE (url);
+
+ALTER TABLE ONLY public.debezium_signal
+    ADD CONSTRAINT debezium_signal_pkey PRIMARY KEY (id);
 
 ALTER TABLE ONLY public.dbz_kafka_broker
     ADD CONSTRAINT pk_dbz_kafka_broker PRIMARY KEY (id);
