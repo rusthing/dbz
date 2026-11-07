@@ -108,7 +108,7 @@ export default function KafkaBrokerForm({ open, record, onCancel, onSuccess }: K
           ...(saslPassword ? { saslPassword } : {}),
         });
       } else {
-        await kafkaBrokerApi.add({ ...payload, enabled: true });
+        await kafkaBrokerApi.add(payload);
       }
       message.success(isEdit ? '修改成功' : '新增成功');
       onSuccess();

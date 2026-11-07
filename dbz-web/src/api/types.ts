@@ -118,7 +118,8 @@ export interface DbzKafkaBrokerAddInput {
   /** 认证密码；修改时留空表示沿用原密码 */
   saslPassword?: string;
   remark?: string;
-  enabled: boolean;
+  /** 状态字段：新增不传由数据库默认值兜底，修改不传保持原值 */
+  enabled?: boolean;
 }
 
 /** # 修改 Kafka 集群的请求体（字段可选，只提交要改的） */
@@ -188,7 +189,8 @@ export interface DbzKafkaConnectAddInput {
   /** 关联的 Kafka 集群（broker），新增必填：信号要投到某个集群上 */
   kafkaBrokerId: Id;
   remark?: string;
-  enabled: boolean;
+  /** 状态字段：新增不传由数据库默认值兜底，修改不传保持原值 */
+  enabled?: boolean;
 }
 
 /**
@@ -208,7 +210,8 @@ export interface DbzSourceConnectorAddInput {
   connectorName: string;
   connectorConfig: string;
   remark?: string;
-  enabled: boolean;
+  /** 状态字段：新增不传由数据库默认值兜底，修改不传保持原值 */
+  enabled?: boolean;
 }
 
 /** # 修改上游连接器的请求体（字段可选，只提交要改的） */

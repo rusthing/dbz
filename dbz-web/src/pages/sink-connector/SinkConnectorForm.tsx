@@ -183,8 +183,8 @@ export default function SinkConnectorForm({
           return;
         }
       } else {
-        // 新增一律先建成启用，之后在列表的启用列里切换（与服务端库默认值一致）
-        await sinkConnectorApi.add({ ...payload, enabled: true });
+        // 新增不提交状态字段，由服务端库默认值启用；之后在列表的启用列里切换
+        await sinkConnectorApi.add(payload);
       }
       message.success(isEdit ? '修改成功' : '新增成功');
       onSuccess();
