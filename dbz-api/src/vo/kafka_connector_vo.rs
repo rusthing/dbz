@@ -76,6 +76,20 @@ pub struct KafkaConnectorVo {
     pub tasks: Vec<KafkaConnectorTaskVo>,
 }
 
+/// # 连接器配置 VO
+///
+/// 对应 `GET /connectors/{name}/config`：值是 Kafka Connect 原样返回的 JSON 对象，
+/// 字段随连接器类型变化（Debezium source 与 sink 的键完全不同），因此不做强类型约束。
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct KafkaConnectorConfigVo {
+    /// 连接器名称（用于确认查询对象）
+    pub connector_name: String,
+    /// 连接器配置（原样透传的 JSON 对象）
+    #[schema(value_type = Object)]
+    pub config: serde_json::Value,
+}
+
 /// # 连接器任务 VO
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]

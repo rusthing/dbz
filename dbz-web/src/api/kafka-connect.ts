@@ -4,9 +4,10 @@
  * 对应 `#[router(crud)]` 的 `DbzKafkaConnectRouter`，路径前缀 `/dbz/kafka-connect`。
  */
 
-import { apiDelete, apiGetPage, apiGetList, apiPost, apiPut, type QueryParams } from './client';
+import { apiDelete, apiGet, apiGetPage, apiGetList, apiPost, apiPut, type QueryParams } from './client';
 import type {
   DbzKafkaConnectAddInput,
+  DbzKafkaConnectHealthVo,
   DbzKafkaConnectModifyInput,
   DbzKafkaConnectVo,
   Id,
@@ -30,4 +31,12 @@ export const kafkaConnectApi = {
 
   /** 删除（名下仍有连接器时服务端会拒绝） */
   remove: (id: Id): Promise<DbzKafkaConnectVo> => apiDelete(`${BASE}/${id}`),
+
+  /**
+   * 探测 Connect 自身健康状态（只读，不回写库内 run_status）
+   *
+   * 连不上也是 200，用 `reachable` 与 `message` 表达结论；版本、worker 数来自集群。
+   */
+  health: (kafkaConnectId: Id): Promise<DbzKafkaConnectHealthVo> =>
+    apiGet(BASE + '/health', { kafkaConnectId }),
 };

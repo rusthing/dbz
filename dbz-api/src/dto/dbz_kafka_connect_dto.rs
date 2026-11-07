@@ -6,6 +6,19 @@
 
 use crate::dic::KafkaConnectStatus;
 use robotech::macros::crud_dto;
+use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
+
+/// # Kafka Connect 健康检查 DTO
+///
+/// 只读接口：探测目标 Connect 是否可达，并带回版本、worker 等运行信息，
+/// 不回写库内状态（回写由定时健康检查负责）。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema, IntoParams)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DbzKafkaConnectHealthDto {
+    /// Kafka Connect ID
+    pub kafka_connect_id: U64,
+}
 
 #[crud_dto]
 pub struct DbzKafkaConnectDto {

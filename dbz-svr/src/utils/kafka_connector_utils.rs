@@ -7,9 +7,11 @@
 //! 只发 HTTP。
 //!
 //! 涉及的 Kafka Connect 接口：
+//! - `GET  /`                            版本、commit 与 Kafka 集群 ID
 //! - `GET  /connectors`                 连通性探测
 //! - `GET  /connectors?expand=...`      查看所有连接器（含任务状态）
 //! - `GET  /connector-plugins`          查看已安装的连接器插件
+//! - `GET  /connectors/{name}/config`   查看连接器配置
 //! - `PUT  /connectors/{name}/config`   注册或更新连接器
 //! - `DELETE /connectors/{name}`        删除连接器
 //! - `GET  /connectors/{name}/status`   查询连接器运行状态
@@ -25,7 +27,7 @@ use crate::vo::{KafkaConnectorPluginVo, KafkaConnectorTaskVo, KafkaConnectorVo};
 use anyhow::anyhow;
 use serde::Deserialize;
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::LazyLock;
 use tracing::{info, warn};
 
@@ -461,6 +463,122 @@ impl KafkaConnectorUtils {
         Ok(connectors)
     }
 
+    /// # 查看连接器配置
+    ///
+    /// 调用 `GET /connectors/{name}/config`，返回集群上该连接器的实际配置。
+    ///
+    /// 与库内保存的配置不是同一份：有人绕过 dbz 直接在集群上改过配置，两边就会不同。
+    ///
+    /// ## 参数
+    /// * `base_url` - Kafka Connect 地址
+    /// * `connector_name` - 连接器名称
+    ///
+    /// ## 返回值
+    /// * `Ok(Value)` - 配置 JSON 对象
+    /// * `Err(KafkaConnectorError)` - 连接器不存在（`NotFound`）或请求失败
+    pub async fn fetch_connector_config(
+        base_url: &str,
+        connector_name: &str,
+    ) -> Result<Value, KafkaConnectorError> {
+        let url = format!(
+            "{}/connectors/{}/config",
+            base_url.trim_end_matches('/'),
+            connector_name
+        );
+        let resp = HTTP_CLIENT.get(&url).send().await.map_err(|e| {
+            KafkaConnectorError::Request(format!("查询连接器<{connector_name}>配置失败: {e}"))
+        })?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(KafkaConnectorError::NotFound);
+        }
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(KafkaConnectorError::Request(format!(
+                "查询连接器<{connector_name}>配置失败: {body}"
+            )));
+        }
+        let value: Value = resp.json().await.map_err(|e| {
+            KafkaConnectorError::Parse(format!("解析连接器<{connector_name}>配置响应失败: {e}"))
+        })?;
+        if !value.is_object() {
+            return Err(KafkaConnectorError::Parse(format!(
+                "连接器<{connector_name}>配置响应不是 JSON 对象"
+            )));
+        }
+        Ok(value)
+    }
+
+    /// # 探测 Kafka Connect 自身状态
+    ///
+    /// 以 `GET /connectors` 判定可达性（能列出连接器才算通），随后尽力读取根路径
+    /// `GET /` 的版本信息。根路径失败**不算不可达**：有些反向代理会拦根路径，但
+    /// 连接器接口仍可用，这时只把版本相关字段留空。
+    ///
+    /// worker id 从连接器与其任务上收集：任务可能被分配到别的 worker，只看连接器
+    /// 会漏掉一部分实例。
+    ///
+    /// ## 参数
+    /// * `base_url` - Kafka Connect 地址
+    ///
+    /// ## 返回值
+    /// * `Ok(KafkaConnectProbe)` - 可达性信息（连接器数量、worker、版本等）
+    /// * `Err(KafkaConnectorError)` - Connect 不可达或响应解析失败
+    pub async fn probe_connect(base_url: &str) -> Result<KafkaConnectProbe, KafkaConnectorError> {
+        let connectors = Self::list_connectors(base_url).await?;
+        let workers: BTreeSet<String> = connectors
+            .iter()
+            .flat_map(|connector| {
+                connector.worker_id.clone().into_iter().chain(
+                    connector
+                        .tasks
+                        .iter()
+                        .filter_map(|task| task.worker_id.clone()),
+                )
+            })
+            .collect();
+
+        let root = Self::fetch_connect_root(base_url).await;
+        if let Err(e) = &root {
+            warn!(
+                "读取 Kafka Connect<{}>根路径失败（不影响可达性）: {e}",
+                base_url
+            );
+        }
+        let root = root.unwrap_or_default();
+
+        Ok(KafkaConnectProbe {
+            version: root.version,
+            commit: root.commit,
+            kafka_cluster_id: root.kafka_cluster_id,
+            connector_count: connectors.len() as u32,
+            worker_ids: workers.into_iter().collect(),
+        })
+    }
+
+    /// # 读取 Connect 根路径信息
+    ///
+    /// 调用 `GET /`，返回版本、commit 与 Kafka 集群 ID。不同版本的字段名一致，
+    /// 但值都可能缺失，因此全部按可选处理。
+    async fn fetch_connect_root(
+        base_url: &str,
+    ) -> Result<ConnectRootResponse, KafkaConnectorError> {
+        let url = base_url.trim_end_matches('/').to_string() + "/";
+        let resp = HTTP_CLIENT
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| KafkaConnectorError::Request(format!("读取根路径失败: {e}")))?;
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(KafkaConnectorError::Request(format!(
+                "读取根路径失败: {body}"
+            )));
+        }
+        resp.json()
+            .await
+            .map_err(|e| KafkaConnectorError::Parse(format!("解析根路径响应失败: {e}")))
+    }
+
     /// # 重启连接器
     ///
     /// 调用 `POST /connectors/{name}/restart`。Kafka Connect 的重启是**异步**的，
@@ -698,6 +816,37 @@ impl KafkaConnectorUtils {
         }
         Ok(())
     }
+}
+
+/// # 一次 Connect 健康探测的结论
+///
+/// 可达性是前提：能列出连接器才算通。版本等信息来自根路径，取不到不影响可达性。
+#[derive(Debug, Clone, Default)]
+pub struct KafkaConnectProbe {
+    /// Connect 版本
+    pub version: Option<String>,
+    /// Connect 的 commit 号
+    pub commit: Option<String>,
+    /// Connect 所属 Kafka 集群 ID
+    pub kafka_cluster_id: Option<String>,
+    /// 集群上的连接器数量
+    pub connector_count: u32,
+    /// worker id（去重后）
+    pub worker_ids: Vec<String>,
+}
+
+/// # Kafka Connect 根路径响应
+#[derive(Debug, Default, Deserialize)]
+struct ConnectRootResponse {
+    /// Connect 版本
+    #[serde(default)]
+    version: Option<String>,
+    /// Connect 的 commit 号
+    #[serde(default)]
+    commit: Option<String>,
+    /// Connect 所属 Kafka 集群 ID
+    #[serde(default)]
+    kafka_cluster_id: Option<String>,
 }
 
 /// # Kafka Connect 连接器状态响应

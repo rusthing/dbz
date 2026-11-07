@@ -43,6 +43,9 @@ pub struct DbzConfig {
     /// 健康检查配置
     #[serde(default)]
     pub health_check: HealthCheckConfig,
+    /// 死信与重试队列配置
+    #[serde(default)]
+    pub dead_letter: DeadLetterConfig,
 }
 
 impl Default for DbzConfig {
@@ -50,6 +53,7 @@ impl Default for DbzConfig {
         Self {
             group_name: dbz_job_group_name_default(),
             health_check: HealthCheckConfig::default(),
+            dead_letter: DeadLetterConfig::default(),
         }
     }
 }
@@ -66,6 +70,78 @@ impl DbzConfig {
 
 fn dbz_job_group_name_default() -> String {
     DBZ_JOB_GROUP_NAME.to_string()
+}
+
+/// # 死信与重试配置
+///
+/// 对应 `[dbz.dead-letter]`。默认值按「保留 30 天、单连接器最多 5 万条」设定；
+/// 重试间隔 1s → 5s → 30s → 2m → 10m，超过 10 次转死信。
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct DeadLetterConfig {
+    /// 是否启用后台重试 worker（关掉后只写死信，不自动重投）
+    #[serde(default = "dead_letter_enabled_default")]
+    pub enabled: bool,
+    /// 死信保留天数
+    #[serde(default = "dead_letter_retention_days_default")]
+    pub retention_days: u32,
+    /// 单个连接器的死信条数上限，超出按 `last_seen_ms` 淘汰最旧的
+    #[serde(default = "dead_letter_max_per_connector_default")]
+    pub max_per_connector: u32,
+    /// 传输类失败的最大重试次数，超过转死信
+    #[serde(default = "dead_letter_max_attempts_default")]
+    pub max_attempts: u32,
+    /// worker 轮询间隔（毫秒）
+    #[serde(default = "dead_letter_worker_interval_ms_default")]
+    pub worker_interval_ms: u64,
+    /// 每轮最多处理的重试条数
+    #[serde(default = "dead_letter_batch_size_default")]
+    pub batch_size: u64,
+    /// 单条重投的 HTTP 超时（毫秒）
+    #[serde(default = "dead_letter_request_timeout_ms_default")]
+    pub request_timeout_ms: u64,
+}
+
+impl Default for DeadLetterConfig {
+    fn default() -> Self {
+        Self {
+            enabled: dead_letter_enabled_default(),
+            retention_days: dead_letter_retention_days_default(),
+            max_per_connector: dead_letter_max_per_connector_default(),
+            max_attempts: dead_letter_max_attempts_default(),
+            worker_interval_ms: dead_letter_worker_interval_ms_default(),
+            batch_size: dead_letter_batch_size_default(),
+            request_timeout_ms: dead_letter_request_timeout_ms_default(),
+        }
+    }
+}
+
+fn dead_letter_enabled_default() -> bool {
+    true
+}
+
+fn dead_letter_retention_days_default() -> u32 {
+    30
+}
+
+fn dead_letter_max_per_connector_default() -> u32 {
+    50_000
+}
+
+fn dead_letter_max_attempts_default() -> u32 {
+    10
+}
+
+fn dead_letter_worker_interval_ms_default() -> u64 {
+    1_000
+}
+
+fn dead_letter_batch_size_default() -> u64 {
+    50
+}
+
+fn dead_letter_request_timeout_ms_default() -> u64 {
+    15_000
 }
 
 /// # 检查配置

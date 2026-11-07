@@ -15,19 +15,19 @@
 //! 各自回写运行状态、各自告警。
 
 use crate::dic::{ConnectorRunStatus, KafkaConnectStatus, KafkaConnectorStatus};
-use crate::dto::{DbzSinkConnectorQueryDto, DbzSourceConnectorQueryDto};
+use crate::dto::{DbzKafkaConnectHealthDto, DbzSinkConnectorQueryDto, DbzSourceConnectorQueryDto};
 use crate::svc::{DbzKafkaBrokerSvc, DbzSinkConnectorSvc, DbzSourceConnectorSvc};
 use crate::utils::{
     ConnectorHealth, DbzAlarmUtils, DbzSignalUtils, KafkaConnectorError, KafkaConnectorUtils,
     RUN_MSG_MAX, normalize_url, one_line,
 };
-use crate::vo::{DbzSinkConnectorVo, DbzSourceConnectorVo};
+use crate::vo::{DbzKafkaConnectHealthVo, DbzSinkConnectorVo, DbzSourceConnectorVo};
 use anyhow::anyhow;
 use robotech::db::get_db_conn;
 use robotech::macros::svc;
 use sea_orm::DatabaseConnection;
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{info, warn};
 use wheel_rs::time_utils::now_ms;
 
@@ -260,6 +260,95 @@ impl DbzKafkaConnectSvc {
             return Err(anyhow!("Kafka Connect<{}>未配置地址", one.name));
         }
         Ok(url)
+    }
+
+    /// # 探测 Kafka Connect 自身健康状态
+    ///
+    /// 只读接口，**不回写** `run_status`：回写由定时健康检查负责，GET 不应产生副作用。
+    ///
+    /// 可达性以 `GET /connectors` 为准，版本、commit、Kafka cluster id 来自根路径；
+    /// 根路径取不到时只留空，不影响可达性结论。
+    ///
+    /// 与 broker 的 [`check`](DbzKafkaBrokerSvc::check) 同一套口径：连不上属于业务
+    /// 结论，返回 200 + `reachable=false` 与失败原因；只有记录不存在或地址为空才报错。
+    ///
+    /// ## 参数
+    /// * `dto` - Kafka Connect ID
+    ///
+    /// ## 返回值
+    /// * `Ok(Ro<DbzKafkaConnectHealthVo>)` - 可达性、版本、worker 数、耗时等
+    /// * `Err(anyhow::Error)` - 记录不存在或未配置地址
+    #[log_call]
+    pub async fn health(
+        dto: DbzKafkaConnectHealthDto,
+    ) -> Result<Ro<DbzKafkaConnectHealthVo>, anyhow::Error> {
+        let one = Self::get_by_id::<DatabaseConnection>(dto.kafka_connect_id, None)
+            .await?
+            .extra
+            .ok_or_else(|| anyhow!("Kafka Connect<{}>不存在", dto.kafka_connect_id.value()))?;
+
+        if !one.enabled {
+            let result = DbzKafkaConnectHealthVo {
+                reachable: false,
+                elapsed_ms: 0,
+                message: Some("记录已禁用，未发起健康检查".to_string()),
+                ..Default::default()
+            };
+            return Ok(Ro::success("记录已禁用，未发起健康检查".to_string()).extra(Some(result)));
+        }
+
+        let url = normalize_url(&one.url);
+        if url.is_empty() {
+            return Err(anyhow!("Kafka Connect<{}>未配置地址", one.name));
+        }
+
+        let started = Instant::now();
+        let result = match KafkaConnectorUtils::probe_connect(&url).await {
+            Ok(probe) => {
+                info!(
+                    "Kafka Connect<{}>(id={})可达，版本 {:?}，{} 个连接器，{} 个 worker",
+                    one.name,
+                    one.id.value(),
+                    probe.version,
+                    probe.connector_count,
+                    probe.worker_ids.len()
+                );
+                DbzKafkaConnectHealthVo {
+                    reachable: true,
+                    version: probe.version,
+                    commit: probe.commit,
+                    kafka_cluster_id: probe.kafka_cluster_id,
+                    connector_count: probe.connector_count,
+                    worker_count: probe.worker_ids.len() as u32,
+                    worker_ids: probe.worker_ids,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                    message: None,
+                }
+            }
+            Err(e) => {
+                warn!(
+                    "Kafka Connect<{}>(id={})健康检查失败: {e}",
+                    one.name,
+                    one.id.value()
+                );
+                DbzKafkaConnectHealthVo {
+                    reachable: false,
+                    elapsed_ms: started.elapsed().as_millis() as u64,
+                    message: Some(format!("{e:#}")),
+                    ..Default::default()
+                }
+            }
+        };
+
+        let msg = if result.reachable {
+            format!(
+                "连接正常，{} 个连接器，{} 个 worker",
+                result.connector_count, result.worker_count
+            )
+        } else {
+            "连接失败".to_string()
+        };
+        Ok(Ro::success(msg).extra(Some(result)))
     }
 
     /// # 定时检查所有 Kafka Connect 与连接器

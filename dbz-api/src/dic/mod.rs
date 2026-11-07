@@ -1,4 +1,7 @@
 mod connector_run_status;
+mod dead_letter_connector_type;
+mod dead_letter_failure_category;
+mod dead_letter_status;
 mod kafka_broker_status;
 mod kafka_connect_status;
 mod kafka_connector_status;
@@ -6,6 +9,9 @@ mod kafka_sasl_mechanism;
 mod kafka_security_protocol;
 
 pub use connector_run_status::*;
+pub use dead_letter_connector_type::*;
+pub use dead_letter_failure_category::*;
+pub use dead_letter_status::*;
 pub use kafka_broker_status::*;
 pub use kafka_connect_status::*;
 pub use kafka_connector_status::*;

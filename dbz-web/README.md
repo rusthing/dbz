@@ -196,13 +196,16 @@ src/
 │   ├── kafka-connect.ts # /dbz/kafka-connect
 │   ├── source-connector.ts
 │   ├── sink-connector.ts
-│   └── kafka-connector.ts  # /dbz/kafka-connector（远端运维）
+│   ├── kafka-connector.ts  # /dbz/kafka-connector（远端运维）
+│   └── dead-letter.ts      # /dbz/dead-letter（死信查询、重投、废弃）
 ├── components/          # StatusTag / EnabledSwitch / JsonEditor / ConnectorConfigEditor
 ├── dic/                 # 状态枚举的整数判别式 → 文案/颜色
 ├── hooks/               # usePagedQuery / useAsync / useOptions / useCancelConfirm（脏表单确认）
 ├── layouts/AppLayout.tsx
 ├── pages/
 │   ├── Dashboard.tsx            # 总览 + 异常清单
+│   ├── control-plane/           # 控制面视图：broker → Connect → 连接器的实时卡片树
+│   ├── dead-letter/             # 死信列表 + 报文详情 + 重投/废弃
 │   ├── kafka-broker/            # 消息集群 CRUD + 连通性检测
 │   ├── kafka-connect/           # 集群 CRUD
 │   ├── source-connector/        # 上游 CRUD + 重新同步
@@ -266,6 +269,9 @@ scripts/smoke.mjs        # 冒烟测试
 | `KafkaConnectStatus` | 集群自身是否可达 | 是 |
 | `ConnectorRunStatus` | 检查任务对连接器得出的结论 | 是 |
 | `KafkaConnectorStatus` | 远端连接器此刻的实时状态 | 否（来自 Kafka Connect REST） |
+| `DeadLetterStatus` | 死信处理状态：待处理 / 已重投 / 已废弃 / 已人工处理 | 是 |
+| `DeadLetterFailureCategory` | 死信失败分类：确定性 / 传输类 / 响应异常 | 是 |
+| `DeadLetterConnectorType` | 死信所属连接器方向：上游 / 下游 | 是 |
 
 改后端枚举时必须同步 `src/dic/index.ts`，否则页面显示「未知状态」。
 
@@ -341,11 +347,109 @@ scripts/smoke.mjs        # 冒烟测试
 | 页面 | 用到的接口 |
 | --- | --- |
 | 总览 | 四张表的 `/list`（含 Kafka 集群），在浏览器里算统计与异常；异常清单里消息集群排在集群之前一起列 |
+| 控制面视图 | 四张表的 `/list` + 每台 Connect 的 `GET /dbz/kafka-connector/list`（实时连接器）、`GET /dbz/kafka-connect/health`（Connect 自身健康）、`GET /dbz/kafka-connector/config`（抽屉里的集群侧配置）；`POST /restart`；上游/下游 `PUT`（启用/停用）；`POST /kafka-broker/check` |
 | Kafka 集群 | `/dbz/kafka-broker` 的 `/page`、`POST`、`PUT`、`DELETE /{id}` + `POST /check` |
 | Kafka Connect | `/dbz/kafka-connect` 的 `/page`、`POST`、`PUT`、`DELETE /{id}` |
 | 上游连接器 | `/dbz/source-connector` 同上 + `GET /snapshot/preview`、`POST /snapshot` |
 | 下游连接器 | `/dbz/sink-connector` 同上 |
 | 远端连接器 | `GET /dbz/kafka-connector/plugins`、`GET /list`、`POST /restart`、`POST /task/restart`、`PUT /stop`、`PUT /resume`、`DELETE /offsets`、`DELETE /dbz/kafka-connector` |
+| 死信 | `GET /dbz/dead-letter/page`（连接器/状态/topic/时间筛选）、`GET /pending-count`（卡片角标）、`POST /retry`、`POST /discard`；`POST /report` 只给 magic 脚本调用 |
+
+## 控制面视图
+
+`/control-plane` 把四张表按 **Kafka 集群 → Connect → 上游/下游连接器** 铺成卡片树，原有四个
+CRUD 页保留为「明细维护」入口，从每个节点的「明细」按钮跳过去。
+
+- **状态口径**：连接器状态以每台 Connect 的 `GET /dbz/kafka-connector/list` 实时结果为主，
+  库内 `run_status` 只作为「最近一次检查」的对照；两者不一致时节点标黄，顶部汇总。
+- **Connect 自身健康**：`GET /dbz/kafka-connect/health` 返回可达性、版本、commit、
+  Kafka 集群 ID、worker 数与连接器数；卡片上显示 `v3.x · N worker · M 连接器`，
+  顶部汇总「x/y 可达」，不可达时带上原因。
+- **不一致判定**：只比「是否在运行中」这一层。启用但集群上没部署、禁用却还在跑、
+  库内运行中而实时不是（或相反），都会提示；实时查询失败时不参与比对，避免误报。
+- **图上动作**：详情抽屉（集群实时配置、实时任务、异常原因）、启用/停用、重启；未纳管的
+  连接器只列名称并跳转「远端连接器」。
+- **配置来源**：详情抽屉优先展示 `GET /connectors/{name}/config` 的集群侧配置；
+  连接器不存在（404）或 Connect 不可达（500）时回落到库内 `connector_config`，并说明原因。
+- **刷新**：刷新按钮会重新拉四张表并对每台 Connect 实时采集 `list` 与 `health`；单台 Connect
+  15 秒不返回只影响它自己的实时状态，不会拖住整页。
+- **死信角标**：同一轮还会拉 `GET /dbz/dead-letter/pending-count`，连接器卡片显示待处理条数，
+  点击跳到 `/dead-letter?connectorType=…&connectorId=…`；顶部汇总待处理总数。
+- **Kafka 集群**没有实时探测接口，节点状态仍是库内结论，可点「检测」调用
+  `POST /dbz/kafka-broker/check` 当场刷新。
+
+后端缺口（本次未新增接口，也没有在前端伪造数据）：
+
+| 缺口 | 现状与影响 |
+| --- | --- |
+| 连接器指标 | 任务 lag、吞吐等 metrics 未暴露，图上只展示状态与任务清点 |
+| 未纳管连接器的图内操作 | 图上仅列出名称并跳远端页；要先在上游/下游建记录才能启用/停用 |
+
+## 死信与重试
+
+死信**不依赖 Kafka Connect 的 DLQ**。反编译 `http-sink-connector-3.5.46.jar` 可见：`HttpSinkTask.put`
+只把 `IOException` / `InterruptedException` 当成可重试异常；对端返回 4xx/5xx 时只记日志并照常
+提交偏移量。而 magic 脚本的业务失败返回 HTTP 200 + `{"result":-2}`，Connect 视为成功。偏移一旦
+提交，`errors.tolerance` 与 Connect DLQ 都兜不住，记录就永久丢了。
+
+因此队列和终态都放在 dbz 侧（`dbz_dead_letter` / `dbz_dead_letter_retry`）：
+
+- **确定性失败**（参数校验、唯一键冲突、外键缺失）：magic 脚本直接调 `POST /dbz/dead-letter/report`
+  写死信，不重试。
+- **传输类失败**（连接失败、5xx、超时）：先写重试队列表，由 dbz 后台 worker 按
+  `1s → 5s → 30s → 2m → 10m` 退避重投，超过 10 次转死信。
+- **响应异常**（`result` 非成功且无法归类、响应无法解析）：按传输类处理，分类记 `Unknown`。
+
+死信按 `(connectorType, connectorId, topic, recordKey)` 幂等：重复失败只累加次数与末次时间，
+不新增行。重投是把原报文重新 POST 到下游连接器 `connector_config.url`（magic sync 接口），
+HTTP 2xx 且 `result=1` 才转「已重投」；废弃只改状态，不删报文。
+
+保留策略在 `[dbz.dead-letter]`（`dbz-svr.toml`）里配置，默认值：
+
+| 配置项 | 默认值 | 作用 |
+| --- | --- | --- |
+| `enabled` | `true` | 后台重试 worker 开关 |
+| `retention-days` | `30` | 死信与重试队列保留天数，按 `last_seen_ms` 清理 |
+| `max-per-connector` | `50000` | 单连接器上限，超出按 `last_seen_ms` 淘汰最旧的 |
+| `max-attempts` | `10` | 传输类失败重试上限，超过转死信 |
+| `worker-interval-ms` | `1000` | worker 轮询间隔 |
+| `batch-size` | `50` | 每轮最多处理条数 |
+| `request-timeout-ms` | `15000` | 单条重投 HTTP 超时 |
+
+`dtw同步到dtwrs.dtw_locator_bind` 原先在 magic 侧自建的 `dtwrs_bind_retry` /
+`dtwrs_bind_dead_letter` 与 dbz 这套是**同一个设计的两代实现**，不并存：脚本切到 dbz 上报接口后，
+旧表停止写入，只作为存量数据的一次性迁移来源。脚本源码在 magic 库里、不在本仓，切换动作需在
+magic 侧发布，调用约定见下节。
+
+### magic 脚本调用约定
+
+脚本的失败分支按 `failureCategory` 分流，统一调用：
+
+```http
+POST /dbz/dead-letter/report
+Content-Type: application/json
+
+{
+  "connectorType": 2,
+  "connectorId": 301,
+  "topic": "dbz.orders",
+  "recordKey": "1001",
+  "payload": { "id": 1001, "order_no": "SO-1" },
+  "failureCategory": 1,
+  "failureDetail": "duplicate key value violates unique constraint \"uk_order_no\"",
+  "retryCount": 0
+}
+```
+
+| `failureCategory` | 脚本何时使用 | 服务端动作 |
+| --- | --- | --- |
+| `1` 确定性失败 | 参数校验不通过、唯一键冲突、外键缺失 | 直接写 `dbz_dead_letter`，不重试 |
+| `2` 传输类失败 | 连接失败、超时、对端 5xx | 写 `dbz_dead_letter_retry`，worker 退避重投 |
+| `3` 响应异常 | `result` 非成功且无法归类、响应无法解析 | 同传输类，保留分类 |
+
+`recordKey` 是幂等键的一部分；没有主键时传空串（同一 topic 下无主键的记录会被合并为一条，
+脚本应尽量从报文里取稳定主键）。`connectorType`：上游 `1`、下游 `2`。上游连接器没有可重投
+的 HTTP 地址，传输类失败也会直接进死信。
 
 ## 状态悬停：运行详情
 
@@ -397,7 +501,8 @@ scripts/smoke.mjs        # 冒烟测试
 
 ## 已知限制
 
-- **健康检查周期**：页面上的状态是「上一轮检查的结论」，不是实时探测结果；要看实时状态请用「远端连接器」。
+- **健康检查周期**：列表页的状态是「上一轮检查的结论」，不是实时探测结果；「控制面视图」和「远端连接器」
+  会实时读取 Kafka Connect，但要把库内 `run_status` 追平仍需等 jobx 回写（Kafka 集群可在控制面视图手动检测）。
 - **没有登录鉴权**：`X-User-Id` 由构建期变量写死（默认 `1`），审计字段在接入统一登录前都记成同一个人，
   只适用于内网/开发环境。
 - **子路径靠变量切**：`VITE_PUBLIC_BASE` 一次驱动 `base` / favicon / `basename` 三处；变量和网关前缀不一致就会出现

@@ -12,11 +12,12 @@ import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useCallback, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { kafkaConnectApi } from '../../api/kafka-connect';
-import type { DbzKafkaConnectVo, KafkaConnectStatus } from '../../api/types';
+import type { DbzKafkaConnectVo, Id, KafkaConnectStatus } from '../../api/types';
 import EnabledSwitch from '../../components/EnabledSwitch';
 import StatusTag from '../../components/StatusTag';
 import type { StatusDetail } from '../../components/StatusTag';
 import { dicOptions, kafkaConnectStatusDic } from '../../dic';
+import { useBrokerOptions } from '../../hooks/useOptions';
 import { usePagedQuery } from '../../hooks/usePagedQuery';
 import { errorMessage, formatMs, orDash, shortId } from '../../utils/format';
 import KafkaConnectForm from './KafkaConnectForm';
@@ -34,11 +35,12 @@ interface FilterDraft {
  * 集群的「连接失败」多半是地址写错、端口不通或 REST 被挡，探测到的具体错误由服务端
  * 写进 `run_msg`；悬停直接给出来，省一次「去服务器上看日志」。
  */
-function statusDetailOf(record: DbzKafkaConnectVo): StatusDetail {
+function statusDetailOf(record: DbzKafkaConnectVo, brokerName: string): StatusDetail {
   return {
     summary: `运行详情 · ${record.name}`,
     rows: [
       { label: '地址', value: <span className="dbz-mono">{orDash(record.url)}</span> },
+      { label: 'Kafka 集群', value: brokerName },
       { label: '结论时间', value: formatMs(record.updateMs) },
       ...(record.runStatus === 0
         ? [{ label: '说明', value: '刚新增或改过地址，等下一轮检查给结论' }]
@@ -51,6 +53,7 @@ function statusDetailOf(record: DbzKafkaConnectVo): StatusDetail {
 export default function KafkaConnectPage() {
   const { message, modal } = AntdApp.useApp();
   const navigate = useNavigate();
+  const broker = useBrokerOptions();
   const [draft, setDraft] = useState<FilterDraft>({});
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<DbzKafkaConnectVo | null>(null);
@@ -93,7 +96,7 @@ export default function KafkaConnectPage() {
     {
       title: '名称',
       dataIndex: 'name',
-      width: 170,
+      width: 160,
       render: (name: string, record) => (
         <Space direction="vertical" size={0}>
           <span className="dbz-ellipsis" style={{ fontWeight: 500 }} title={orDash(name)}>
@@ -110,7 +113,7 @@ export default function KafkaConnectPage() {
     {
       title: '地址',
       dataIndex: 'url',
-      width: 230,
+      width: 210,
       ellipsis: true,
       render: (url: string) => (
         <Tooltip title={url}>
@@ -119,14 +122,33 @@ export default function KafkaConnectPage() {
       ),
     },
     {
+      title: 'Kafka 集群',
+      dataIndex: 'kafkaBrokerId',
+      width: 140,
+      ellipsis: true,
+      render: (id: Id) => {
+        const name = broker.byId.get(id)?.name;
+        return name ? (
+          <span className="dbz-ellipsis" title={name}>
+            {name}
+          </span>
+        ) : (
+          <span className="dbz-mono">#{shortId(id)}</span>
+        );
+      },
+    },
+    {
       title: '状态',
       dataIndex: 'runStatus',
-      width: 110,
+      width: 100,
       render: (value: KafkaConnectStatus, record) => (
         <StatusTag
           dic={kafkaConnectStatusDic}
           value={value}
-          detail={statusDetailOf(record)}
+          detail={statusDetailOf(
+            record,
+            broker.byId.get(record.kafkaBrokerId)?.name ?? `#${shortId(record.kafkaBrokerId)}`,
+          )}
         />
       ),
     },
@@ -159,14 +181,14 @@ export default function KafkaConnectPage() {
     {
       title: '更新时间',
       dataIndex: 'updateMs',
-      width: 160,
+      width: 150,
       className: 'dbz-num',
       render: (ms: string) => formatMs(ms),
     },
     {
       title: '操作',
       key: 'actions',
-      width: 190,
+      width: 170,
       fixed: 'right',
       render: (_, record) => (
         <Space size={4}>
@@ -245,7 +267,13 @@ export default function KafkaConnectPage() {
 
         <span className="dbz-toolbar-spacer" />
 
-        <Button icon={<ReloadOutlined />} onClick={reload}>
+        <Button
+          icon={<ReloadOutlined />}
+          onClick={() => {
+            reload();
+            broker.reload();
+          }}
+        >
           刷新
         </Button>
         <Button

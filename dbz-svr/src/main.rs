@@ -56,5 +56,11 @@ async fn setup(
 
     setup_dbz_config(app_config.dbz.clone(), changed).await?;
 
+    // 死信重试 worker：只在首次加载时 spawn，循环内每轮重读配置，热更新开关/间隔
+    // 即时生效。重复 spawn 会让同一条重试行被多次抢占，因此不跟随 rebootstrap。
+    if changed.is_none() {
+        tokio::spawn(dbz_svr::svc::DbzDeadLetterSvc::run_retry_worker());
+    }
+
     Ok(())
 }

@@ -260,6 +260,188 @@ body {
   word-break: break-word;
 }
 
+/* 控制面视图：Kafka 集群卡片 → Connect 卡片 → 连接器行的层级布局 */
+.dbz-topology-broker {
+  margin-bottom: 16px;
+  border-radius: 10px;
+}
+
+.dbz-topology-broker-head,
+.dbz-topology-connect-head {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* antd 默认给卡片标题加了 ellipsis，这里要把状态行完整露出来 */
+.dbz-topology-broker .ant-card-head-title,
+.dbz-topology-connect .ant-card-head-title {
+  overflow: visible;
+  white-space: normal;
+  text-overflow: clip;
+  padding: 0;
+}
+
+.dbz-topology-connect .ant-card-head {
+  padding: 10px 12px;
+  min-height: 0;
+}
+
+.dbz-topology-connect .ant-card-body {
+  padding: 12px;
+}
+
+.dbz-topology-title-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.dbz-topology-name {
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.dbz-topology-meta {
+  color: rgba(0, 0, 0, 0.45);
+  word-break: break-all;
+}
+
+.dbz-topology-count,
+.dbz-topology-db {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.dbz-topology-db {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.dbz-topology-legend {
+  margin-bottom: 16px;
+}
+
+.dbz-topology-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+  gap: 12px;
+}
+
+.dbz-topology-connect {
+  border-radius: 8px;
+  background: #fff;
+}
+
+.dbz-topology-issue {
+  margin-bottom: 8px;
+  font-size: 12px;
+  color: #cf1322;
+  word-break: break-all;
+}
+
+.dbz-topology-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.dbz-topology-group-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.dbz-topology-empty {
+  padding: 2px 0;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.dbz-topology-connector {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #eef0f4;
+  border-radius: 8px;
+  background: #fafbfd;
+}
+
+.dbz-topology-connector-main {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.dbz-topology-connector-line {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.dbz-topology-connector-name {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+.dbz-topology-topic {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.dbz-topology-topic-value {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dbz-topology-connector-alias {
+  max-width: 100%;
+  overflow: hidden;
+  color: rgba(0, 0, 0, 0.45);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dbz-topology-connector-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+  flex-wrap: wrap;
+}
+
+/* 库内与实时不一致的提示色沿用 antd warning，避免引入新色板 */
+.dbz-topology-mismatch {
+  color: #d48806;
+  cursor: help;
+}
+
+.dbz-topology-unmanaged {
+  margin-top: 10px;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+  word-break: break-all;
+}
+
+.dbz-topology-unmanaged .ant-btn-link {
+  height: auto;
+  padding: 0 4px;
+}
+
 /*
  * 窄屏收尾：
  * - 侧栏由 antd 的 breakpoint 收起，内容区减小留白；
@@ -295,6 +477,19 @@ body {
 
   .ant-modal-footer .ant-btn {
     min-height: 40px;
+  }
+
+  /* 控制面：单列铺开，连接器行改为上下两段，操作按钮换行后仍点得中 */
+  .dbz-topology-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dbz-topology-connector {
+    flex-direction: column;
+  }
+
+  .dbz-topology-connector-actions {
+    justify-content: flex-start;
   }
 }
 

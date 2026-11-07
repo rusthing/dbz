@@ -8,6 +8,7 @@ use robotech::macros::api_doc;
 #[api_doc(
     list_connector_plugins,
     list_connectors,
+    get_connector_config,
     restart_connector,
     restart_connector_task,
     stop_connector,

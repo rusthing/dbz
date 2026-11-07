@@ -170,6 +170,49 @@ const sinks = [
   },
 ];
 
+/** 死信：一条待处理（确定性失败）、一条已重投（传输类失败） */
+const deadLetters = [
+  {
+    id: '901',
+    connectorType: 2,
+    connectorId: '301',
+    topic: 'dbz.orders',
+    recordKey: '{"id":1001}',
+    payload: { id: 1001, order_no: 'SO-20261107-1', amount: 99.5 },
+    failureCategory: 1,
+    failureDetail:
+      'HTTP 200 result=-2：duplicate key value violates unique constraint "uk_order_no"',
+    retryCount: 1,
+    firstSeenMs: '1760000000000',
+    lastSeenMs: '1760000100000',
+    status: 0,
+    handledBy: null,
+    handledMs: null,
+    remark: null,
+    createMs: '1760000000000',
+    updateMs: '1760000100000',
+  },
+  {
+    id: '902',
+    connectorType: 2,
+    connectorId: '301',
+    topic: 'dbz.orders',
+    recordKey: '{"id":1002}',
+    payload: { id: 1002, order_no: 'SO-20261107-2', amount: 66 },
+    failureCategory: 2,
+    failureDetail: '连接下游超时（15s），退避 10 次后仍失败：request timed out',
+    retryCount: 10,
+    firstSeenMs: '1759990000000',
+    lastSeenMs: '1759999900000',
+    status: 1,
+    handledBy: '1',
+    handledMs: '1759999950000',
+    remark: '重投成功',
+    createMs: '1759990000000',
+    updateMs: '1759999950000',
+  },
+];
+
 const connectors = [
   {
     name: 'mysql-orders-source',
@@ -409,6 +452,19 @@ await page.route('**/dbz/**', async (route) => {
     if (path === '/dbz/kafka-broker/check') {
       return route.fulfill({ json: ro({ reachable: true, topicCount: 12, elapsedMs: 34 }) });
     }
+    // 死信重投：返回逐条结果，页面按 success 汇总提示
+    if (path === '/dbz/dead-letter/retry') {
+      const body = request.postDataJSON();
+      return route.fulfill({
+        json: ro(
+          (body.ids ?? []).map((id) => ({ id, success: true, message: '重投成功' })),
+        ),
+      });
+    }
+    // 死信废弃只改状态，返回空信封即可
+    if (path === '/dbz/dead-letter/discard') {
+      return route.fulfill({ json: { result: 1, msg: '成功', timestamp: Date.now() } });
+    }
     await route.fulfill({ json: { result: 1, msg: '成功', timestamp: Date.now() } });
     return;
   }
@@ -423,6 +479,40 @@ await page.route('**/dbz/**', async (route) => {
   if (path === '/dbz/sink-connector/list') return route.fulfill({ json: ro(sinks) });
   if (path === '/dbz/kafka-connector/list') return route.fulfill({ json: ro(connectors) });
   if (path === '/dbz/kafka-connector/plugins') return route.fulfill({ json: ro(plugins) });
+  // Connect 自身健康：可达、版本与 worker 数（两台启用中的 Connect 都命中）
+  if (path === '/dbz/kafka-connect/health') {
+    return route.fulfill({
+      json: ro({
+        reachable: true,
+        version: '3.7.1',
+        commit: '9c1f4a2',
+        kafkaClusterId: 'kafka-cluster-1',
+        connectorCount: 2,
+        workerCount: 1,
+        workerIds: ['connect-1:8083'],
+        elapsedMs: 42,
+      }),
+    });
+  }
+  // 集群侧连接器配置：详情抽屉优先展示这一份
+  if (path === '/dbz/kafka-connector/config') {
+    return route.fulfill({
+      json: ro({
+        connectorName: url.searchParams.get('connectorName'),
+        config: {
+          'connector.class': 'io.debezium.connector.mysql.MySqlConnector',
+          'database.hostname': '10.0.0.11',
+          'table.include.list': 'dbz.orders',
+        },
+      }),
+    });
+  }
+  if (path === '/dbz/dead-letter/page') return route.fulfill({ json: pageOf(deadLetters) });
+  if (path === '/dbz/dead-letter/pending-count') {
+    return route.fulfill({
+      json: ro([{ connectorType: 2, connectorId: '301', count: 1 }]),
+    });
+  }
   if (path === '/dbz/source-connector/snapshot/preview') {
     if (failNextPreview) {
       failNextPreview = false;
@@ -465,6 +555,200 @@ try {
     (await page.locator('text=其中 1 个还没有 worker 指向它').count()) > 0,
   );
   await page.screenshot({ path: `${SHOTS}/01-dashboard.png`, fullPage: true });
+
+  /* 1a. 控制面视图：broker → Connect → 连接器的层级与实时状态 */
+  await page.click('.ant-menu-item:has-text("控制面视图")');
+  await page.waitForSelector('.dbz-topology-broker', { state: 'visible' });
+  check(
+    '控制面按 broker 分组',
+    (await page.locator('.dbz-topology-broker').count()) >= 2,
+    `实际 ${await page.locator('.dbz-topology-broker').count()}`,
+  );
+  check(
+    '控制面展示 Connect 层级',
+    (await page.locator('.dbz-topology-connect').count()) === 2,
+    `实际 ${await page.locator('.dbz-topology-connect').count()}`,
+  );
+  check(
+    '控制面展示上游连接器',
+    (await page.locator('.dbz-topology-connector:has-text("订单库增量")').count()) >= 1,
+  );
+  check(
+    '控制面展示下游连接器',
+    (await page.locator('.dbz-topology-connector:has-text("订单同步到数仓")').count()) >= 1,
+  );
+  check(
+    'Connect 自身健康标签来自 health 接口',
+    (await page.locator('.dbz-topology-connect .ant-tag:has-text("v3.7.1")').count()) === 2,
+    `实际 ${await page.locator('.dbz-topology-connect .ant-tag:has-text("v3.7.1")').count()}`,
+  );
+  check(
+    '顶部汇总 Connect 健康可达数',
+    (await page.locator('.dbz-toolbar .ant-tag:has-text("Connect 健康 2/2 可达")').count()) === 1,
+  );
+  check(
+    '连接器卡片显示待处理死信角标',
+    (await page
+      .locator('.dbz-topology-connector:has-text("订单同步到数仓") .ant-tag:has-text("死信 1")')
+      .count()) >= 1,
+  );
+  check(
+    '顶部汇总待处理死信总数',
+    (await page.locator('.dbz-toolbar .ant-tag:has-text("待处理死信 1")').count()) === 1,
+  );
+  check(
+    '集群上有实时连接器但库里没有时标出未纳管',
+    (await page.locator('.dbz-topology-unmanaged:has-text("manual-test-connector")').count()) >= 1,
+  );
+  const sinkRow = page.locator('.dbz-topology-connector:has-text("订单同步到数仓")').first();
+  check(
+    '未部署的 sink 实时状态标为未部署',
+    (await sinkRow.locator('.ant-tag:has-text("集群上未部署")').count()) === 1,
+  );
+  check(
+    '库内与实时不一致有汇总提示',
+    (await page.locator('.ant-alert:has-text("库内状态与集群实时状态不一致")').count()) === 1,
+  );
+  check(
+    '不一致的连接器节点有黄色标记',
+    (await page.locator('.dbz-topology-mismatch').count()) >= 2,
+    `实际 ${await page.locator('.dbz-topology-mismatch').count()}`,
+  );
+
+  // 图上直接重启：请求要打到 Connect 的 restart 接口
+  await page
+    .locator('.dbz-topology-connector:has-text("订单库增量")')
+    .first()
+    .locator('button:has-text("重启")')
+    .click();
+  const restartPopconfirm = page.locator('.ant-popconfirm', { hasText: '重启连接器' });
+  await restartPopconfirm.waitFor();
+  await restartPopconfirm.locator('.ant-btn-primary').click();
+  await page.waitForTimeout(500);
+  const restartRequest = posted.find(
+    (item) => item.method === 'POST' && item.path === '/dbz/kafka-connector/restart',
+  );
+  check(
+    '图上重启调用远端重启接口',
+    restartRequest?.body?.connectorName === 'mysql-orders-source' &&
+      restartRequest?.body?.kafkaConnectId === '101' &&
+      restartRequest?.body?.includeTasks === true,
+    JSON.stringify(restartRequest?.body),
+  );
+
+  // 详情抽屉：集群实时配置 + 实时状态 + 任务
+  await page
+    .locator('.dbz-topology-connector:has-text("订单库增量")')
+    .first()
+    .locator('button:has-text("详情")')
+    .click();
+  await page.waitForSelector('.ant-drawer-title:has-text("连接器详情")');
+  await page.waitForSelector('.ant-drawer .ant-tag:has-text("集群实时")');
+  check(
+    '详情展示集群实时连接器配置',
+    (await page.locator('.ant-drawer .dbz-json-view').innerText()).includes('MySqlConnector') &&
+      (await page.locator('.ant-drawer .ant-tag:has-text("集群实时")').count()) === 1,
+  );
+  check(
+    '详情同时展示库内与实时状态',
+    (await page.locator('.ant-drawer').innerText()).includes('集群实时状态'),
+  );
+  check(
+    '详情展示实时任务',
+    (await page.locator('.ant-drawer tbody tr.ant-table-row').count()) === 2,
+    `实际 ${await page.locator('.ant-drawer tbody tr.ant-table-row').count()}`,
+  );
+  await page.screenshot({ path: `${SHOTS}/01a-control-plane-detail.png`, fullPage: false });
+  await page.click('.ant-drawer-close');
+  await page.waitForTimeout(300);
+
+  const topologyOverflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  check('控制面页面无横向溢出', topologyOverflow <= 1, `溢出 ${topologyOverflow}px`);
+  await page.screenshot({ path: `${SHOTS}/01a-control-plane.png`, fullPage: true });
+
+  /* 1c. 死信：深链带连接器筛选、报文详情、重投与废弃 */
+  await page.goto(`${base}/dead-letter?connectorType=2&connectorId=301`, {
+    waitUntil: 'networkidle',
+  });
+  await page.waitForSelector('.ant-table-tbody tr.ant-table-row');
+  check(
+    '死信列表按连接器深链筛选',
+    (await page.locator('.ant-table-tbody tr.ant-table-row').count()) === 2,
+    `实际 ${await page.locator('.ant-table-tbody tr.ant-table-row').count()}`,
+  );
+  check(
+    '死信筛选器回填连接器名称',
+    (await page.locator('.ant-select-selection-item:has-text("下游 · 订单同步到数仓")').count()) >= 1,
+  );
+  check(
+    '死信状态与失败分类标签渲染',
+    (await page.locator('.ant-tag:has-text("待处理")').count()) >= 1 &&
+      (await page.locator('.ant-tag:has-text("已重投")').count()) >= 1 &&
+      (await page.locator('.ant-tag:has-text("确定性失败")').count()) >= 1 &&
+      (await page.locator('.ant-tag:has-text("传输类失败")').count()) >= 1,
+  );
+
+  await page
+    .locator('.ant-table-tbody tr.ant-table-row')
+    .first()
+    .locator('button:has-text("详情")')
+    .click();
+  await page.waitForSelector('.ant-drawer-title:has-text("死信详情")');
+  const deadLetterDetail = await page.locator('.ant-drawer-body').innerText();
+  check(
+    '死信详情展示失败原因与原始报文',
+    deadLetterDetail.includes('duplicate key value violates unique constraint') &&
+      deadLetterDetail.includes('SO-20261107-1'),
+    deadLetterDetail.slice(0, 160),
+  );
+
+  // 单条重投：请求体是选中记录 id，返回逐条结果
+  await page.locator('.ant-drawer-extra button:has-text("重投")').click();
+  const retryConfirm = page.locator('.ant-modal-confirm', { hasText: '重投 1 条死信' });
+  await retryConfirm.waitFor();
+  await retryConfirm.locator('.ant-btn-primary').click();
+  await page.waitForTimeout(600);
+  const retryRequest = posted.find(
+    (item) => item.method === 'POST' && item.path === '/dbz/dead-letter/retry',
+  );
+  check(
+    '重投调用死信重投接口',
+    retryRequest?.body?.ids?.[0] === '901',
+    JSON.stringify(retryRequest?.body),
+  );
+  check(
+    '重投成功给出提示',
+    (await page.locator('.ant-message-notice-content:has-text("1 条重投成功")').count()) >= 1,
+  );
+  await page.click('.ant-drawer-close');
+  await page.waitForTimeout(300);
+
+  // 废弃：只改状态，不删除报文
+  await page
+    .locator('.ant-table-tbody tr.ant-table-row')
+    .first()
+    .locator('button:has-text("废弃")')
+    .click();
+  const discardConfirm = page.locator('.ant-modal-confirm', { hasText: '废弃 1 条死信' });
+  await discardConfirm.waitFor();
+  await discardConfirm.locator('.ant-btn-primary').click();
+  await page.waitForTimeout(600);
+  const discardRequest = posted.find(
+    (item) => item.method === 'POST' && item.path === '/dbz/dead-letter/discard',
+  );
+  check(
+    '废弃调用死信废弃接口',
+    discardRequest?.body?.ids?.[0] === '901',
+    JSON.stringify(discardRequest?.body),
+  );
+
+  const deadLetterOverflow = await page.evaluate(
+    () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
+  );
+  check('死信页面无横向溢出', deadLetterOverflow <= 1, `溢出 ${deadLetterOverflow}px`);
+  await page.screenshot({ path: `${SHOTS}/01c-dead-letter.png`, fullPage: true });
 
   /* 1b. Kafka 集群（broker）：列表、检测、SASL 字段联动 */
   await page.click('.ant-menu-item:has-text("Kafka 集群")');

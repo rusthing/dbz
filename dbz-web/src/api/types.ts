@@ -310,6 +310,40 @@ export interface KafkaConnectorVo {
   tasks: KafkaConnectorTaskVo[];
 }
 
+/**
+ * # 连接器配置（`GET /connectors/{name}/config` 的响应）
+ *
+ * `config` 是 Kafka Connect 原样返回的 JSON 对象，字段随连接器类型变化，
+ * 前端只按需读取，不做强类型约束。
+ */
+export interface KafkaConnectorConfigVo {
+  connectorName: string;
+  config: Record<string, unknown>;
+}
+
+/**
+ * # Kafka Connect 自身健康状态
+ *
+ * 只读探测结果：可达性以 `GET /connectors` 为准，版本等信息来自 Connect 根路径。
+ * 连不上也是 200，`reachable=false` 与 `message` 一起表达业务结论。
+ */
+export interface DbzKafkaConnectHealthVo {
+  reachable: boolean;
+  /** Connect 版本，根路径取不到时为空 */
+  version?: string | null;
+  commit?: string | null;
+  kafkaClusterId?: string | null;
+  /** 集群上的连接器数量 */
+  connectorCount: number;
+  /** worker 数量（按连接器与任务上报的 worker id 去重） */
+  workerCount: number;
+  workerIds: string[];
+  /** 本次探测耗时（毫秒） */
+  elapsedMs: number;
+  /** 失败原因或提示 */
+  message?: string | null;
+}
+
 /** # 重启连接器的请求体 */
 export interface KafkaConnectorRestartInput {
   kafkaConnectId: Id;
@@ -344,4 +378,68 @@ export type KafkaConnectorControlInput = KafkaConnectorDeleteInput;
 export interface KafkaConnectorResetOffsetInput extends KafkaConnectorDeleteInput {
   /** 清空位点后是否立即恢复运行；`true` 等于「重做一次全量」 */
   resume?: boolean;
+}
+
+/** # 死信连接器类型（`DeadLetterConnectorType`） */
+export type DeadLetterConnectorType = 1 | 2;
+
+/** # 死信失败分类（`DeadLetterFailureCategory`） */
+export type DeadLetterFailureCategory = 1 | 2 | 3;
+
+/** # 死信处理状态（`DeadLetterStatus`） */
+export type DeadLetterStatus = 0 | 1 | 2 | 3;
+
+/**
+ * # 死信记录（`DbzDeadLetterVo`）
+ *
+ * 幂等键是 `(connectorType, connectorId, topic, recordKey)`：同一条记录重复失败只累加
+ * `retryCount` 并刷新 `lastSeenMs`，不新增行。
+ */
+export interface DbzDeadLetterVo {
+  id: Id;
+  connectorType: DeadLetterConnectorType;
+  connectorId: Id;
+  topic: string;
+  recordKey: string;
+  /** 原始报文（JSONB），字段随来源表变化 */
+  payload: unknown;
+  failureCategory: DeadLetterFailureCategory;
+  /** 对端原始报错 */
+  failureDetail: string;
+  /** 累计失败次数（含进入死信前的重试） */
+  retryCount: number;
+  firstSeenMs: string;
+  lastSeenMs: string;
+  status: DeadLetterStatus;
+  handledBy?: string | null;
+  handledMs?: string | null;
+  remark?: string | null;
+  createMs: string;
+  updateMs: string;
+}
+
+/** # 待处理死信计数（`DbzDeadLetterCountVo`） */
+export interface DbzDeadLetterCountVo {
+  connectorType: DeadLetterConnectorType;
+  connectorId: Id;
+  count: number;
+}
+
+/** # 单条重投结果（`DbzDeadLetterRetryResultVo`） */
+export interface DbzDeadLetterRetryResultVo {
+  id: Id;
+  success: boolean;
+  message: string;
+}
+
+/** # 重投请求体 */
+export interface DbzDeadLetterRetryInput {
+  ids: Id[];
+  remark?: string;
+}
+
+/** # 废弃请求体 */
+export interface DbzDeadLetterDiscardInput {
+  ids: Id[];
+  remark?: string;
 }

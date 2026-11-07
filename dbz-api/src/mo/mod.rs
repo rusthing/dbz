@@ -2,6 +2,8 @@
 
 pub mod prelude;
 
+pub mod dbz_dead_letter;
+pub mod dbz_dead_letter_retry;
 pub mod dbz_kafka_broker;
 pub mod dbz_kafka_connect;
 pub mod dbz_sink_connector;

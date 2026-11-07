@@ -13,11 +13,12 @@
 //! ctrl 文件名也就必须跟着叫 `dbz_kafka_connector_ctrl.rs`，与 router、api_doc 保持一致。
 
 use crate::dto::{
-    KafkaConnectorControlDto, KafkaConnectorDeleteDto, KafkaConnectorQueryDto,
-    KafkaConnectorResetOffsetDto, KafkaConnectorRestartDto, KafkaConnectorTaskRestartDto,
+    KafkaConnectorConfigDto, KafkaConnectorControlDto, KafkaConnectorDeleteDto,
+    KafkaConnectorQueryDto, KafkaConnectorResetOffsetDto, KafkaConnectorRestartDto,
+    KafkaConnectorTaskRestartDto,
 };
 use crate::svc::KafkaConnectorSvc;
-use crate::vo::{KafkaConnectorPluginVo, KafkaConnectorVo};
+use crate::vo::{KafkaConnectorConfigVo, KafkaConnectorPluginVo, KafkaConnectorVo};
 use axum::debug_handler;
 use axum::extract::Query;
 use axum::response::Json;
@@ -74,6 +75,36 @@ pub async fn list_connectors(
     Query(dto): Query<KafkaConnectorQueryDto>,
 ) -> Result<Json<Ro<Vec<KafkaConnectorVo>>>, CtrlError> {
     let ro = KafkaConnectorSvc::list_connectors(dto).await?;
+    Ok(Json(ro))
+}
+
+/// # 查看连接器配置
+///
+/// 转发 Kafka Connect 的 `GET /connectors/{name}/config`，返回集群上的实际配置。
+///
+/// 错误按原因区分：连接器不存在返回 404；Connect 不可达或其他错误返回 500，
+/// 响应里的 `detail` 保留 Connect 的原始报错。
+///
+/// ## 查询参数
+/// * `kafkaConnectId` - Kafka Connect ID（与 `kafkaConnectUrl` 二选一）
+/// * `kafkaConnectUrl` - Kafka Connect 地址（优先于 `kafkaConnectId`）
+/// * `connectorName` - 连接器名称
+///
+/// ## 返回值
+/// * 成功时返回连接器名称与集群侧配置
+/// * 连接器不存在时为 404，Connect 不可达时为 500
+#[utoipa::path(
+    get,
+    path = "/dbz/kafka-connector/config",
+    params(KafkaConnectorConfigDto),
+    responses((status = OK, body = Ro<KafkaConnectorConfigVo>))
+)]
+#[debug_handler]
+#[log_call]
+pub async fn get_connector_config(
+    Query(dto): Query<KafkaConnectorConfigDto>,
+) -> Result<Json<Ro<KafkaConnectorConfigVo>>, CtrlError> {
+    let ro = KafkaConnectorSvc::get_connector_config(dto).await?;
     Ok(Json(ro))
 }
 

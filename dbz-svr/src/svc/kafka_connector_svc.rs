@@ -9,15 +9,17 @@
 //! （见 `KafkaConnectorQueryDto` 的说明）。
 
 use crate::dto::{
-    KafkaConnectorControlDto, KafkaConnectorDeleteDto, KafkaConnectorQueryDto,
-    KafkaConnectorResetOffsetDto, KafkaConnectorRestartDto, KafkaConnectorTaskRestartDto,
+    KafkaConnectorConfigDto, KafkaConnectorControlDto, KafkaConnectorDeleteDto,
+    KafkaConnectorQueryDto, KafkaConnectorResetOffsetDto, KafkaConnectorRestartDto,
+    KafkaConnectorTaskRestartDto,
 };
 use crate::svc::DbzKafkaConnectSvc;
 use crate::utils::{KafkaConnectorError, KafkaConnectorUtils, normalize_url};
-use crate::vo::{KafkaConnectorPluginVo, KafkaConnectorVo};
+use crate::vo::{KafkaConnectorConfigVo, KafkaConnectorPluginVo, KafkaConnectorVo};
 use anyhow::anyhow;
 use robotech::api::{Ro, U64};
 use robotech::macros::log_call;
+use robotech::svc::SvcError;
 use tracing::info;
 
 /// # Kafka 连接器服务
@@ -68,6 +70,49 @@ impl KafkaConnectorSvc {
         Ok(
             Ro::success(format!("查询连接器成功，共 {} 个", connectors.len()))
                 .extra(Some(connectors)),
+        )
+    }
+
+    /// # 查看连接器配置
+    ///
+    /// 转发 Kafka Connect 的 `GET /connectors/{name}/config`，返回集群上的实际配置。
+    /// 库内 `connector_config` 只代表 dbz 最后一次下发的配置，两者在有人绕过 dbz
+    /// 直接改集群时会不一致，排查时要看这一份。
+    ///
+    /// 错误映射保持可区分：
+    /// * 连接器不存在（Connect 返回 404）→ [`SvcError::NotFound`]，HTTP 404；
+    /// * Connect 不可达或返回其他错误 → [`SvcError::Runtime`]，HTTP 500。
+    ///
+    /// ## 参数
+    /// * `dto` - 目标 Kafka Connect 的定位参数 + 连接器名称
+    ///
+    /// ## 返回值
+    /// * `Ok(Ro<KafkaConnectorConfigVo>)` - 连接器名称与集群侧配置
+    /// * `Err(SvcError)` - 名称为空、定位失败、连接器不存在或 Connect 不可达
+    #[log_call]
+    pub async fn get_connector_config(
+        dto: KafkaConnectorConfigDto,
+    ) -> Result<Ro<KafkaConnectorConfigVo>, SvcError> {
+        let connector_name = Self::check_connector_name(&dto.connector_name)?;
+        let base_url =
+            Self::resolve_base_url(dto.kafka_connect_id, dto.kafka_connect_url.as_deref()).await?;
+
+        let config = KafkaConnectorUtils::fetch_connector_config(&base_url, connector_name)
+            .await
+            .map_err(|e| match e {
+                KafkaConnectorError::NotFound => {
+                    SvcError::NotFound(format!("连接器<{connector_name}>不存在"))
+                }
+                other => SvcError::Runtime(other.into()),
+            })?;
+
+        Ok(
+            Ro::success(format!("查询连接器<{connector_name}>配置成功")).extra(Some(
+                KafkaConnectorConfigVo {
+                    connector_name: connector_name.to_string(),
+                    config,
+                },
+            )),
         )
     }
 

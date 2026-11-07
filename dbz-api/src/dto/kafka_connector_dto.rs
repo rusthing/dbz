@@ -117,6 +117,23 @@ pub struct KafkaConnectorControlDto {
     pub connector_name: String,
 }
 
+/// # 连接器配置查询 DTO
+///
+/// 转发 Kafka Connect 的 `GET /connectors/{name}/config`：只读集群上的配置，
+/// 不返回库内保存的那份。连接器不存在与 Connect 不可达由服务层区分成不同的错误。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema, IntoParams)]
+#[serde(default, rename_all = "camelCase")]
+pub struct KafkaConnectorConfigDto {
+    /// Kafka Connect ID（未提供 kafkaConnectUrl 时必填）
+    pub kafka_connect_id: Option<U64>,
+    /// Kafka Connect 地址（优先于 kafkaConnectId）
+    /// @len 0..
+    pub kafka_connect_url: Option<String>,
+    /// 连接器名称
+    /// @len 1..
+    pub connector_name: String,
+}
+
 /// # 重置连接器位点 DTO
 ///
 /// 清空连接器记在 Kafka 里的位点，让它「当作从没跑过」。Kafka Connect 要求连接器

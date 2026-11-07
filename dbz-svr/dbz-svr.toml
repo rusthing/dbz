@@ -40,6 +40,22 @@ timeout = "800ms"
 #[dbz]
 #group-name = "Debezium"
 
+# 死信与重试队列（对应 `[dbz.dead-letter]`）。下面写的是默认值，按需覆盖：
+#
+#   HttpSink 对 HTTP 4xx/5xx 只记日志并照常提交偏移量，Connect 不会重投；magic 脚本
+#   的业务失败又是 HTTP 200 + {"result":-2}。重试与死信必须由 dbz 自己驱动。
+#
+#   确定性失败直接进死信；传输类失败按 1s → 5s → 30s → 2m → 10m 退避，超过
+#   max-attempts 次转死信。死信默认保留 30 天、单连接器最多 5 万条，超出淘汰最旧的。
+#[dbz.dead-letter]
+#enabled = true              # 关掉后只写死信，不自动重投
+#retention-days = 30
+#max-per-connector = 50000
+#max-attempts = 10
+#worker-interval-ms = 1000
+#batch-size = 50
+#request-timeout-ms = 15000
+
 [micro-svc.consul]
 base-url = "http://consul:8500"
 [micro-svc.consul.registry]

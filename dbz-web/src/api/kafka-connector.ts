@@ -10,6 +10,7 @@
 import { apiDelete, apiGet, apiPost, apiPut } from './client';
 import type {
   Id,
+  KafkaConnectorConfigVo,
   KafkaConnectorControlInput,
   KafkaConnectorDeleteInput,
   KafkaConnectorPluginVo,
@@ -29,6 +30,15 @@ export const kafkaConnectorApi = {
   /** 查看目标集群上的全部连接器（含任务状态） */
   list: (kafkaConnectId: Id): Promise<KafkaConnectorVo[]> =>
     apiGet(BASE + '/list', { kafkaConnectId }),
+
+  /**
+   * 查看连接器在集群上的**实际配置**（`GET /connectors/{name}/config`）
+   *
+   * 与库内 `connectorConfig` 不是同一份：有人绕过 dbz 直接改集群时会不一致。
+   * 连接器不存在时服务端返回 404，Connect 不可达时返回 500，前端可按 HTTP 状态区分。
+   */
+  config: (kafkaConnectId: Id, connectorName: string): Promise<KafkaConnectorConfigVo> =>
+    apiGet(BASE + '/config', { kafkaConnectId, connectorName }),
 
   /** 重启连接器，默认连同任务一起重启 */
   restart: (input: KafkaConnectorRestartInput): Promise<void> => apiPost(BASE + '/restart', input),

@@ -5,7 +5,9 @@
  */
 
 import {
+  AlertOutlined,
   ApiOutlined,
+  ApartmentOutlined,
   ClusterOutlined,
   DashboardOutlined,
   DatabaseOutlined,
@@ -25,6 +27,13 @@ const NAV_ITEMS = [
     title: '总览',
     desc: '集群与连接器的整体健康度',
     icon: <DashboardOutlined />,
+  },
+  {
+    path: '/control-plane',
+    label: '控制面视图',
+    title: '控制面视图',
+    desc: 'Kafka 集群 → Connect → 连接器的图形化视图，实时状态与常用操作',
+    icon: <ApartmentOutlined />,
   },
   {
     path: '/kafka-broker',
@@ -60,6 +69,13 @@ const NAV_ITEMS = [
     title: '远端连接器',
     desc: '直接查看与操作集群上真实运行的连接器',
     icon: <ApiOutlined />,
+  },
+  {
+    path: '/dead-letter',
+    label: '死信',
+    title: '死信与重试',
+    desc: 'magic 脚本上报的失败报文：看原因、重投、废弃',
+    icon: <AlertOutlined />,
   },
 ];
 

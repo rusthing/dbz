@@ -13,6 +13,9 @@
 
 import type {
   ConnectorRunStatus,
+  DeadLetterConnectorType,
+  DeadLetterFailureCategory,
+  DeadLetterStatus,
   KafkaBrokerStatus,
   KafkaConnectStatus,
   KafkaConnectorStatus,
@@ -87,6 +90,27 @@ export const kafkaSaslMechanismDic: DicItem<KafkaSaslMechanism>[] = [
   { value: 1, label: 'SASL/PLAIN', color: 'blue' },
   { value: 2, label: 'SCRAM-SHA-256', color: 'blue' },
   { value: 3, label: 'SCRAM-SHA-512', color: 'blue' },
+];
+
+/** # 死信处理状态 */
+export const deadLetterStatusDic: DicItem<DeadLetterStatus>[] = [
+  { value: 0, label: '待处理', color: 'error' },
+  { value: 1, label: '已重投', color: 'success' },
+  { value: 2, label: '已废弃', color: 'default' },
+  { value: 3, label: '已人工处理', color: 'processing' },
+];
+
+/** # 死信失败分类 */
+export const deadLetterFailureCategoryDic: DicItem<DeadLetterFailureCategory>[] = [
+  { value: 1, label: '确定性失败', color: 'error' },
+  { value: 2, label: '传输类失败', color: 'warning' },
+  { value: 3, label: '响应异常', color: 'gold' },
+];
+
+/** # 死信连接器方向 */
+export const deadLetterConnectorTypeDic: DicItem<DeadLetterConnectorType>[] = [
+  { value: 1, label: '上游', color: 'blue' },
+  { value: 2, label: '下游', color: 'purple' },
 ];
 
 /** # 取字典项 */

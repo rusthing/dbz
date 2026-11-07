@@ -19,6 +19,7 @@ use robotech::macros::router;
 #[router(routes [
     ("/dbz/kafka-connector/plugins", get(list_connector_plugins)),
     ("/dbz/kafka-connector/list", get(list_connectors)),
+    ("/dbz/kafka-connector/config", get(get_connector_config)),
     ("/dbz/kafka-connector/restart", post(restart_connector)),
     ("/dbz/kafka-connector/task/restart", post(restart_connector_task)),
     ("/dbz/kafka-connector/stop", put(stop_connector)),

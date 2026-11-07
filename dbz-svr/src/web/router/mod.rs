@@ -1,5 +1,7 @@
+mod dbz_dead_letter_router;
 mod dbz_kafka_broker_check_router;
 mod dbz_kafka_broker_router;
+mod dbz_kafka_connect_health_router;
 mod dbz_kafka_connect_router;
 mod dbz_kafka_connector_router;
 mod dbz_sink_connector_router;

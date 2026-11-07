@@ -7,10 +7,45 @@
 
 import { useMemo } from 'react';
 import type { ApiError } from '../api/client';
+import { kafkaBrokerApi } from '../api/kafka-broker';
 import { kafkaConnectApi } from '../api/kafka-connect';
 import { sourceConnectorApi } from '../api/source-connector';
-import type { DbzKafkaConnectVo, DbzSourceConnectorVo, Id } from '../api/types';
+import type { DbzKafkaBrokerVo, DbzKafkaConnectVo, DbzSourceConnectorVo, Id } from '../api/types';
 import { useAsync } from './useAsync';
+
+/** # Kafka 集群（broker）选项集合 */
+export interface BrokerOptions {
+  brokers: DbzKafkaBrokerVo[];
+  /** antd Select 选项 */
+  options: { value: Id; label: string }[];
+  /** id → Kafka 集群 */
+  byId: Map<Id, DbzKafkaBrokerVo>;
+  loading: boolean;
+  /** 加载失败的原因，供列表给出提示而不是显示成「没有集群」 */
+  error: ApiError | null;
+  reload: () => void;
+}
+
+/** # 取 Kafka 集群选项（用于展示 Connect 的归属关系） */
+export function useBrokerOptions(): BrokerOptions {
+  const { data, loading, error, reload } = useAsync<DbzKafkaBrokerVo[]>(
+    () => kafkaBrokerApi.list(),
+    [],
+    [],
+  );
+
+  const options = useMemo(
+    () =>
+      [...data]
+        .sort((left, right) => left.name.localeCompare(right.name))
+        .map((broker) => ({ value: broker.id, label: broker.name })),
+    [data],
+  );
+
+  const byId = useMemo(() => new Map(data.map((broker) => [broker.id, broker])), [data]);
+
+  return { brokers: data, options, byId, loading, error, reload };
+}
 
 /** # 集群选项集合 */
 export interface ClusterOptions {
