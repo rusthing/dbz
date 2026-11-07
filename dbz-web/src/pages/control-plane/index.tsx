@@ -33,15 +33,26 @@ import {
   Input,
   InputNumber,
   Modal,
+  Radio,
+  Select,
   Space,
   Spin,
   Switch,
   Table,
+  Tabs,
   Tag,
   Tooltip,
   Typography,
 } from 'antd';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type HTMLAttributes,
+} from 'react';
 import { useNavigate } from 'react-router-dom';
 import { notifySessionExpired } from '../../auth/session';
 import { sm3 } from '../../lib/sm3';
@@ -69,6 +80,19 @@ import { connectorRunStatusDic, kafkaConnectorStatusDic } from '../../dic';
 import { useAsync, type AsyncState } from '../../hooks/useAsync';
 import { errorMessage, formatMs, orDash, prettyJson, truncate } from '../../utils/format';
 import ControlPlaneCanvas from './ControlPlaneCanvas';
+import {
+  buildImportRows,
+  buildTransferFile,
+  downloadJson,
+  exportFileName,
+  nextImportedName,
+  parseTransferFile,
+  type ImportDecision,
+  type ImportOutcome,
+  type ImportPreviewRow,
+  type TransferConnector,
+  type TransferFile,
+} from './connect-transfer';
 import {
   NODE_SIZE,
   NODE_TYPE_OF,
@@ -136,6 +160,50 @@ const EMPTY_DATA: ControlPlaneData = {
   edgeBends: {},
   loadedAt: 0,
 };
+
+/** 一次导入会话：文件、预览行与执行结果都放在同一份状态里 */
+interface ImportSession {
+  target: CanvasNode;
+  file: TransferFile;
+  fileName: string;
+  phase: 'preview' | 'running' | 'result';
+  /** 预览阶段正在读取目标 Connect 的实时连接器 */
+  loadingPreview: boolean;
+  rows: ImportPreviewRow[];
+  liveNames: Set<string> | null;
+  liveWarning?: string;
+  outcomes: ImportOutcome[];
+}
+
+/** 导入结果分类文案：汇总里必须把「覆盖并纳管」与「覆盖已有纳管记录」分开 */
+const IMPORT_ACTION_LABEL: Record<ImportOutcome['action'], string> = {
+  created: '新增',
+  'overwritten-managed': '覆盖已有纳管记录',
+  'overwritten-adopted': '覆盖并纳管',
+  skipped: '跳过',
+  'kept-both': '改名保留',
+  failed: '失败',
+};
+
+const IMPORT_DECISION_LABEL: Record<ImportDecision, string> = {
+  overwrite: '覆盖',
+  skip: '跳过',
+  keep: '两者都保留',
+};
+
+const IMPORT_ACTION_COLOR: Record<ImportOutcome['action'], string> = {
+  created: 'success',
+  'overwritten-managed': 'geekblue',
+  'overwritten-adopted': 'blue',
+  skipped: 'default',
+  'kept-both': 'purple',
+  failed: 'error',
+};
+
+/** 异常口径与卡片红色状态一致：失败与不可达，已停止/仅纳管不算异常 */
+function connectorStatusAbnormal(runStatus: number): boolean {
+  return runStatus === 3 || runStatus === 5;
+}
 
 interface Point {
   x: number;
@@ -605,10 +673,22 @@ export default function ControlPlanePage() {
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteRunning, setDeleteRunning] = useState(false);
 
-  /** 画布搜索：只定位与高亮，不隐藏节点 */
+  /** 画布搜索：只定位与高亮，不隐藏节点（搜索范围限定在当前集群 tab） */
   const [searchText, setSearchText] = useState('');
   const [searchCursor, setSearchCursor] = useState(0);
   const [searchFocusToken, setSearchFocusToken] = useState(0);
+
+  /** 当前集群 tab；null 表示还没选过，按第一个集群兜底 */
+  const [activeBrokerKey, setActiveBrokerKey] = useState<Id | null>(null);
+
+  /** 导出弹窗：默认带凭据，脱敏由用户显式勾选 */
+  const [exportTarget, setExportTarget] = useState<CanvasNode | null>(null);
+  const [exportRedacted, setExportRedacted] = useState(false);
+
+  /** 导入：文件选择与预览/执行结果 */
+  const [importSession, setImportSession] = useState<ImportSession | null>(null);
+  const importFileRef = useRef<HTMLInputElement>(null);
+  const pendingImportTarget = useRef<CanvasNode | null>(null);
 
   /** 轻量刷新：只合并状态与死信计数，保留实时明细、布局与选中态 */
   const refreshLight = useCallback(async () => {
@@ -698,6 +778,58 @@ export default function ControlPlanePage() {
     [state.data.brokers, state.data.connects, state.data.sinks, state.data.sources],
   );
 
+  /**
+   * # 按 Kafka 集群分 tab
+   *
+   * tab 只统计当前集群下 Connect 的连接器数量与异常数（失败 / 不可达）。
+   * 全局汇总（集群总数、死信总数）留在 tab 栏外；当前 tab 的节点数、Connect
+   * 可达数与死信数在画布区顶部展示。
+   */
+  const brokerTabs = useMemo(() => {
+    const connectsByBroker = new Map<Id, DbzKafkaConnectVo[]>();
+    for (const cluster of state.data.connects) {
+      const bucket = connectsByBroker.get(cluster.kafkaBrokerId) ?? [];
+      bucket.push(cluster);
+      connectsByBroker.set(cluster.kafkaBrokerId, bucket);
+    }
+    return state.data.brokers.map((broker) => {
+      const connectIds = new Set((connectsByBroker.get(broker.id) ?? []).map((item) => item.id));
+      const sourceRecords = state.data.sources.filter((item) =>
+        connectIds.has(item.kafkaConnectId),
+      );
+      const sinkRecords = state.data.sinks.filter((item) =>
+        connectIds.has(item.kafkaConnectId),
+      );
+      return {
+        id: broker.id,
+        name: broker.name,
+        connectorCount: sourceRecords.length + sinkRecords.length,
+        abnormalCount: [...sourceRecords, ...sinkRecords].filter((item) =>
+          connectorStatusAbnormal(item.runStatus),
+        ).length,
+      };
+    });
+  }, [state.data.brokers, state.data.connects, state.data.sources, state.data.sinks]);
+
+  /** 当前 tab：选中的集群被删掉或首次进入时回落到第一个集群 */
+  const resolvedBrokerId = useMemo(() => {
+    if (activeBrokerKey && brokerTabs.some((tab) => tab.id === activeBrokerKey)) {
+      return activeBrokerKey;
+    }
+    return brokerTabs[0]?.id ?? null;
+  }, [activeBrokerKey, brokerTabs]);
+
+  /** 画布只拿当前集群的节点，切 tab 不串数据 */
+  const scopeNodes = useMemo(
+    () => nodes.filter((node) => node.broker?.id === resolvedBrokerId),
+    [nodes, resolvedBrokerId],
+  );
+
+  const scopeEdges = useMemo(() => {
+    const keys = new Set(scopeNodes.map((node) => node.key));
+    return edges.filter((edge) => keys.has(edge.from) && keys.has(edge.to));
+  }, [edges, scopeNodes]);
+
   /** 服务端保存的位置；没有位置的节点按默认网格补 */
   useEffect(() => {
     const next: Record<string, Point> = {};
@@ -712,26 +844,29 @@ export default function ControlPlanePage() {
     setEdgeBends(state.data.edgeBends);
   }, [state.data.edgeBends]);
 
-  /** 搜索命中：按名称 / topic / connectorName 匹配，只高亮与定位，不隐藏其它节点 */
+  /** 搜索命中：只作用于当前集群 tab，按名称 / topic / connectorName 匹配 */
   const searchHits = useMemo(() => {
     const query = searchText.trim().toLowerCase();
     if (!query) {
       return [];
     }
-    return nodes
+    return scopeNodes
       .filter((node) => nodeSearchText(node).includes(query))
       .map((node) => node.key);
-  }, [nodes, searchText]);
+  }, [scopeNodes, searchText]);
 
   const activeHitKey = searchHits.length
     ? searchHits[Math.min(searchCursor, searchHits.length - 1)]
     : null;
 
-  /** 有持久化位置就用，没有就按同类节点的序号摆 */
+  /**
+   * 有持久化位置就用，没有就按当前 tab 内同类节点的序号摆。
+   * 序号只数当前集群，切 tab 时默认位置重新从 0 开始，不会沿用另一个集群的排布。
+   */
   const resolvedPositions = useMemo(() => {
     const result: Record<string, Point> = { ...positions };
     const counters: Record<CanvasNodeKind, number> = { broker: 0, connect: 0, source: 0, sink: 0 };
-    for (const node of nodes) {
+    for (const node of scopeNodes) {
       const index = counters[node.kind];
       counters[node.kind] += 1;
       if (!result[node.key]) {
@@ -739,28 +874,28 @@ export default function ControlPlanePage() {
       }
     }
     return result;
-  }, [nodes, positions]);
+  }, [scopeNodes, positions]);
 
   const selectedNode = useMemo(
-    () => nodes.find((node) => node.key === selectedNodeKey) ?? null,
-    [nodes, selectedNodeKey],
+    () => scopeNodes.find((node) => node.key === selectedNodeKey) ?? null,
+    [scopeNodes, selectedNodeKey],
   );
   const selectedEdge = useMemo(
-    () => edges.find((edge) => edge.id === selectedEdgeId) ?? null,
-    [edges, selectedEdgeId],
+    () => scopeEdges.find((edge) => edge.id === selectedEdgeId) ?? null,
+    [scopeEdges, selectedEdgeId],
   );
 
   /** 节点被删除后清掉选中态，避免检查器挂在空记录上 */
   useEffect(() => {
-    if (selectedNodeKey && !nodes.some((node) => node.key === selectedNodeKey)) {
+    if (selectedNodeKey && !scopeNodes.some((node) => node.key === selectedNodeKey)) {
       setSelectedNodeKey(null);
     }
-  }, [nodes, selectedNodeKey]);
+  }, [scopeNodes, selectedNodeKey]);
   useEffect(() => {
-    if (selectedEdgeId && !edges.some((edge) => edge.id === selectedEdgeId)) {
+    if (selectedEdgeId && !scopeEdges.some((edge) => edge.id === selectedEdgeId)) {
       setSelectedEdgeId(null);
     }
-  }, [edges, selectedEdgeId]);
+  }, [scopeEdges, selectedEdgeId]);
 
   /** 新增表单成功后，从数据里找出新记录，补上落位位置并落库 */
   useEffect(() => {
@@ -776,6 +911,10 @@ export default function ControlPlanePage() {
     const key = nodeKeyOf(pendingDrop.kind, created.id);
     const point = { x: pendingDrop.x, y: pendingDrop.y };
     setPositions((previous) => ({ ...previous, [key]: point }));
+    // 新建 Kafka 集群会多出一个 tab，直接切过去，否则新节点落在看不见的 tab 里
+    if (pendingDrop.kind === 'broker') {
+      setActiveBrokerKey(created.id);
+    }
     setSelectedNodeKey(key);
     setSelectedEdgeId(null);
     setPendingDrop(null);
@@ -791,22 +930,52 @@ export default function ControlPlanePage() {
       });
   }, [message, pendingDrop, state.data]);
 
-  /** 顶部 Connect 自身健康汇总：只统计启用中的记录 */
+  /** 当前 tab 的 Connect 健康汇总：只统计启用中的记录 */
   const healthSummary = useMemo(() => {
-    const enabled = nodes.filter((node) => node.kind === 'connect' && node.cluster?.enabled);
+    const enabled = scopeNodes.filter(
+      (node) => node.kind === 'connect' && node.cluster?.enabled,
+    );
     const reachable = enabled.filter((node) => node.health?.health?.reachable).length;
     const unreachable = enabled.filter(
       (node) =>
         node.health?.error || (node.health?.health && !node.health.health.reachable),
     ).length;
     return { total: enabled.length, reachable, unreachable };
-  }, [nodes]);
+  }, [scopeNodes]);
 
-  /** 待处理死信总数：节点角标与顶栏共用一份计数 */
+  /** 全局待处理死信总数：留在 tab 栏外 */
   const deadLetterTotal = useMemo(
     () => nodes.reduce((sum, node) => sum + node.dead, 0),
     [nodes],
   );
+
+  /** 当前 tab 的待处理死信：画布区汇总 */
+  const scopeDeadLetterTotal = useMemo(
+    () => scopeNodes.reduce((sum, node) => sum + node.dead, 0),
+    [scopeNodes],
+  );
+
+  const activeBrokerName =
+    brokerTabs.find((tab) => tab.id === resolvedBrokerId)?.name ?? '--';
+
+  /** 导入结果按分类汇总：覆盖两种口径必须分开统计 */
+  const importStats = useMemo(() => {
+    const counts: Record<ImportOutcome['action'], number> = {
+      created: 0,
+      'overwritten-managed': 0,
+      'overwritten-adopted': 0,
+      skipped: 0,
+      'kept-both': 0,
+      failed: 0,
+    };
+    for (const outcome of importSession?.outcomes ?? []) {
+      counts[outcome.action] += 1;
+    }
+    return counts;
+  }, [importSession?.outcomes]);
+
+  const importConflictCount =
+    importSession?.rows.filter((item) => item.conflict).length ?? 0;
 
   const clusterOptions = useMemo(
     () => state.data.connects.map((cluster) => ({ value: cluster.id, label: cluster.name })),
@@ -819,7 +988,7 @@ export default function ControlPlanePage() {
     if (!commit) {
       return;
     }
-    const node = nodes.find((item) => item.key === key);
+    const node = scopeNodes.find((item) => item.key === key);
     if (!node) {
       return;
     }
@@ -862,7 +1031,7 @@ export default function ControlPlanePage() {
     if (!query) {
       return;
     }
-    const first = nodes.find((node) => nodeSearchText(node).includes(query));
+    const first = scopeNodes.find((node) => nodeSearchText(node).includes(query));
     if (first) {
       setSelectedNodeKey(first.key);
       setSelectedEdgeId(null);
@@ -892,7 +1061,7 @@ export default function ControlPlanePage() {
    */
   const startCreate = (kind: CanvasNodeKind, parent: CanvasNode | null) => {
     const existingIds = new Set(recordsOfKind(state.data, kind).map((record) => record.id));
-    const point = childPositionOf(kind, parent, nodes, resolvedPositions);
+    const point = childPositionOf(kind, parent, scopeNodes, resolvedPositions);
     setPendingDrop({ kind, x: point.x, y: point.y, existingIds });
     setEditTarget(null);
     setCreateParent(parent);
@@ -1241,6 +1410,18 @@ export default function ControlPlanePage() {
         // 只给上游连接器：复用快照弹窗，写入增量 execute-snapshot 信号
         setResyncTarget(node.record as DbzSourceConnectorVo);
         break;
+      case 'export-connectors':
+        setExportTarget(node);
+        setExportRedacted(false);
+        break;
+      case 'import-connectors':
+        // 文件选择框是隐藏的，记下目标 Connect 再触发，避免用户选文件期间切换节点
+        pendingImportTarget.current = node;
+        if (importFileRef.current) {
+          importFileRef.current.value = '';
+          importFileRef.current.click();
+        }
+        break;
       case 'edit':
         setEditTarget(node);
         break;
@@ -1259,10 +1440,362 @@ export default function ControlPlanePage() {
     }
   };
 
+  /** 切换集群 tab：搜索与选中都留在原 tab，切过去不串数据 */
+  const handleClusterTabChange = (key: string) => {
+    setActiveBrokerKey(key);
+    setSelectedNodeKey(null);
+    setSelectedEdgeId(null);
+    setSearchText('');
+    setSearchCursor(0);
+  };
+
+  /** 导出弹窗里的连接器数量：当前 Connect 下已纳管的上游 + 下游 */
+  const exportConnectorCount = exportTarget
+    ? state.data.sources.filter((item) => item.kafkaConnectId === exportTarget.id).length +
+      state.data.sinks.filter((item) => item.kafkaConnectId === exportTarget.id).length
+    : 0;
+
+  /** 导出为 JSON：默认带凭据，脱敏由弹窗里的选项决定 */
+  const executeExportConnectors = () => {
+    if (!exportTarget) {
+      return;
+    }
+    try {
+      const connect = exportTarget.record as DbzKafkaConnectVo;
+      const now = new Date();
+      const file = buildTransferFile(
+        state.data.brokers,
+        state.data.sources,
+        state.data.sinks,
+        connect,
+        exportRedacted,
+        now,
+      );
+      downloadJson(exportFileName(connect.name, now), file);
+      if (exportRedacted) {
+        const masked = file.connectors.reduce(
+          (sum, item) => sum + item.sensitiveConfigKeys.length,
+          0,
+        );
+        message.success(
+          `已脱敏导出 ${file.connectors.length} 个连接器，屏蔽 ${masked} 处凭据（值为 ******）`,
+        );
+      } else {
+        message.success(
+          `已导出 ${file.connectors.length} 个连接器（含凭据，敏感字段已在 sensitiveConfigKeys 中标注）`,
+        );
+      }
+      setExportTarget(null);
+    } catch (reason) {
+      message.error(`导出失败：${errorMessage(reason)}`);
+    }
+  };
+
+  /** 读文件 → 解析 → 打开预览，并异步补上目标 Connect 的实时连接器名称 */
+  const handleImportFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const selected = event.target.files?.[0];
+    const target = pendingImportTarget.current;
+    event.target.value = '';
+    pendingImportTarget.current = null;
+    if (!selected || !target) {
+      return;
+    }
+
+    let raw = '';
+    try {
+      raw = await selected.text();
+    } catch (reason) {
+      modal.error({
+        title: '读取导入文件失败',
+        content: errorMessage(reason),
+      });
+      return;
+    }
+
+    const parsed = parseTransferFile(raw);
+    if (!parsed.file) {
+      modal.error({
+        title: '导入文件不合法',
+        width: 640,
+        content: (
+          <ul className="dbz-transfer-errors">
+            {parsed.errors.map((item) => (
+              <li key={item}>{item}</li>
+            ))}
+          </ul>
+        ),
+      });
+      return;
+    }
+
+    const sessionBase: ImportSession = {
+      target,
+      file: parsed.file,
+      fileName: selected.name,
+      phase: 'preview',
+      loadingPreview: true,
+      rows: buildImportRows(
+        parsed.file,
+        target.id,
+        state.data.sources,
+        state.data.sinks,
+        null,
+      ),
+      liveNames: null,
+      outcomes: [],
+    };
+    setImportSession(sessionBase);
+
+    try {
+      const live = await kafkaConnectorApi.list(target.id);
+      const liveNames = new Set(live.map((item) => item.name));
+      setImportSession((previous) =>
+        previous && previous.target.key === target.key && previous.fileName === selected.name
+          ? {
+              ...previous,
+              loadingPreview: false,
+              liveNames,
+              rows: buildImportRows(
+                previous.file,
+                target.id,
+                state.data.sources,
+                state.data.sinks,
+                liveNames,
+              ),
+            }
+          : previous,
+      );
+    } catch (reason) {
+      setImportSession((previous) =>
+        previous && previous.target.key === target.key && previous.fileName === selected.name
+          ? {
+              ...previous,
+              loadingPreview: false,
+              liveWarning: `无法读取目标 Connect 上的实时连接器，同名冲突只能按库内记录判断：${errorMessage(reason)}`,
+            }
+          : previous,
+      );
+    }
+  };
+
+  /** 单条冲突处理方式 */
+  const setImportDecision = (
+    direction: TransferConnector['direction'],
+    connectorName: string,
+    decision: ImportDecision,
+  ) => {
+    setImportSession((previous) =>
+      previous
+        ? {
+            ...previous,
+            rows: previous.rows.map((item) =>
+              item.row.direction === direction && item.row.connectorName === connectorName
+                ? { ...item, decision }
+                : item,
+            ),
+          }
+        : previous,
+    );
+  };
+
+  /** 顶部批量选择：只影响有冲突的行，无冲突行始终新增 */
+  const setAllImportDecisions = (decision: ImportDecision) => {
+    setImportSession((previous) =>
+      previous
+        ? {
+            ...previous,
+            rows: previous.rows.map((item) =>
+              item.conflict ? { ...item, decision } : item,
+            ),
+          }
+        : previous,
+    );
+  };
+
+  /**
+   * # 执行导入
+   *
+   * 顺序固定为先上游后下游：下游按文件里的 `upstream.connectorName` 在目标环境
+   * 中查找已纳管的上游 id；找不到就把这条下游记为失败并说明缺的是哪个上游，
+   * 不静默丢弃，也不拿另一个同名记录凑合。
+   */
+  const executeImport = async () => {
+    if (!importSession) {
+      return;
+    }
+    const session = importSession;
+    const target = session.target;
+    setImportSession((previous) => (previous ? { ...previous, phase: 'running' } : previous));
+
+    const outcomes: ImportOutcome[] = [];
+    const managedSources = state.data.sources.filter(
+      (item) => item.kafkaConnectId === target.id,
+    );
+    /** 目标 Connect 上已纳管的上游：connectorName → 记录 ID */
+    const sourceLookup = new Map<string, Id>(
+      managedSources.map((item) => [item.connectorName, item.id]),
+    );
+    /** 已占用名称：库内 + 集群实时 + 文件，保证 `-imported-N` 不撞名 */
+    const taken = new Set<string>([
+      ...state.data.sources.map((item) => item.connectorName),
+      ...state.data.sinks.map((item) => item.connectorName),
+      ...(session.liveNames ? [...session.liveNames] : []),
+      ...session.file.connectors.map((item) => item.connectorName),
+    ]);
+
+    const upstreamIdOf = (row: TransferConnector): Id => {
+      const connectorName = row.upstream?.connectorName?.trim() ?? '';
+      if (!connectorName) {
+        throw new Error('缺少上游 connectorName，无法重新挂载下游连接器');
+      }
+      const id = sourceLookup.get(connectorName);
+      if (!id) {
+        throw new Error(
+          `缺少上游连接器「${row.upstream?.name || connectorName}」（connectorName=${connectorName}），目标 Connect 上没有对应的纳管记录`,
+        );
+      }
+      return id;
+    };
+
+    const addConnector = async (
+      row: TransferConnector,
+      connectorName: string,
+    ): Promise<Id> => {
+      if (row.direction === 'source') {
+        const created = await sourceConnectorApi.add({
+          kafkaConnectId: target.id,
+          name: row.name,
+          connectorName,
+          connectorConfig: row.connectorConfig,
+          remark: row.remark,
+          enabled: row.enabled,
+        });
+        return created.id;
+      }
+      const created = await sinkConnectorApi.add({
+        sourceConnectorId: upstreamIdOf(row),
+        kafkaConnectId: target.id,
+        name: row.name,
+        connectorName,
+        connectorConfig: row.connectorConfig,
+        remark: row.remark,
+        enabled: row.enabled,
+      });
+      return created.id;
+    };
+
+    const modifyConnector = async (
+      row: TransferConnector,
+      id: Id,
+      connectorName: string,
+    ): Promise<void> => {
+      if (row.direction === 'source') {
+        await sourceConnectorApi.modify({
+          id,
+          name: row.name,
+          connectorName,
+          connectorConfig: row.connectorConfig,
+          remark: row.remark,
+          enabled: row.enabled,
+        });
+        return;
+      }
+      await sinkConnectorApi.modify({
+        id,
+        name: row.name,
+        connectorName,
+        connectorConfig: row.connectorConfig,
+        remark: row.remark,
+        enabled: row.enabled,
+        sourceConnectorId: upstreamIdOf(row),
+      });
+    };
+
+    const runRow = async (preview: ImportPreviewRow): Promise<void> => {
+      const row = preview.row;
+      if (preview.conflict && preview.decision === 'skip') {
+        outcomes.push({ row, action: 'skipped' });
+        return;
+      }
+      try {
+        if (preview.conflict && preview.decision === 'keep') {
+          const renamed = nextImportedName(row.connectorName, taken);
+          const createdId = await addConnector(row, renamed);
+          taken.add(renamed);
+          const hints = [`导入件已改名为 ${renamed}`];
+          if (preview.conflict.unmanaged) {
+            hints.push(
+              `该 Connect 上另有一条未纳管的同名连接器「${row.connectorName}」，跳过或覆盖时需要单独处理`,
+            );
+          }
+          outcomes.push({
+            row,
+            action: 'kept-both',
+            renamedConnectorName: renamed,
+            message: hints.join('；'),
+          });
+          // 「两者都保留」里被改名的上游不占用原名称：文件中的下游仍按原名称挂载
+          if (row.direction === 'source' && preview.conflict.managed) {
+            sourceLookup.set(row.connectorName, preview.conflict.managed.id);
+          }
+          if (row.direction === 'source') {
+            sourceLookup.set(renamed, createdId);
+          }
+          return;
+        }
+
+        if (preview.conflict && preview.decision === 'overwrite') {
+          if (preview.conflict.managed) {
+            await modifyConnector(
+              row,
+              preview.conflict.managed.id,
+              row.connectorName,
+            );
+            if (row.direction === 'source') {
+              sourceLookup.set(row.connectorName, preview.conflict.managed.id);
+            }
+            outcomes.push({ row, action: 'overwritten-managed' });
+            return;
+          }
+          const adoptedId = await addConnector(row, row.connectorName);
+          taken.add(row.connectorName);
+          if (row.direction === 'source') {
+            sourceLookup.set(row.connectorName, adoptedId);
+          }
+          outcomes.push({ row, action: 'overwritten-adopted' });
+          return;
+        }
+
+        // 无冲突：新增并纳管
+        const createdId = await addConnector(row, row.connectorName);
+        taken.add(row.connectorName);
+        if (row.direction === 'source') {
+          sourceLookup.set(row.connectorName, createdId);
+        }
+        outcomes.push({ row, action: 'created' });
+      } catch (reason) {
+        outcomes.push({ row, action: 'failed', message: errorMessage(reason) });
+      }
+    };
+
+    // 先上游后下游：下游要用导入后的上游 id
+    for (const preview of session.rows.filter((item) => item.row.direction === 'source')) {
+      await runRow(preview);
+    }
+    for (const preview of session.rows.filter((item) => item.row.direction === 'sink')) {
+      await runRow(preview);
+    }
+
+    setImportSession((previous) =>
+      previous ? { ...previous, phase: 'result', outcomes } : previous,
+    );
+    state.reload();
+  };
+
   const renderInspector = () => {
     if (selectedEdge) {
-      const fromNode = nodes.find((node) => node.key === selectedEdge.from);
-      const toNode = nodes.find((node) => node.key === selectedEdge.to);
+      const fromNode = scopeNodes.find((node) => node.key === selectedEdge.from);
+      const toNode = scopeNodes.find((node) => node.key === selectedEdge.to);
       return (
         <div className="dbz-inspector-panel">
           <div className="dbz-inspector-head">
@@ -1719,18 +2252,19 @@ export default function ControlPlanePage() {
                 : ''}
             </span>
           </span>
-          <Tag>{nodes.length} 个节点</Tag>
+          <Tag color="blue" data-global-clusters>
+            {state.data.brokers.length} 个 Kafka 集群
+          </Tag>
           {deadLetterTotal > 0 && (
-            <Tag color="error" className="dbz-clickable" onClick={() => navigate('/dead-letter')}>
+            <Tag
+              color="error"
+              className="dbz-clickable"
+              onClick={() => navigate('/dead-letter')}
+              data-global-dead-letter
+            >
               死信 {deadLetterTotal}
             </Tag>
           )}
-          <Tag color={healthSummary.unreachable > 0 ? 'error' : 'success'}>
-            Connect 可达 {healthSummary.reachable}/{healthSummary.total}
-          </Tag>
-          <span className="dbz-canvas-loaded">
-            采集于 {state.data.loadedAt ? new Date(state.data.loadedAt).toLocaleTimeString() : '--'}
-          </span>
           <span className="dbz-canvas-refresh" data-refresh-setting>
             <Switch
               size="small"
@@ -1760,6 +2294,31 @@ export default function ControlPlanePage() {
         </Space>
       </div>
 
+      {brokerTabs.length > 1 && (
+        <div className="dbz-cluster-tabs" data-cluster-tabs>
+          <Tabs
+            size="small"
+            activeKey={resolvedBrokerId ?? undefined}
+            onChange={handleClusterTabChange}
+            items={brokerTabs.map((tab) => ({
+              key: tab.id,
+              label: (
+                <span className="dbz-cluster-tab-label" data-cluster-tab={tab.id}>
+                  {tab.name}
+                  <Tag className="dbz-cluster-tab-count">连接器 {tab.connectorCount}</Tag>
+                  <Tag
+                    color={tab.abnormalCount > 0 ? 'error' : 'default'}
+                    className="dbz-cluster-tab-abnormal"
+                  >
+                    异常 {tab.abnormalCount}
+                  </Tag>
+                </span>
+              ),
+            }))}
+          />
+        </div>
+      )}
+
       {state.error && (
         <Alert
           type="error"
@@ -1777,37 +2336,375 @@ export default function ControlPlanePage() {
           <Typography.Text type="secondary">正在读取节点与实时状态…</Typography.Text>
         </div>
       ) : (
-        <ControlPlaneCanvas
-          nodes={nodes}
-          edges={edges}
-          positions={resolvedPositions}
-          edgeBends={edgeBends}
-          selectedNodeKey={selectedNodeKey}
-          selectedEdgeId={selectedEdgeId}
-          onNodeMove={handleNodeMove}
-          onEdgeBend={handleEdgeBend}
-          onSelectNode={(key) => {
-            setSelectedNodeKey(key);
-            setSelectedEdgeId(null);
-          }}
-          onSelectEdge={(id) => {
-            setSelectedEdgeId(id);
-            setSelectedNodeKey(null);
-          }}
-          onAddChild={handleAddChild}
-          onAddRoot={() => startCreate('broker', null)}
-          onNodeAction={handleNodeAction}
-          onToggleNode={(node, enabled) => void applyToggle(node, enabled)}
-          busyNodeKey={busyNodeKey}
-          togglingNodeKey={togglingNodeKey}
-          checkingKey={checkingKey}
-          restartingKey={restartingKey}
-          searchHits={searchHits}
-          activeHitKey={activeHitKey}
-          focusToken={searchFocusToken}
-          renderInspector={renderInspector}
-        />
+        <>
+          <div className="dbz-canvas-scope-summary" data-canvas-summary>
+            <Tag color="processing" data-active-cluster>
+              {activeBrokerName}
+            </Tag>
+            <Tag>{scopeNodes.length} 个节点</Tag>
+            <Tag color={healthSummary.unreachable > 0 ? 'error' : 'success'}>
+              Connect 可达 {healthSummary.reachable}/{healthSummary.total}
+            </Tag>
+            {scopeDeadLetterTotal > 0 && (
+              <Tag color="error">当前集群死信 {scopeDeadLetterTotal}</Tag>
+            )}
+            <span className="dbz-canvas-loaded">
+              采集于{' '}
+              {state.data.loadedAt
+                ? new Date(state.data.loadedAt).toLocaleTimeString()
+                : '--'}
+            </span>
+          </div>
+          <ControlPlaneCanvas
+            key={resolvedBrokerId ?? 'all'}
+            nodes={scopeNodes}
+            edges={scopeEdges}
+            positions={resolvedPositions}
+            edgeBends={edgeBends}
+            selectedNodeKey={selectedNodeKey}
+            selectedEdgeId={selectedEdgeId}
+            onNodeMove={handleNodeMove}
+            onEdgeBend={handleEdgeBend}
+            onSelectNode={(key) => {
+              setSelectedNodeKey(key);
+              setSelectedEdgeId(null);
+            }}
+            onSelectEdge={(id) => {
+              setSelectedEdgeId(id);
+              setSelectedNodeKey(null);
+            }}
+            onAddChild={handleAddChild}
+            onAddRoot={() => startCreate('broker', null)}
+            onNodeAction={handleNodeAction}
+            onToggleNode={(node, enabled) => void applyToggle(node, enabled)}
+            busyNodeKey={busyNodeKey}
+            togglingNodeKey={togglingNodeKey}
+            checkingKey={checkingKey}
+            restartingKey={restartingKey}
+            searchHits={searchHits}
+            activeHitKey={activeHitKey}
+            focusToken={searchFocusToken}
+            renderInspector={renderInspector}
+          />
+        </>
       )}
+
+      {/* 隐藏文件输入：Connect 卡片上的导入按钮触发，目标 Connect 由 ref 记住 */}
+      <input
+        ref={importFileRef}
+        type="file"
+        accept=".json,application/json"
+        style={{ display: 'none' }}
+        data-import-file
+        onChange={(event) => void handleImportFileChange(event)}
+      />
+
+      {/* Connect 导出：默认带凭据，也可显式选择脱敏 */}
+      <Modal
+        open={exportTarget !== null}
+        title={
+          exportTarget
+            ? `导出「${(exportTarget.record as DbzKafkaConnectVo).name}」的连接器`
+            : '导出连接器'
+        }
+        onCancel={() => setExportTarget(null)}
+        okText={exportRedacted ? '导出（脱敏）' : '导出（含凭据）'}
+        onOk={executeExportConnectors}
+        okButtonProps={{ disabled: exportConnectorCount === 0 }}
+        destroyOnHidden
+      >
+        <div className="dbz-transfer-export" data-export-dialog>
+          <p>
+            将导出该 Connect 下 <strong>{exportConnectorCount}</strong> 个已纳管连接器，文件名含
+            Connect 名称与导出时间。
+          </p>
+          <Radio.Group
+            value={exportRedacted}
+            onChange={(event) => setExportRedacted(event.target.value as boolean)}
+          >
+            <Space direction="vertical">
+              <Radio value={false} data-export-mode="credential">
+                含凭据（默认）：完整配置原样导出
+              </Radio>
+              <Radio value={true} data-export-mode="redacted">
+                脱敏：口令/密钥类字段替换为 ******
+              </Radio>
+            </Space>
+          </Radio.Group>
+          {exportConnectorCount === 0 ? (
+            <Alert
+              type="info"
+              showIcon
+              message="该 Connect 下还没有已纳管连接器，没有可导出的内容。"
+            />
+          ) : exportRedacted ? (
+            <Alert
+              type="warning"
+              showIcon
+              message="脱敏导出的凭据字段不可用，导入后需要手动补齐才能正常运行。"
+            />
+          ) : (
+            <Alert
+              type="warning"
+              showIcon
+              message="含凭据导出会把口令/密钥原样写进 JSON 文件，请只在可信环境之间传递；每个连接器的 sensitiveConfigKeys 会标注敏感字段。"
+            />
+          )}
+        </div>
+      </Modal>
+
+      {/* Connect 导入：先预览冲突，再逐条选择处理方式 */}
+      <Modal
+        open={importSession !== null}
+        width={900}
+        title={
+          importSession
+            ? `从 JSON 导入到「${(importSession.target.record as DbzKafkaConnectVo).name}」`
+            : '导入连接器'
+        }
+        onCancel={() => {
+          if (importSession?.phase !== 'running') {
+            setImportSession(null);
+          }
+        }}
+        maskClosable={importSession?.phase !== 'running'}
+        destroyOnHidden
+        footer={
+          !importSession
+            ? null
+            : importSession.phase === 'result'
+              ? [
+                  <Button key="close" onClick={() => setImportSession(null)}>
+                    关闭
+                  </Button>,
+                ]
+              : importSession.phase === 'running'
+                ? [
+                    <Button key="running" type="primary" loading disabled>
+                      正在导入…
+                    </Button>,
+                  ]
+                : [
+                    <Button key="cancel" onClick={() => setImportSession(null)}>
+                      取消
+                    </Button>,
+                    <Button
+                      key="ok"
+                      type="primary"
+                      loading={importSession.loadingPreview}
+                      disabled={
+                        importSession.loadingPreview || importSession.rows.length === 0
+                      }
+                      onClick={() => void executeImport()}
+                      data-import-execute
+                    >
+                      执行导入
+                    </Button>,
+                  ]
+        }
+      >
+        {importSession && (
+          <div className="dbz-transfer-import">
+            <div className="dbz-transfer-file">
+              文件：<span className="dbz-mono">{importSession.fileName}</span> · 连接器{' '}
+              {importSession.rows.length} 条 · 冲突 {importConflictCount} 条
+            </div>
+
+            {importSession.liveWarning && (
+              <Alert type="warning" showIcon message={importSession.liveWarning} />
+            )}
+            {importSession.file.credentialMode === 'redacted' && (
+              <Alert
+                type="warning"
+                showIcon
+                message="该文件是脱敏导出，配置中的凭据为 ******；导入后需要手动补齐口令/密钥。"
+              />
+            )}
+            {importSession.target.record &&
+              !(importSession.target.record as DbzKafkaConnectVo).enabled && (
+                <Alert
+                  type="info"
+                  showIcon
+                  message="目标 Connect 已停用：导入只写库内记录，启用 Connect 后才会真正下发到集群。"
+                />
+              )}
+
+            {importSession.phase === 'result' ? (
+              <div data-import-result>
+                <div className="dbz-transfer-summary">
+                  <Tag color="success">新增 {importStats.created}</Tag>
+                  <Tag color="blue">覆盖并纳管 {importStats['overwritten-adopted']}</Tag>
+                  <Tag color="geekblue">
+                    覆盖已有纳管记录 {importStats['overwritten-managed']}
+                  </Tag>
+                  <Tag>跳过 {importStats.skipped}</Tag>
+                  <Tag color="purple">改名保留 {importStats['kept-both']}</Tag>
+                  <Tag color="error">失败 {importStats.failed}</Tag>
+                </div>
+                <div className="dbz-transfer-outcomes">
+                  {importSession.outcomes.map((outcome, index) => (
+                    <div
+                      className="dbz-transfer-outcome"
+                      key={`${outcome.row.direction}:${outcome.row.connectorName}:${index}`}
+                    >
+                      <Tag color={IMPORT_ACTION_COLOR[outcome.action]}>
+                        {IMPORT_ACTION_LABEL[outcome.action]}
+                      </Tag>
+                      <span className="dbz-transfer-outcome-name">
+                        {outcome.row.name}
+                      </span>
+                      <span className="dbz-mono">
+                        {outcome.renamedConnectorName ?? outcome.row.connectorName}
+                      </span>
+                      {outcome.message && (
+                        <span className="dbz-transfer-outcome-message">{outcome.message}</span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <>
+                {importConflictCount > 0 && (
+                  <div className="dbz-transfer-bulk" data-import-bulk>
+                    <span>冲突处理批量设置（无冲突行始终新增）：</span>
+                    <Button
+                      size="small"
+                      onClick={() => setAllImportDecisions('overwrite')}
+                      data-import-bulk-overwrite
+                    >
+                      全部覆盖
+                    </Button>
+                    <Button
+                      size="small"
+                      onClick={() => setAllImportDecisions('skip')}
+                      data-import-bulk-skip
+                    >
+                      全部跳过
+                    </Button>
+                    <Button
+                      size="small"
+                      onClick={() => setAllImportDecisions('keep')}
+                      data-import-bulk-keep
+                    >
+                      全部保留
+                    </Button>
+                  </div>
+                )}
+                <Table<ImportPreviewRow>
+                  size="small"
+                  rowKey={(item) => `${item.row.direction}:${item.row.connectorName}`}
+                  loading={importSession.loadingPreview}
+                  pagination={false}
+                  dataSource={importSession.rows}
+                  scroll={{ y: 360 }}
+                  onRow={(item) => ({
+                    'data-import-row': `${item.row.direction}:${item.row.connectorName}`,
+                  } as HTMLAttributes<HTMLElement>)}
+                  columns={[
+                    {
+                      title: '方向',
+                      key: 'direction',
+                      width: 70,
+                      render: (_value: unknown, item: ImportPreviewRow) => (
+                        <Tag color={item.row.direction === 'source' ? 'cyan' : 'magenta'}>
+                          {item.row.direction === 'source' ? '上游' : '下游'}
+                        </Tag>
+                      ),
+                    },
+                    {
+                      title: '名称 / connectorName',
+                      key: 'name',
+                      render: (_value: unknown, item: ImportPreviewRow) => (
+                        <div>
+                          <div>{item.row.name}</div>
+                          <div className="dbz-mono">{item.row.connectorName}</div>
+                        </div>
+                      ),
+                    },
+                    {
+                      title: '上游',
+                      key: 'upstream',
+                      render: (_value: unknown, item: ImportPreviewRow) =>
+                        item.row.direction === 'sink' ? (
+                          item.row.upstream ? (
+                            <div>
+                              <div>{item.row.upstream.name || '--'}</div>
+                              <div className="dbz-mono">
+                                {item.row.upstream.connectorName}
+                              </div>
+                            </div>
+                          ) : (
+                            <Tag color="error">缺少上游信息</Tag>
+                          )
+                        ) : (
+                          '--'
+                        ),
+                    },
+                    {
+                      title: '同名冲突',
+                      key: 'conflict',
+                      width: 220,
+                      render: (_value: unknown, item: ImportPreviewRow) =>
+                        item.conflict ? (
+                          <div className="dbz-transfer-conflict">
+                            <Tag color="warning">同名冲突</Tag>
+                            <span>
+                              {item.conflict.managed
+                                ? `已有纳管记录「${item.conflict.managed.name}」`
+                                : '集群上未纳管'}
+                            </span>
+                          </div>
+                        ) : (
+                          <Tag color="success">无冲突，将新增</Tag>
+                        ),
+                    },
+                    {
+                      title: '处理方式',
+                      key: 'decision',
+                      width: 220,
+                      render: (_value: unknown, item: ImportPreviewRow) =>
+                        item.conflict ? (
+                          <span
+                            data-import-decision={`${item.row.direction}:${item.row.connectorName}`}
+                          >
+                            <Select<ImportDecision>
+                              size="small"
+                              value={item.decision}
+                              style={{ width: 200 }}
+                              onChange={(value) =>
+                                setImportDecision(
+                                  item.row.direction,
+                                  item.row.connectorName,
+                                  value,
+                                )
+                              }
+                              options={[
+                                {
+                                  value: 'overwrite',
+                                  label: item.conflict.managed
+                                    ? IMPORT_ACTION_LABEL['overwritten-managed']
+                                    : IMPORT_ACTION_LABEL['overwritten-adopted'],
+                                },
+                                { value: 'skip', label: IMPORT_DECISION_LABEL.skip },
+                                {
+                                  value: 'keep',
+                                  label: `${IMPORT_DECISION_LABEL.keep}（改名 -imported-N）`,
+                                },
+                              ]}
+                            />
+                          </span>
+                        ) : (
+                          <Typography.Text type="secondary">新增</Typography.Text>
+                        ),
+                    },
+                  ]}
+                />
+              </>
+            )}
+          </div>
+        )}
+      </Modal>
 
       <KafkaBrokerForm
         open={createKind === 'broker' || editTarget?.kind === 'broker'}

@@ -14,6 +14,7 @@ import {
   CloudServerOutlined,
   DatabaseOutlined,
   DeleteOutlined,
+  DownloadOutlined,
   EditOutlined,
   ExportOutlined,
   HistoryOutlined,
@@ -23,6 +24,7 @@ import {
   ReloadOutlined,
   SyncOutlined,
   ThunderboltOutlined,
+  UploadOutlined,
 } from '@ant-design/icons';
 import { Button, Switch, Tag, Tooltip } from 'antd';
 import {
@@ -359,6 +361,20 @@ function NodeActions({
     });
   }
 
+  // Connect：导入导出按整台 Connect 处理，避免在连接器卡片上重复入口
+  if (node.kind === 'connect') {
+    rightItems.push({
+      action: 'export-connectors',
+      title: '导出该 Connect 下全部连接器（JSON，默认含凭据）',
+      icon: <DownloadOutlined />,
+    });
+    rightItems.push({
+      action: 'import-connectors',
+      title: '从 JSON 导入连接器，同名可覆盖、跳过或两者都保留',
+      icon: <UploadOutlined />,
+    });
+  }
+
   // 重新同步只给上游连接器：向下游发增量快照没有「重读源表」这回事
   if (node.kind === 'source') {
     rightItems.push({
@@ -599,15 +615,22 @@ export default function ControlPlaneCanvas({
     }
     const width = Math.max(1, maxX - minX);
     const height = Math.max(1, maxY - minY);
+    // 右下角缩略图、左下角图例是覆盖层：适应画布时给它们留出空间，
+    // 避免节点被压在覆盖层下面点不到
+    const pad = 40;
+    const reservedRight = 210;
+    const reservedBottom = 140;
+    const availableWidth = Math.max(1, viewportSize.w - pad * 2 - reservedRight);
+    const availableHeight = Math.max(1, viewportSize.h - pad * 2 - reservedBottom);
     const scale = clamp(
-      Math.min((viewportSize.w - 80) / width, (viewportSize.h - 80) / height),
+      Math.min(availableWidth / width, availableHeight / height),
       MIN_SCALE,
       1.1,
     );
     setView({
       scale,
-      x: (viewportSize.w - width * scale) / 2 - minX * scale,
-      y: (viewportSize.h - height * scale) / 2 - minY * scale,
+      x: pad + (availableWidth - width * scale) / 2 - minX * scale,
+      y: pad + (availableHeight - height * scale) / 2 - minY * scale,
     });
   }, [nodes, positions, viewportSize]);
 

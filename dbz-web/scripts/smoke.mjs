@@ -24,7 +24,7 @@
  * 截图输出到系统临时目录 `dbz-web-smoke/shots`，失败时按截图定位问题。
  */
 
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
@@ -126,7 +126,7 @@ const sources = [
     name: '订单库增量',
     connectorName: 'mysql-orders-source',
     connectorConfig:
-      '{"connector.class":"io.debezium.connector.mysql.MySqlConnector","snapshot.mode":"when_needed"}',
+      '{"connector.class":"io.debezium.connector.mysql.MySqlConnector","snapshot.mode":"when_needed","database.password":"dbz-secret"}',
     runStatus: 1,
     remark: '',
     enabled: true,
@@ -317,10 +317,37 @@ const connectors = [
   },
 ];
 
+/** 每台 Connect 上真实存在的连接器：导入冲突检测按 kafkaConnectId 取 */
+const connectorsByConnect = {
+  101: [connectors[0], connectors[1]],
+  102: [
+    {
+      name: 'mysql-users-source',
+      connectorClass: 'io.debezium.connector.mysql.MySqlConnector',
+      type: 'source',
+      state: 0,
+      workerId: '10.0.0.12:8083',
+      trace: null,
+      tasks: [{ id: 0, state: 0, workerId: '10.0.0.12:8083' }],
+    },
+    connectors[2],
+  ],
+};
+
 const plugins = [
   { class: 'io.debezium.connector.mysql.MySqlConnector', type: 'source', version: '2.5.0.Final' },
   { class: 'io.debezium.connector.jdbc.JdbcSinkConnector', type: 'sink', version: '2.5.0.Final' },
 ];
+
+/** 单集群模式：只返回 401 下的数据，用来验证 tab 栏在单集群时隐藏 */
+let singleClusterOnly = false;
+const visibleBrokers = () => (singleClusterOnly ? brokers.filter((item) => item.id === '401') : brokers);
+const visibleClusters = () =>
+  singleClusterOnly ? clusters.filter((item) => item.kafkaBrokerId === '401') : clusters;
+const visibleSources = () =>
+  singleClusterOnly ? sources.filter((item) => item.kafkaConnectId === '101') : sources;
+const visibleSinks = () =>
+  singleClusterOnly ? sinks.filter((item) => item.kafkaConnectId === '101') : sinks;
 
 const pageOf = (list) => ro({ pageNum: 1, total: list.length, list });
 
@@ -536,6 +563,9 @@ const getRequests = [];
 /** 控制面画布布局：PUT 落库、GET 读取，用来验证「刷新后位置保持」 */
 const layoutStore = [];
 let nextBrokerId = 499;
+/** 导入会真的新增连接器：返回带 id 的记录，让下游按上游 id 重挂 */
+let nextSourceId = 601;
+let nextSinkId = 701;
 /** 置 true 让下一次预检失败一次，用完自动复位：用来验证「预检失败能原地重试」 */
 let failNextPreview = false;
 /** 控制面状态刷新次数：验证进入页面、手动刷新与自动刷新都真的回写了状态 */
@@ -765,7 +795,7 @@ await page.route('**/dbz/**', async (route) => {
       if (record) {
         Object.assign(record, body);
       }
-      return route.fulfill({ json: { result: 1, msg: '成功', timestamp: Date.now() } });
+      return route.fulfill({ json: ro(record ?? null) });
     }
     // 画布布局：按 (nodeType, nodeId) 覆盖写，模拟服务端的 upsert
     if (path === '/dbz/control-plane/layout' && request.method() === 'PUT') {
@@ -849,6 +879,49 @@ await page.route('**/dbz/**', async (route) => {
         }),
       });
     }
+    // 导入新增上游：返回带 id 的记录，下游才能按 imported id 重挂
+    if (path === '/dbz/source-connector' && request.method() === 'POST') {
+      const body = request.postDataJSON();
+      const record = {
+        id: String(nextSourceId),
+        kafkaConnectId: body.kafkaConnectId,
+        name: body.name,
+        connectorName: body.connectorName,
+        connectorConfig: body.connectorConfig,
+        runStatus: 0,
+        runMsg: null,
+        remark: body.remark ?? '',
+        enabled: body.enabled ?? true,
+        createrId: '1',
+        createMs: String(Date.now()),
+        updaterId: '1',
+        updateMs: String(Date.now()),
+      };
+      nextSourceId += 1;
+      return route.fulfill({ json: ro(record) });
+    }
+    // 导入新增下游：返回带 id 的记录，验证「按上游 id 重挂」
+    if (path === '/dbz/sink-connector' && request.method() === 'POST') {
+      const body = request.postDataJSON();
+      const record = {
+        id: String(nextSinkId),
+        sourceConnectorId: body.sourceConnectorId,
+        kafkaConnectId: body.kafkaConnectId,
+        name: body.name,
+        connectorName: body.connectorName,
+        connectorConfig: body.connectorConfig,
+        runStatus: 0,
+        runMsg: null,
+        remark: body.remark ?? '',
+        enabled: body.enabled ?? true,
+        createrId: '1',
+        createMs: String(Date.now()),
+        updaterId: '1',
+        updateMs: String(Date.now()),
+      };
+      nextSinkId += 1;
+      return route.fulfill({ json: ro(record) });
+    }
     // 调色板新增 Kafka 集群：真的把记录塞进夹具，页面刷新后才能找到新节点并保存布局
     if (path === '/dbz/kafka-broker' && request.method() === 'POST') {
       const body = request.postDataJSON();
@@ -875,15 +948,20 @@ await page.route('**/dbz/**', async (route) => {
     return;
   }
 
-  if (path === '/dbz/kafka-broker/page') return route.fulfill({ json: pageOf(brokers) });
-  if (path === '/dbz/kafka-broker/list') return route.fulfill({ json: ro(brokers) });
-  if (path === '/dbz/kafka-connect/page') return route.fulfill({ json: pageOf(clusters) });
-  if (path === '/dbz/kafka-connect/list') return route.fulfill({ json: ro(clusters) });
-  if (path === '/dbz/source-connector/page') return route.fulfill({ json: pageOf(sources) });
-  if (path === '/dbz/source-connector/list') return route.fulfill({ json: ro(sources) });
-  if (path === '/dbz/sink-connector/page') return route.fulfill({ json: pageOf(sinks) });
-  if (path === '/dbz/sink-connector/list') return route.fulfill({ json: ro(sinks) });
-  if (path === '/dbz/kafka-connector/list') return route.fulfill({ json: ro(connectors) });
+  if (path === '/dbz/kafka-broker/page') return route.fulfill({ json: pageOf(visibleBrokers()) });
+  if (path === '/dbz/kafka-broker/list') return route.fulfill({ json: ro(visibleBrokers()) });
+  if (path === '/dbz/kafka-connect/page') return route.fulfill({ json: pageOf(visibleClusters()) });
+  if (path === '/dbz/kafka-connect/list') return route.fulfill({ json: ro(visibleClusters()) });
+  if (path === '/dbz/source-connector/page') return route.fulfill({ json: pageOf(visibleSources()) });
+  if (path === '/dbz/source-connector/list') return route.fulfill({ json: ro(visibleSources()) });
+  if (path === '/dbz/sink-connector/page') return route.fulfill({ json: pageOf(visibleSinks()) });
+  if (path === '/dbz/sink-connector/list') return route.fulfill({ json: ro(visibleSinks()) });
+  if (path === '/dbz/kafka-connector/list') {
+    const kafkaConnectId = url.searchParams.get('kafkaConnectId');
+    return route.fulfill({
+      json: ro(kafkaConnectId ? connectorsByConnect[kafkaConnectId] ?? [] : connectors),
+    });
+  }
   if (path === '/dbz/kafka-connector/plugins') return route.fulfill({ json: ro(plugins) });
   // Connect 自身健康：可达、版本与 worker 数（两台启用中的 Connect 都命中）
   if (path === '/dbz/kafka-connect/health') {
@@ -1058,25 +1136,70 @@ try {
   await page.goto(`${base}/control-plane`, { waitUntil: 'networkidle' });
   await page.waitForSelector('.dbz-graph-node[data-node-key="1:401"]');
   await page
-    .waitForFunction(() => document.querySelectorAll('.dbz-graph-node').length === 11, null, {
+    .waitForFunction(() => document.querySelectorAll('.dbz-graph-node').length === 7, null, {
       timeout: 15000,
     })
     .catch(() => {});
   await page
-    .waitForFunction(() => document.querySelectorAll('.dbz-graph-edge-hit').length === 8, null, {
+    .waitForFunction(() => document.querySelectorAll('.dbz-graph-edge-hit').length === 6, null, {
       timeout: 15000,
     })
     .catch(() => {});
   check(
-    '画布渲染 11 个节点（3 broker + 2 Connect + 2 上游 + 4 下游）',
-    (await page.locator('.dbz-graph-node').count()) === 11,
+    '默认只渲染当前集群 7 个节点（1 broker + 1 Connect + 1 上游 + 4 下游）',
+    (await page.locator('.dbz-graph-node').count()) === 7,
     `实际 ${await page.locator('.dbz-graph-node').count()}`,
   );
   check(
-    '画布只渲染归属连线（8 条）',
-    (await page.locator('.dbz-graph-edge-hit').count()) === 8,
+    '当前集群只渲染归属连线（6 条）',
+    (await page.locator('.dbz-graph-edge-hit').count()) === 6,
     `实际 ${await page.locator('.dbz-graph-edge-hit').count()}`,
   );
+
+  // 多集群 tab：每个 tab 显示本集群连接器数与异常数
+  check(
+    '多集群时显示集群 tab 栏',
+    (await page.locator('[data-cluster-tabs]').isVisible()) &&
+      (await page.locator('[data-cluster-tab]').count()) === 3,
+    `tab 数 ${await page.locator('[data-cluster-tab]').count()}`,
+  );
+  const tab401Text = (await page.locator('[data-cluster-tab="401"]').innerText()).replace(/\s+/g, ' ');
+  const tab402Text = (await page.locator('[data-cluster-tab="402"]').innerText()).replace(/\s+/g, ' ');
+  const tab403Text = (await page.locator('[data-cluster-tab="403"]').innerText()).replace(/\s+/g, ' ');
+  check(
+    'tab 显示连接器数与异常数',
+    tab401Text.includes('连接器 5') &&
+      tab401Text.includes('异常 2') &&
+      tab402Text.includes('连接器 1') &&
+      tab402Text.includes('异常 0') &&
+      tab403Text.includes('连接器 0') &&
+      tab403Text.includes('异常 0'),
+    `${tab401Text} | ${tab402Text} | ${tab403Text}`,
+  );
+
+  // 切到风控消息集群：只显示该集群的 3 个节点，再切回来不串数据
+  await page.locator('[data-cluster-tab="402"]').click();
+  await page
+    .waitForFunction(() => document.querySelectorAll('.dbz-graph-node').length === 3, null, {
+      timeout: 15000,
+    })
+    .catch(() => {});
+  check(
+    '切 tab 只显示该集群节点',
+    (await page.locator('.dbz-graph-node').count()) === 3 &&
+      (await page.locator('.dbz-graph-node[data-node-key="4:301"]').count()) === 0 &&
+      (await page.locator('[data-canvas-summary] .ant-tag:has-text("3 个节点")').count()) === 1 &&
+      (await page.locator('[data-canvas-summary] [data-active-cluster]').innerText()).includes(
+        '风控消息集群',
+      ),
+    `节点 ${await page.locator('.dbz-graph-node').count()}`,
+  );
+  await page.locator('[data-cluster-tab="401"]').click();
+  await page
+    .waitForFunction(() => document.querySelectorAll('.dbz-graph-node').length === 7, null, {
+      timeout: 15000,
+    })
+    .catch(() => {});
   check(
     '没有数据流连线，连线不再分两种类型',
     (await page.locator('.dbz-graph-edge--flow').count()) === 0 &&
@@ -1117,15 +1240,20 @@ try {
     legendText,
   );
   check(
-    '顶栏展示节点数',
-    (await page.locator('.dbz-canvas-topbar .ant-tag:has-text("11 个节点")').count()) === 1,
+    'tab 栏外汇总 Kafka 集群总数',
+    (await page.locator('.dbz-canvas-topbar .ant-tag:has-text("3 个 Kafka 集群")').count()) === 1,
   );
   check(
-    '顶部汇总 Connect 健康可达数',
-    (await page.locator('.dbz-canvas-topbar .ant-tag:has-text("Connect 可达 2/2")').count()) === 1,
+    '画布区展示当前集群节点数',
+    (await page.locator('[data-canvas-summary] .ant-tag:has-text("7 个节点")').count()) === 1,
   );
   check(
-    '顶部汇总待处理死信总数',
+    '画布区汇总当前集群 Connect 健康可达数',
+    (await page.locator('[data-canvas-summary] .ant-tag:has-text("Connect 可达 1/1")').count()) ===
+      1,
+  );
+  check(
+    'tab 栏外汇总全局待处理死信总数',
     (await page.locator('.dbz-canvas-topbar .ant-tag:has-text("死信 1")').count()) === 1,
   );
   check(
@@ -1143,9 +1271,32 @@ try {
       )
       .allInnerTexts()
   ).map((item) => item.trim());
-  for (const label of ['运行中', '已停止', '仅纳管未部署', '失败', '不可达', '已停用']) {
+  for (const label of ['运行中', '仅纳管未部署', '失败', '不可达', '已停用']) {
     check(`统一状态「${label}」正确呈现`, statusLabels.includes(label), statusLabels.join(','));
   }
+  // 「已停止」只存在于风控消息集群，切过去单独确认
+  await page.locator('[data-cluster-tab="402"]').click();
+  await page
+    .waitForFunction(() => document.querySelectorAll('.dbz-graph-node').length === 3, null, {
+      timeout: 15000,
+    })
+    .catch(() => {});
+  const otherTabStatusLabels = (
+    await page
+      .locator('.dbz-graph-node--source .dbz-graph-status-tag .ant-tag')
+      .allInnerTexts()
+  ).map((item) => item.trim());
+  check(
+    '统一状态「已停止」正确呈现',
+    otherTabStatusLabels.includes('已停止'),
+    otherTabStatusLabels.join(','),
+  );
+  await page.locator('[data-cluster-tab="401"]').click();
+  await page
+    .waitForFunction(() => document.querySelectorAll('.dbz-graph-node').length === 7, null, {
+      timeout: 15000,
+    })
+    .catch(() => {});
   const connectorStatusCounts = await page
     .locator('.dbz-graph-node--source, .dbz-graph-node--sink')
     .evaluateAll((elements) =>
@@ -1289,9 +1440,9 @@ try {
     });
   check(
     '「+」只出现在 Kafka 集群/Connect/上游连接器底部',
-    addCounts.broker === 3 &&
-      addCounts.connect === 2 &&
-      addCounts.source === 2 &&
+    addCounts.broker === 1 &&
+      addCounts.connect === 1 &&
+      addCounts.source === 1 &&
       addCounts.sink === 0,
     JSON.stringify(addCounts),
   );
@@ -1435,7 +1586,13 @@ try {
     JSON.stringify(editRequest?.body),
   );
 
-  // 卡片上的集群检测
+  // 卡片上的集群检测：402 在另一个集群 tab，先切过去
+  await page.locator('[data-cluster-tab="402"]').click();
+  await page
+    .waitForFunction(() => document.querySelectorAll('.dbz-graph-node').length === 3, null, {
+      timeout: 15000,
+    })
+    .catch(() => {});
   await page.locator('.dbz-graph-node[data-node-key="1:402"] [data-node-action="check"]').click();
   // 检测是异步请求，等提示真的出现再读，避免只看到上一次「修改成功」
   await page
@@ -1455,6 +1612,12 @@ try {
     brokerMessages.some((text) => text.includes('集群检测通过')),
     brokerMessages.join(' | '),
   );
+  await page.locator('[data-cluster-tab="401"]').click();
+  await page
+    .waitForFunction(() => document.querySelectorAll('.dbz-graph-node').length === 7, null, {
+      timeout: 15000,
+    })
+    .catch(() => {});
 
   // C. Connect 健康检测：可达 / 版本 / worker
   await page.locator('.dbz-graph-node[data-node-key="2:101"] [data-node-action="check"]').click();
@@ -1552,7 +1715,7 @@ try {
   // 卡片上的启用/停用：单个 Switch，请求中 loading，失败回滚
   check(
     '每张卡片有且只有一个启用开关',
-    (await page.locator('.dbz-graph-switch .ant-switch').count()) === 11,
+    (await page.locator('.dbz-graph-switch .ant-switch').count()) === 7,
     `实际 ${await page.locator('.dbz-graph-switch .ant-switch').count()}`,
   );
   const sink301 = page.locator('.dbz-graph-node[data-node-key="4:301"]');
@@ -1697,6 +1860,15 @@ try {
       !unavailableText.includes('口令错误：'),
     unavailableText.slice(0, 200),
   );
+  // 卡片 Tooltip 可能还挂在焦点上，先移开指针再点取消，避免盖住弹窗按钮
+  await page.evaluate(() => {
+    document.activeElement?.blur?.();
+    document.querySelectorAll('.dbz-graph-node').forEach((node) => {
+      node.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }));
+    });
+  });
+  await page.mouse.move(24, 24);
+  await page.waitForTimeout(200);
   await wrongPasswordModal.locator('.ant-modal-footer .ant-btn').first().click();
   await waitNoVisibleModal();
 
@@ -1902,11 +2074,12 @@ try {
   );
   check(
     '新增后顶栏节点数更新',
-    (await page.locator('.dbz-canvas-topbar .ant-tag:has-text("12 个节点")').count()) === 1,
+    (await page.locator('.dbz-canvas-topbar .ant-tag:has-text("4 个 Kafka 集群")').count()) === 1,
   );
 
-  // 新建根节点的布局刷新后仍在
+  // 新建根节点的布局刷新后仍在：刷新后默认回到第一个集群，先切到新集群
   await page.reload({ waitUntil: 'networkidle' });
+  await page.locator('[data-cluster-tab="499"]').click();
   await page.waitForSelector('.dbz-graph-node[data-node-key="1:499"]');
   const createdNodeLeft = await page
     .locator('.dbz-graph-node[data-node-key="1:499"]')
@@ -1916,6 +2089,13 @@ try {
     Math.abs(createdNodeLeft - createLayout.body.x) < 1,
     `left=${createdNodeLeft}，保存值=${createLayout.body.x}`,
   );
+  // 回到原集群，后面的用例继续按 401 的节点断言
+  await page.locator('[data-cluster-tab="401"]').click();
+  await page
+    .waitForFunction(() => document.querySelectorAll('.dbz-graph-node').length === 7, null, {
+      timeout: 15000,
+    })
+    .catch(() => {});
 
   // 新增节点会写进 broker 夹具，后面的列表用例仍按原始 3 条断言，这里恢复夹具
   brokers.splice(
@@ -2178,6 +2358,298 @@ try {
       .count()) >= 1,
   );
   await waitNoVisibleModal();
+
+  // G. Connect 导入导出：默认含凭据、脱敏选项、同名冲突三种处理与结果分类
+  const sourcesBeforeTransfer = sources.map((item) => ({ ...item }));
+  const sinksBeforeTransfer = sinks.map((item) => ({ ...item }));
+  const connectNode101 = page.locator('.dbz-graph-node[data-node-key="2:101"]');
+  check(
+    'Connect 卡片有导出与导入入口',
+    (await connectNode101.locator('[data-node-action="export-connectors"]').count()) === 1 &&
+      (await connectNode101.locator('[data-node-action="import-connectors"]').count()) === 1,
+  );
+
+  // 默认含凭据导出
+  await connectNode101.locator('[data-node-action="export-connectors"]').click();
+  await page.waitForSelector('.ant-modal-wrap:visible');
+  const exportModal = visibleModal().last();
+  check(
+    '导出默认勾选含凭据',
+    await exportModal
+      .locator('.ant-radio-wrapper:has-text("含凭据（默认）") input')
+      .isChecked(),
+  );
+  const [exportDownload] = await Promise.all([
+    page.waitForEvent('download'),
+    exportModal.locator('.ant-modal-footer .ant-btn-primary').click(),
+  ]);
+  const exportPath = join(SHOTS, 'connect-export.json');
+  await exportDownload.saveAs(exportPath);
+  const exportedFile = JSON.parse(readFileSync(exportPath, 'utf8'));
+  const exportedSource = exportedFile.connectors.find((item) => item.direction === 'source');
+  const exportedSink = exportedFile.connectors.find(
+    (item) => item.connectorName === 'jdbc-orders-sink',
+  );
+  check(
+    '导出文件名含 Connect 名称与时间戳',
+    /^dbz-connect-.*-\d{8}-\d{6}\.json$/.test(await exportDownload.suggestedFilename()),
+    await exportDownload.suggestedFilename(),
+  );
+  check(
+    '默认导出包含 5 个连接器与完整凭据，并标注敏感字段',
+    exportedFile.credentialMode === 'included' &&
+      exportedFile.connectors.length === 5 &&
+      exportedSource.connectorConfig.includes('dbz-secret') &&
+      exportedSource.sensitiveConfigKeys.includes('database.password'),
+    JSON.stringify(exportedFile.connectors.slice(0, 1)),
+  );
+  check(
+    '导出下游带所属上游名称与 id',
+    exportedSink?.upstream?.connectorName === 'mysql-orders-source' &&
+      exportedSink?.upstream?.id === '201',
+    JSON.stringify(exportedSink?.upstream),
+  );
+  await waitNoVisibleModal();
+
+  // 脱敏导出：凭据字段替换成掩码
+  await connectNode101.locator('[data-node-action="export-connectors"]').click();
+  await page.waitForSelector('.ant-modal-wrap:visible');
+  const redactedModal = visibleModal().last();
+  await redactedModal.locator('.ant-radio-wrapper:has-text("脱敏") input').check();
+  const [redactedDownload] = await Promise.all([
+    page.waitForEvent('download'),
+    redactedModal.locator('.ant-modal-footer .ant-btn-primary').click(),
+  ]);
+  const redactedPath = join(SHOTS, 'connect-export-redacted.json');
+  await redactedDownload.saveAs(redactedPath);
+  const redactedFile = JSON.parse(readFileSync(redactedPath, 'utf8'));
+  const redactedSource = redactedFile.connectors.find((item) => item.direction === 'source');
+  check(
+    '脱敏导出把凭据字段替换为掩码',
+    redactedFile.credentialMode === 'redacted' &&
+      !redactedSource.connectorConfig.includes('dbz-secret') &&
+      redactedSource.connectorConfig.includes('******') &&
+      redactedSource.sensitiveConfigKeys.includes('database.password'),
+    redactedSource.connectorConfig,
+  );
+  await waitNoVisibleModal();
+
+  // 导入同一份文件到原 Connect：预览冲突，批量跳过 + 单条覆盖 + 单条保留
+  const [importChooser] = await Promise.all([
+    page.waitForEvent('filechooser'),
+    connectNode101.locator('[data-node-action="import-connectors"]').click(),
+  ]);
+  await importChooser.setFiles(exportPath);
+  await page.waitForSelector('.ant-modal-wrap:visible');
+  const importModal = visibleModal().last();
+  await page
+    .waitForFunction(() => document.querySelectorAll('[data-import-row]').length === 5, null, {
+      timeout: 15000,
+    })
+    .catch(() => {});
+  const importPreviewText = (await importModal.innerText()).replace(/\s+/g, ' ');
+  check(
+    '导入预览列出 5 条连接器并标出同名冲突',
+    (await page.locator('[data-import-row]').count()) === 5 &&
+      importPreviewText.includes('同名冲突') &&
+      importPreviewText.includes('已有纳管记录'),
+    importPreviewText.slice(0, 240),
+  );
+  check(
+    '导入提供全部覆盖/全部跳过/全部保留',
+    (await importModal.locator('[data-import-bulk-overwrite]').count()) === 1 &&
+      (await importModal.locator('[data-import-bulk-skip]').count()) === 1 &&
+      (await importModal.locator('[data-import-bulk-keep]').count()) === 1,
+  );
+  await importModal.locator('[data-import-bulk-skip]').click();
+  const sink301Row = page.locator('[data-import-row="sink:jdbc-orders-sink"]');
+  await sink301Row.locator('.ant-select').click();
+  await page
+    .locator('.ant-select-dropdown:visible .ant-select-item-option')
+    .filter({ hasText: '覆盖已有纳管记录' })
+    .last()
+    .click();
+  check(
+    '单条可切换为覆盖已有纳管记录',
+    (await sink301Row.innerText()).includes('覆盖已有纳管记录'),
+  );
+  await page.waitForTimeout(300);
+  const sink302Row = page.locator('[data-import-row="sink:tmp-disabled-sink"]');
+  await sink302Row.locator('.ant-select').click();
+  await page
+    .locator('.ant-select-dropdown:not(.ant-select-dropdown-hidden) .ant-select-item-option')
+    .filter({ hasText: '两者都保留' })
+    .first()
+    .click();
+  check(
+    '单条可切换为两者都保留',
+    (await sink302Row.innerText()).includes('两者都保留'),
+  );
+  const postedBeforeImport = posted.length;
+  await importModal.locator('[data-import-execute]').click();
+  await page.waitForSelector('[data-import-result]', { timeout: 15000 });
+  const importResultText = (await page.locator('[data-import-result]').innerText()).replace(
+    /\s+/g,
+    ' ',
+  );
+  check(
+    '结果汇总区分覆盖并纳管与覆盖已有纳管记录',
+    importResultText.includes('覆盖并纳管 0') &&
+      importResultText.includes('覆盖已有纳管记录 1') &&
+      importResultText.includes('跳过 3') &&
+      importResultText.includes('改名保留 1') &&
+      importResultText.includes('失败 0'),
+    importResultText.slice(0, 240),
+  );
+  const importWrites = posted.slice(postedBeforeImport);
+  const overwriteSinkRequest = importWrites.find(
+    (item) =>
+      item.method === 'PUT' &&
+      item.path === '/dbz/sink-connector' &&
+      item.body?.id === '301',
+  );
+  const keptSinkRequest = importWrites.find(
+    (item) =>
+      item.method === 'POST' &&
+      item.path === '/dbz/sink-connector' &&
+      item.body?.connectorName === 'tmp-disabled-sink-imported-1',
+  );
+  check(
+    '覆盖已有纳管记录走修改接口且不新建',
+    Boolean(overwriteSinkRequest) &&
+      overwriteSinkRequest.body.connectorName === 'jdbc-orders-sink' &&
+      overwriteSinkRequest.body.sourceConnectorId === '201',
+    JSON.stringify(overwriteSinkRequest?.body),
+  );
+  check(
+    '两者都保留用 -imported-1 名称新增并挂到原上游',
+    Boolean(keptSinkRequest) && keptSinkRequest.body.sourceConnectorId === '201',
+    JSON.stringify(keptSinkRequest?.body),
+  );
+  check(
+    '跳过的连接器没有产生写请求',
+    !importWrites.some(
+      (item) => item.method === 'PUT' && item.path === '/dbz/source-connector',
+    ),
+  );
+  await importModal.locator('.ant-modal-footer .ant-btn').click();
+  await waitNoVisibleModal();
+
+  // 未纳管同名连接器：两者都保留要改名并明确提示原连接器仍未纳管
+  await page.locator('[data-cluster-tab="402"]').click();
+  await page
+    .waitForFunction(() => document.querySelectorAll('.dbz-graph-node').length === 3, null, {
+      timeout: 15000,
+    })
+    .catch(() => {});
+  const manualImportPath = join(SHOTS, 'manual-import.json');
+  writeFileSync(
+    manualImportPath,
+    JSON.stringify({
+      format: 'dbz-connect-transfer',
+      version: 1,
+      exportedAt: '2026-11-07T00:00:00.000Z',
+      credentialMode: 'included',
+      connect: { id: '102', name: '灰度集群', url: 'http://10.0.0.12:8083', brokerName: '风控消息集群' },
+      connectors: [
+        {
+          direction: 'source',
+          name: '手工连接器副本',
+          connectorName: 'manual-test-connector',
+          connectorConfig:
+            '{"connector.class":"io.debezium.connector.postgresql.PostgresConnector"}',
+          remark: '',
+          enabled: true,
+          sensitiveConfigKeys: [],
+        },
+      ],
+    }),
+  );
+  const [manualChooser] = await Promise.all([
+    page.waitForEvent('filechooser'),
+    page
+      .locator(
+        '.dbz-graph-node[data-node-key="2:102"] [data-node-action="import-connectors"]',
+      )
+      .click(),
+  ]);
+  await manualChooser.setFiles(manualImportPath);
+  await page.waitForSelector('.ant-modal-wrap:visible');
+  const manualModal = visibleModal().last();
+  await page
+    .waitForFunction(() => document.querySelectorAll('[data-import-row]').length === 1, null, {
+      timeout: 15000,
+    })
+    .catch(() => {});
+  const manualPreviewText = (await manualModal.innerText()).replace(/\s+/g, ' ');
+  check(
+    '集群上未纳管的同名连接器也判定为冲突',
+    manualPreviewText.includes('同名冲突') && manualPreviewText.includes('集群上未纳管'),
+    manualPreviewText.slice(0, 220),
+  );
+  await manualModal.locator('[data-import-bulk-keep]').click();
+  const postedBeforeManual = posted.length;
+  await manualModal.locator('[data-import-execute]').click();
+  await page.waitForSelector('[data-import-result]', { timeout: 15000 });
+  const manualResultText = (await page.locator('[data-import-result]').innerText()).replace(
+    /\s+/g,
+    ' ',
+  );
+  check(
+    '未纳管同名保留后提示另有一条未纳管连接器',
+    manualResultText.includes('改名保留 1') &&
+      manualResultText.includes('manual-test-connector-imported-1') &&
+      manualResultText.includes('未纳管的同名连接器'),
+    manualResultText.slice(0, 240),
+  );
+  const manualCreate = posted
+    .slice(postedBeforeManual)
+    .find((item) => item.method === 'POST' && item.path === '/dbz/source-connector');
+  check(
+    '未纳管同名两者都保留按 -imported-1 新建',
+    manualCreate?.body?.connectorName === 'manual-test-connector-imported-1',
+    JSON.stringify(manualCreate?.body),
+  );
+  await manualModal.locator('.ant-modal-footer .ant-btn').click();
+  await waitNoVisibleModal();
+  await page.locator('[data-cluster-tab="401"]').click();
+  await page
+    .waitForFunction(() => document.querySelectorAll('.dbz-graph-node').length === 7, null, {
+      timeout: 15000,
+    })
+    .catch(() => {});
+
+  // 导入会写进夹具：恢复原始记录，后面的死信与列表用例继续按原数据断言
+  sources.splice(0, sources.length, ...sourcesBeforeTransfer);
+  sinks.splice(0, sinks.length, ...sinksBeforeTransfer);
+
+  // 单集群时不显示 tab 栏；恢复多集群后 tab 栏重新出现
+  singleClusterOnly = true;
+  await page.goto(`${base}/control-plane`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('.dbz-graph-node[data-node-key="1:401"]');
+  await page
+    .waitForFunction(() => document.querySelectorAll('.dbz-graph-node').length === 7, null, {
+      timeout: 15000,
+    })
+    .catch(() => {});
+  check(
+    '单集群时不显示 tab 栏',
+    (await page.locator('[data-cluster-tabs]').count()) === 0 &&
+      (await page.locator('.dbz-graph-node').count()) === 7,
+    `节点 ${await page.locator('.dbz-graph-node').count()}`,
+  );
+  singleClusterOnly = false;
+  await page.goto(`${base}/control-plane`, { waitUntil: 'networkidle' });
+  await page
+    .waitForFunction(() => document.querySelectorAll('.dbz-graph-node').length === 7, null, {
+      timeout: 15000,
+    })
+    .catch(() => {});
+  check(
+    '恢复多集群后 tab 栏重新显示',
+    (await page.locator('[data-cluster-tab]').count()) === 3,
+    `tab 数 ${await page.locator('[data-cluster-tab]').count()}`,
+  );
 
   const topologyOverflow = await page.evaluate(
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth,

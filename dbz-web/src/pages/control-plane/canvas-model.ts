@@ -42,6 +42,10 @@ export type CanvasNodeAction =
   | 'reset-offsets'
   /** 上游连接器：向信号表写 execute-snapshot，重读选中表且不重置位点 */
   | 'resync'
+  /** Connect：导出该 Connect 下全部连接器为 JSON */
+  | 'export-connectors'
+  /** Connect：从 JSON 导入连接器 */
+  | 'import-connectors'
   | 'edit'
   | 'delete'
   | 'check'

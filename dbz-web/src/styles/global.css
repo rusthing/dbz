@@ -1032,7 +1032,7 @@ body {
   flex: none;
   width: 1px;
   height: 16px;
-  margin: 0 10px;
+  margin: 0 12px;
   background: #f0f2f7;
 }
 
@@ -1428,5 +1428,131 @@ body {
 }
 
 .dbz-delete-error .ant-alert-message {
+  word-break: break-all;
+}
+
+/* ---------- 控制面：按 Kafka 集群分 tab ---------- */
+.dbz-cluster-tabs {
+  padding: 0 12px;
+  background: #fff;
+  border: 1px solid #eef0f4;
+  border-radius: 10px;
+}
+
+.dbz-cluster-tabs .ant-tabs-nav {
+  margin: 0;
+}
+
+.dbz-cluster-tab-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dbz-cluster-tab-count,
+.dbz-cluster-tab-abnormal {
+  margin-inline-end: 0;
+}
+
+.dbz-canvas-scope-summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 0 2px;
+}
+
+.dbz-canvas-scope-summary .ant-tag {
+  margin-inline-end: 0;
+}
+
+/* ---------- Connect 导入导出 ---------- */
+.dbz-transfer-export,
+.dbz-transfer-import {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.dbz-transfer-export p {
+  margin: 0;
+}
+
+.dbz-transfer-file {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.55);
+}
+
+.dbz-transfer-bulk {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  background: #fafafa;
+  border-radius: 8px;
+}
+
+.dbz-transfer-conflict {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.55);
+}
+
+.dbz-transfer-conflict .ant-tag {
+  margin-inline-end: 0;
+  align-self: flex-start;
+}
+
+.dbz-transfer-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.dbz-transfer-summary .ant-tag {
+  margin-inline-end: 0;
+}
+
+.dbz-transfer-outcomes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-height: 320px;
+  overflow: auto;
+  padding: 8px 10px;
+  background: #fafafa;
+  border-radius: 8px;
+}
+
+.dbz-transfer-outcome {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.dbz-transfer-outcome .ant-tag {
+  margin-inline-end: 0;
+}
+
+.dbz-transfer-outcome-name {
+  font-weight: 500;
+}
+
+.dbz-transfer-outcome-message {
+  color: rgba(0, 0, 0, 0.55);
+}
+
+.dbz-transfer-errors {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.dbz-transfer-errors li {
+  margin-bottom: 4px;
   word-break: break-all;
 }
