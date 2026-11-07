@@ -3,7 +3,9 @@
 //! 死信不是通用 CRUD：写入来自 magic 脚本，读侧需要按连接器/状态/时间筛选，
 //! 处理动作是重投与废弃，因此 DTO 按场景手写，不用 `#[crud_dto]`。
 
-use crate::dic::{DeadLetterConnectorType, DeadLetterFailureCategory, DeadLetterStatus};
+use crate::dic::{
+    DeadLetterConnectorType, DeadLetterFailureCategory, DeadLetterFailureSubtype, DeadLetterStatus,
+};
 use robotech::api::U64;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -30,6 +32,9 @@ pub struct DbzDeadLetterReportDto {
     pub payload: serde_json::Value,
     /// 失败分类：确定性失败 / 传输类失败
     pub failure_category: DeadLetterFailureCategory,
+    /// 失败子类：字段不合规时传 `1`，只有这类确定性失败允许修改报文后重投
+    #[serde(default)]
+    pub failure_subtype: DeadLetterFailureSubtype,
     /// 失败详情（对端的原始报错）
     #[serde(default)]
     pub failure_detail: String,
@@ -81,8 +86,25 @@ pub struct DbzDeadLetterRetryDto {
     /// 死信记录 ID
     /// @len 1..
     pub ids: Vec<U64>,
+    /// 修改后的报文（JSON 文本）；不传则按原始报文重投。
+    /// 仅单条重投可用，且记录必须是「确定性失败 + 字段不合规」。
+    pub payload: Option<String>,
     /// 备注（可选）
     pub remark: Option<String>,
+}
+
+/// # 保存待投报文
+///
+/// 原始报文永远不覆盖，这里只保存修改后的待投报文与编辑审计字段；
+/// 只有「确定性失败 + 字段不合规」的死信允许调用。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DbzDeadLetterEditPayloadDto {
+    /// 死信记录 ID
+    pub id: U64,
+    /// 修改后的报文（JSON 文本），服务端会校验合法性
+    /// @len 1..
+    pub payload: String,
 }
 
 /// # 批量废弃

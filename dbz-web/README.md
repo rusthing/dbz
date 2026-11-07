@@ -401,8 +401,20 @@ CRUD 页保留为「明细维护」入口，从每个节点的「明细」按钮
 - **响应异常**（`result` 非成功且无法归类、响应无法解析）：按传输类处理，分类记 `Unknown`。
 
 死信按 `(connectorType, connectorId, topic, recordKey)` 幂等：重复失败只累加次数与末次时间，
-不新增行。重投是把原报文重新 POST 到下游连接器 `connector_config.url`（magic sync 接口），
+不新增行。重投是把报文重新 POST 到下游连接器 `connector_config.url`（magic sync 接口），
 HTTP 2xx 且 `result=1` 才转「已重投」；废弃只改状态，不删报文。
+
+死信详情支持**修改报文后重投**：
+
+- 只有 `failureCategory=1`（确定性失败）且 `failureSubtype=1`（字段不合规）的记录可以改；
+  传输类、响应异常类以及唯一键冲突/外键缺失等未细分的确定性失败，接口直接拒绝，页面上也不给编辑入口。
+- 原始报文 `payload` 永不覆盖；修改后的待投报文写 `pending_payload`，并记录
+  `payload_edited_by` / `payload_edited_ms`。页面并排展示原始报文与已保存的待投报文。
+- `POST /dbz/dead-letter/retry` 可带 `payload`（JSON 文本，仅单条）。不传则按原始报文重投，
+  行为与旧版一致。提交前做 JSON 合法性与结构校验；连接器配置声明 `pk.fields` 时额外检查主键字段必填。
+- 最近一次人工重投的结果会回写到 `last_retry_success` / `last_retry_ms` / `last_retry_message`，
+  页面直接展示「成功 / 仍失败 + 原因」，避免反复盲改。
+- 只想保存修改、暂不重投时用 `POST /dbz/dead-letter/edit-payload`（`{ "id": 901, "payload": "{...}" }`）。
 
 保留策略在 `[dbz.dead-letter]`（`dbz-svr.toml`）里配置，默认值：
 
@@ -436,7 +448,8 @@ Content-Type: application/json
   "recordKey": "1001",
   "payload": { "id": 1001, "order_no": "SO-1" },
   "failureCategory": 1,
-  "failureDetail": "duplicate key value violates unique constraint \"uk_order_no\"",
+  "failureSubtype": 1,
+  "failureDetail": "amount 必须是数字",
   "retryCount": 0
 }
 ```
@@ -446,6 +459,10 @@ Content-Type: application/json
 | `1` 确定性失败 | 参数校验不通过、唯一键冲突、外键缺失 | 直接写 `dbz_dead_letter`，不重试 |
 | `2` 传输类失败 | 连接失败、超时、对端 5xx | 写 `dbz_dead_letter_retry`，worker 退避重投 |
 | `3` 响应异常 | `result` 非成功且无法归类、响应无法解析 | 同传输类，保留分类 |
+
+`failureSubtype` 只在 `failureCategory=1` 时有意义：字段缺失、类型不符、长度超限等
+「字段不合规」传 `1`，允许页面改报文重投；唯一键冲突、外键缺失等传 `0`（默认）。
+旧脚本不上报该字段时按 `0` 处理，记录只能按原报文重投。
 
 `recordKey` 是幂等键的一部分；没有主键时传空串（同一 topic 下无主键的记录会被合并为一条，
 脚本应尽量从报文里取稳定主键）。`connectorType`：上游 `1`、下游 `2`。上游连接器没有可重投

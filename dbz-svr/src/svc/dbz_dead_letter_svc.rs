@@ -31,10 +31,12 @@
 //! `connector_config.url` 取，不需要脚本额外传参。
 
 use crate::dao::{DbzDeadLetterDao, DbzDeadLetterRetryDao, DbzSinkConnectorDao};
-use crate::dic::{DeadLetterConnectorType, DeadLetterFailureCategory, DeadLetterStatus};
+use crate::dic::{
+    DeadLetterConnectorType, DeadLetterFailureCategory, DeadLetterFailureSubtype, DeadLetterStatus,
+};
 use crate::dto::{
-    DbzDeadLetterCountDto, DbzDeadLetterDiscardDto, DbzDeadLetterQueryDto, DbzDeadLetterReportDto,
-    DbzDeadLetterRetryDto,
+    DbzDeadLetterCountDto, DbzDeadLetterDiscardDto, DbzDeadLetterEditPayloadDto,
+    DbzDeadLetterQueryDto, DbzDeadLetterReportDto, DbzDeadLetterRetryDto,
 };
 use crate::mo::dbz_dead_letter::{
     ActiveModel as DeadLetterActiveModel, Column as DeadLetterColumn, Entity as DeadLetterEntity,
@@ -117,6 +119,7 @@ impl DbzDeadLetterSvc {
                 &record_key,
                 dto.payload,
                 i16::from(dto.failure_category),
+                i16::from(dto.failure_subtype),
                 &failure_detail,
                 attempts + 1,
                 now,
@@ -146,6 +149,7 @@ impl DbzDeadLetterSvc {
                 &record_key,
                 dto.payload,
                 i16::from(dto.failure_category),
+                i16::from(dto.failure_subtype),
                 &failure_detail,
                 attempts + 1,
                 now,
@@ -279,6 +283,9 @@ impl DbzDeadLetterSvc {
     /// 逐条 POST 到下游连接器配置里的 `url`（magic 的 sync 接口），HTTP 2xx 且
     /// 响应 `result=1` 才算成功；成功转「已重投」，失败保持「待处理」并返回原因。
     /// 单条重投就是只传一个 ID。
+    ///
+    /// `payload` 不传时按原始报文重投（与旧行为一致）；传入修改后的报文时只允许单条，
+    /// 且记录必须是「确定性失败 + 字段不合规」。修改后的报文另存，原始报文不覆盖。
     pub async fn retry(
         dto: DbzDeadLetterRetryDto,
         operator_id: U64,
@@ -286,6 +293,15 @@ impl DbzDeadLetterSvc {
         if dto.ids.is_empty() {
             return Err(anyhow!("ids 不能为空").into());
         }
+        if dto.payload.is_some() && dto.ids.len() > 1 {
+            return Err(anyhow!("修改报文后重投只支持单条记录").into());
+        }
+        let edited_payload = match dto.payload.as_deref() {
+            Some(text) => {
+                Some(Self::parse_payload_text(text).map_err(|e| anyhow!("待投报文校验失败: {e}"))?)
+            }
+            None => None,
+        };
         let db = get_db_conn().map_err(|e| anyhow!("获取数据库连接失败: {e}"))?;
         let cfg = crate::config::get_dbz_config()
             .map_err(|e| anyhow!("读取 dbz 配置失败: {e}"))?
@@ -303,6 +319,7 @@ impl DbzDeadLetterSvc {
                 now,
                 cfg.request_timeout_ms,
                 dto.remark.as_deref(),
+                edited_payload.as_ref(),
             )
             .await
             .map_err(|e| anyhow!("重投死信<{}>失败: {e}", id.value()))?;
@@ -310,6 +327,44 @@ impl DbzDeadLetterSvc {
         }
 
         Ok(Ro::success("重投完成".to_string()).extra(Some(results)))
+    }
+
+    /// # 保存待投报文（不重投）
+    ///
+    /// 原始报文 `payload` 永不覆盖，这里只写 `pending_payload` 与编辑审计字段。
+    /// 只有「确定性失败 + 字段不合规」的记录允许调用；传输类与响应异常类直接拒绝。
+    pub async fn edit_payload(
+        dto: DbzDeadLetterEditPayloadDto,
+        operator_id: U64,
+    ) -> Result<Ro<DbzDeadLetterVo>, SvcError> {
+        let db = get_db_conn().map_err(|e| anyhow!("获取数据库连接失败: {e}"))?;
+        let operator = i64::from(operator_id);
+        let now = now_ms() as i64;
+
+        let model = DeadLetterEntity::find_by_id(i64::from(dto.id))
+            .one(db.as_ref())
+            .await
+            .map_err(|e| anyhow!("查询死信记录失败: {e}"))?
+            .ok_or_else(|| anyhow!("死信记录不存在"))?;
+
+        Self::ensure_editable(&model)?;
+        let payload =
+            Self::parse_payload_text(&dto.payload).map_err(|e| anyhow!("待投报文校验失败: {e}"))?;
+        let config = Self::sink_config(db.as_ref(), model.connector_type, model.connector_id)
+            .await
+            .ok();
+        Self::validate_field_payload(&payload, config.as_ref())
+            .map_err(|e| anyhow!("待投报文校验失败: {e}"))?;
+
+        let mut active: DeadLetterActiveModel = model.into();
+        active.pending_payload = Set(Some(payload));
+        active.payload_edited_by = Set(Some(operator));
+        active.payload_edited_ms = Set(Some(now));
+        active.updater_id = Set(operator);
+        active.update_ms = Set(now);
+        let model = DbzDeadLetterDao::update(active, db.as_ref()).await?;
+
+        Ok(Ro::success("待投报文已保存".to_string()).extra(Some(to_vo(model))))
     }
 
     /// # 批量废弃
@@ -455,6 +510,7 @@ impl DbzDeadLetterSvc {
                         &row.record_key,
                         row.payload.clone(),
                         row.failure_category,
+                        i16::from(DeadLetterFailureSubtype::Other),
                         &truncate(&format!("{error}{extra}"), 5_000),
                         attempts,
                         row.first_seen_ms,
@@ -488,6 +544,10 @@ impl DbzDeadLetterSvc {
     }
 
     /// # 单条重投（人工触发）
+    ///
+    /// `edited_payload` 为 `Some` 时表示这次重投用的是修改后的报文：先校验白名单
+    /// 与字段，再把待投报文和编辑审计字段落库，最后才 POST。无论重投结果如何，
+    /// 都会把结果回写到本行（`last_retry_*`），原始 `payload` 始终不动。
     async fn retry_one(
         db: &DatabaseConnection,
         id: U64,
@@ -495,8 +555,9 @@ impl DbzDeadLetterSvc {
         now: i64,
         timeout_ms: u64,
         remark: Option<&str>,
+        edited_payload: Option<&Value>,
     ) -> anyhow::Result<DbzDeadLetterRetryResultVo> {
-        let Some(model) = DeadLetterEntity::find_by_id(i64::from(id)).one(db).await? else {
+        let Some(mut model) = DeadLetterEntity::find_by_id(i64::from(id)).one(db).await? else {
             return Ok(DbzDeadLetterRetryResultVo {
                 id,
                 success: false,
@@ -512,39 +573,121 @@ impl DbzDeadLetterSvc {
             });
         }
 
-        let url = match Self::target_url(db, model.connector_type, model.connector_id).await {
-            Ok(url) => url,
-            Err(e) => {
-                return Ok(DbzDeadLetterRetryResultVo {
-                    id,
-                    success: false,
-                    message: e,
-                });
-            }
+        let mut payload_to_post = model.payload.clone();
+        if let Some(payload) = edited_payload {
+            Self::ensure_editable(&model)?;
+            let config = Self::sink_config(db, model.connector_type, model.connector_id)
+                .await
+                .ok();
+            Self::validate_field_payload(payload, config.as_ref())
+                .map_err(|e| anyhow!("待投报文校验失败: {e}"))?;
+
+            payload_to_post = payload.clone();
+            model.pending_payload = Some(payload.clone());
+            model.payload_edited_by = Some(operator);
+            model.payload_edited_ms = Some(now);
+        }
+
+        let post_result = match Self::target_url(db, model.connector_type, model.connector_id).await
+        {
+            Ok(url) => Self::post_to_magic(&url, &payload_to_post, timeout_ms).await,
+            Err(e) => Err(e),
         };
 
-        match Self::post_to_magic(&url, &model.payload, timeout_ms).await {
-            Ok(()) => {
-                let mut active: DeadLetterActiveModel = model.into();
-                active.status = Set(i16::from(DeadLetterStatus::Retried));
-                active.handled_by = Set(Some(operator));
-                active.handled_ms = Set(Some(now));
-                active.remark = Set(remark.map(|value| truncate(value, 500)));
-                active.updater_id = Set(operator);
-                active.update_ms = Set(now);
-                DbzDeadLetterDao::update(active, db).await?;
-                Ok(DbzDeadLetterRetryResultVo {
-                    id,
-                    success: true,
-                    message: "重投成功".to_string(),
-                })
-            }
-            Err(error) => Ok(DbzDeadLetterRetryResultVo {
-                id,
-                success: false,
-                message: error,
-            }),
+        let success = post_result.is_ok();
+        let message = match &post_result {
+            Ok(()) => "重投成功".to_string(),
+            Err(error) => error.clone(),
+        };
+
+        if success {
+            model.status = i16::from(DeadLetterStatus::Retried);
+            model.handled_by = Some(operator);
+            model.handled_ms = Some(now);
+            model.remark = remark.map(|value| truncate(value, 500));
         }
+        model.last_retry_success = Some(success);
+        model.last_retry_ms = Some(now);
+        model.last_retry_message = Some(truncate(&message, 5_000));
+        model.updater_id = operator;
+        model.update_ms = now;
+
+        let active: DeadLetterActiveModel = model.into();
+        DbzDeadLetterDao::update(active, db).await?;
+
+        Ok(DbzDeadLetterRetryResultVo {
+            id,
+            success,
+            message,
+        })
+    }
+
+    /// # 是否允许修改报文
+    ///
+    /// 只有「确定性失败 + 字段不合规」这一类改报文才有意义；传输类、响应异常类
+    /// 以及未细分的确定性失败（唯一键冲突、外键缺失等）一律拒绝。
+    fn ensure_editable(model: &DeadLetterModel) -> anyhow::Result<()> {
+        if Self::can_edit_payload(model.failure_category, model.failure_subtype) {
+            Ok(())
+        } else {
+            Err(anyhow!(
+                "该死信属于传输类/响应异常类或非字段不合规的确定性失败，禁止修改报文"
+            ))
+        }
+    }
+
+    /// 白名单判定：确定性失败（1）且子类为字段不合规（1）
+    fn can_edit_payload(failure_category: i16, failure_subtype: i16) -> bool {
+        failure_category == i16::from(DeadLetterFailureCategory::Deterministic)
+            && failure_subtype == i16::from(DeadLetterFailureSubtype::FieldValidation)
+    }
+
+    /// 解析待投报文文本，错误信息直接可读
+    fn parse_payload_text(text: &str) -> Result<Value, String> {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return Err("待投报文不能为空".to_string());
+        }
+        serde_json::from_str::<Value>(trimmed).map_err(|e| {
+            format!(
+                "不是合法 JSON：{e}（第 {} 行第 {} 列）",
+                e.line(),
+                e.column()
+            )
+        })
+    }
+
+    /// 按下游连接器配置做基础字段检查
+    ///
+    /// 目标表的列类型没有落在 `connector_config` 里，离线做不了完整类型校验；
+    /// 能确定的是 `pk.fields` / `primary.key.fields` 声明的必填主键字段。
+    fn validate_field_payload(payload: &Value, config: Option<&Value>) -> Result<(), String> {
+        let object = payload
+            .as_object()
+            .ok_or_else(|| "待投报文必须是 JSON 对象（{...}）".to_string())?;
+
+        let Some(config) = config else {
+            return Ok(());
+        };
+
+        for key in ["pk.fields", "primary.key.fields"] {
+            let Some(fields) = config.get(key).and_then(Value::as_str) else {
+                continue;
+            };
+            for field in fields.split(',') {
+                let field = field.trim();
+                if field.is_empty() {
+                    continue;
+                }
+                match object.get(field) {
+                    None | Some(Value::Null) => {
+                        return Err(format!("主键字段 `{field}` 必填，待投报文里缺失或为 null"));
+                    }
+                    Some(_) => {}
+                }
+            }
+        }
+        Ok(())
     }
 
     /// # 取重投目标地址
@@ -556,13 +699,7 @@ impl DbzDeadLetterSvc {
         connector_type: i16,
         connector_id: i64,
     ) -> Result<String, String> {
-        if connector_type != i16::from(DeadLetterConnectorType::Sink) {
-            return Err("上游连接器没有可重投的 HTTP 地址".to_string());
-        }
-        let record = DbzSinkConnectorDao::get_by_id::<_, SinkModel>(U64::from(connector_id), db)
-            .await
-            .map_err(|e| format!("查询下游连接器失败: {e}"))?
-            .ok_or_else(|| format!("下游连接器(id={connector_id})不存在"))?;
+        let record = Self::sink_record(db, connector_type, connector_id).await?;
         if !record.enabled {
             return Err(format!("下游连接器<{}>已停用，不能重投", record.name));
         }
@@ -576,6 +713,35 @@ impl DbzDeadLetterSvc {
             .and_then(Value::as_str)
             .map(|url| url.to_string())
             .ok_or_else(|| format!("连接器<{}>配置缺少 url，无法重投", record.name))
+    }
+
+    /// # 取下游连接器配置（用于待投报文的字段检查）
+    ///
+    /// 只读 `connector_config`；连接器不存在或配置不是 JSON 时返回错误，调用方
+    /// 可以选择跳过字段检查，由后续重投给出真实原因。
+    async fn sink_config(
+        db: &DatabaseConnection,
+        connector_type: i16,
+        connector_id: i64,
+    ) -> Result<Value, String> {
+        let record = Self::sink_record(db, connector_type, connector_id).await?;
+        serde_json::from_str::<Value>(&record.connector_config)
+            .map_err(|e| format!("解析连接器<{}>配置失败: {e}", record.name))
+    }
+
+    /// # 取下游连接器记录
+    async fn sink_record(
+        db: &DatabaseConnection,
+        connector_type: i16,
+        connector_id: i64,
+    ) -> Result<SinkModel, String> {
+        if connector_type != i16::from(DeadLetterConnectorType::Sink) {
+            return Err("上游连接器没有可重投的 HTTP 地址".to_string());
+        }
+        DbzSinkConnectorDao::get_by_id::<_, SinkModel>(U64::from(connector_id), db)
+            .await
+            .map_err(|e| format!("查询下游连接器失败: {e}"))?
+            .ok_or_else(|| format!("下游连接器(id={connector_id})不存在"))
     }
 
     /// # POST 原报文到 magic
@@ -685,6 +851,7 @@ impl DbzDeadLetterSvc {
         record_key: &str,
         payload: Value,
         failure_category: i16,
+        failure_subtype: i16,
         failure_detail: &str,
         increment: i32,
         first_seen_ms: i64,
@@ -704,6 +871,7 @@ impl DbzDeadLetterSvc {
             let mut active: DeadLetterActiveModel = existing.into();
             active.payload = Set(payload);
             active.failure_category = Set(failure_category);
+            active.failure_subtype = Set(failure_subtype);
             active.failure_detail = Set(failure_detail.to_string());
             active.retry_count = Set(next_retry_count);
             active.first_seen_ms = Set(first_seen);
@@ -724,6 +892,7 @@ impl DbzDeadLetterSvc {
             record_key: Set(record_key.to_string()),
             payload: Set(payload),
             failure_category: Set(failure_category),
+            failure_subtype: Set(failure_subtype),
             failure_detail: Set(failure_detail.to_string()),
             retry_count: Set(increment.max(0)),
             first_seen_ms: Set(first_seen_ms),
@@ -732,6 +901,9 @@ impl DbzDeadLetterSvc {
             handled_by: Set(None),
             handled_ms: Set(None),
             remark: Set(None),
+            pending_payload: Set(None),
+            payload_edited_by: Set(None),
+            payload_edited_ms: Set(None),
             creater_id: Set(operator),
             create_ms: Set(now),
             updater_id: Set(operator),
@@ -842,6 +1014,17 @@ fn to_vo(model: DeadLetterModel) -> DbzDeadLetterVo {
         record_key: model.record_key,
         payload: model.payload,
         failure_category: model.failure_category.into(),
+        failure_subtype: model.failure_subtype.into(),
+        can_edit_payload: DbzDeadLetterSvc::can_edit_payload(
+            model.failure_category,
+            model.failure_subtype,
+        ),
+        pending_payload: model.pending_payload,
+        payload_edited_by: model.payload_edited_by.map(U64::from),
+        payload_edited_ms: model.payload_edited_ms,
+        last_retry_success: model.last_retry_success,
+        last_retry_ms: model.last_retry_ms,
+        last_retry_message: model.last_retry_message,
         failure_detail: model.failure_detail,
         retry_count: model.retry_count.max(0) as u32,
         first_seen_ms: model.first_seen_ms,
@@ -864,4 +1047,85 @@ fn truncate(value: &str, max_chars: usize) -> String {
 fn retry_delay_ms(attempts: i32) -> i64 {
     let index = (attempts.max(0) as usize).min(RETRY_DELAYS_MS.len() - 1);
     RETRY_DELAYS_MS[index]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DbzDeadLetterSvc;
+    use crate::dic::{DeadLetterFailureCategory, DeadLetterFailureSubtype};
+    use serde_json::json;
+
+    fn category(value: DeadLetterFailureCategory) -> i16 {
+        i16::from(value)
+    }
+
+    fn subtype(value: DeadLetterFailureSubtype) -> i16 {
+        i16::from(value)
+    }
+
+    #[test]
+    fn only_deterministic_field_validation_can_edit() {
+        assert!(DbzDeadLetterSvc::can_edit_payload(
+            category(DeadLetterFailureCategory::Deterministic),
+            subtype(DeadLetterFailureSubtype::FieldValidation),
+        ));
+        assert!(!DbzDeadLetterSvc::can_edit_payload(
+            category(DeadLetterFailureCategory::Deterministic),
+            subtype(DeadLetterFailureSubtype::Other),
+        ));
+        assert!(!DbzDeadLetterSvc::can_edit_payload(
+            category(DeadLetterFailureCategory::Transient),
+            subtype(DeadLetterFailureSubtype::FieldValidation),
+        ));
+        assert!(!DbzDeadLetterSvc::can_edit_payload(
+            category(DeadLetterFailureCategory::Unknown),
+            subtype(DeadLetterFailureSubtype::FieldValidation),
+        ));
+    }
+
+    #[test]
+    fn invalid_json_has_readable_error() {
+        let error =
+            DbzDeadLetterSvc::parse_payload_text("{\"id\":}").expect_err("非法 JSON 必须被拒绝");
+        assert!(error.contains("不是合法 JSON"), "{error}");
+    }
+
+    #[test]
+    fn empty_payload_rejected() {
+        let error = DbzDeadLetterSvc::parse_payload_text("   ").expect_err("空报文必须被拒绝");
+        assert_eq!(error, "待投报文不能为空");
+    }
+
+    #[test]
+    fn missing_required_pk_field_rejected() {
+        let config = json!({ "pk.fields": "id, tenant_id" });
+        let error = DbzDeadLetterSvc::validate_field_payload(
+            &json!({ "id": 1001, "tenant_id": null }),
+            Some(&config),
+        )
+        .expect_err("主键字段为 null 必须被拒绝");
+        assert!(error.contains("tenant_id"), "{error}");
+    }
+
+    #[test]
+    fn complete_pk_fields_pass() {
+        let config = json!({ "pk.fields": "id, tenant_id" });
+        assert!(DbzDeadLetterSvc::validate_field_payload(
+            &json!({ "id": 1001, "tenant_id": "t1" }),
+            Some(&config),
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn payload_must_be_object() {
+        let error = DbzDeadLetterSvc::validate_field_payload(&json!([1, 2]), None)
+            .expect_err("数组不是目标表的字段结构");
+        assert!(error.contains("JSON 对象"), "{error}");
+    }
+
+    #[test]
+    fn without_sink_config_only_json_is_checked() {
+        assert!(DbzDeadLetterSvc::validate_field_payload(&json!({ "id": 1001 }), None).is_ok());
+    }
 }

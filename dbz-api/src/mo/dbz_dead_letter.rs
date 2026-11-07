@@ -30,6 +30,22 @@ pub struct Model {
     pub payload: Json,
     /// 失败分类：1=确定性失败，2=传输类失败
     pub failure_category: i16,
+    /// 确定性失败的细分子类：0=未细分，1=字段不合规（允许改报文重投）
+    pub failure_subtype: i16,
+    /// 修改后的待投报文（JSONB）；为空表示没有修改过，原始 `payload` 永不覆盖
+    #[sea_orm(column_type = "JsonBinary")]
+    pub pending_payload: Option<Json>,
+    /// 待投报文的最后编辑人 ID
+    pub payload_edited_by: Option<i64>,
+    /// 待投报文的最后编辑时间戳（毫秒）
+    pub payload_edited_ms: Option<i64>,
+    /// 最近一次人工重投是否成功；为空表示还没有人工重投过
+    pub last_retry_success: Option<bool>,
+    /// 最近一次人工重投的时间戳（毫秒）
+    pub last_retry_ms: Option<i64>,
+    /// 最近一次人工重投的结果说明（失败时为对端返回的原因）
+    #[sea_orm(column_type = "Text")]
+    pub last_retry_message: Option<String>,
     /// 失败详情（对端的原始报错）
     #[sea_orm(column_type = "Text")]
     pub failure_detail: String,

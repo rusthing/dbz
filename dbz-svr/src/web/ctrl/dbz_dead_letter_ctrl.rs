@@ -1,18 +1,19 @@
 //! # 死信控制器
 //!
-//! 五个手写接口：
+//! 六个手写接口：
 //! - `POST /dbz/dead-letter/report`：magic 脚本上报失败（内部写入）
 //! - `GET  /dbz/dead-letter/page`：分页查询
 //! - `GET  /dbz/dead-letter/pending-count`：待处理计数（前端角标）
-//! - `POST /dbz/dead-letter/retry`：单条/批量重投
+//! - `POST /dbz/dead-letter/retry`：单条/批量重投（可带修改后的报文）
+//! - `POST /dbz/dead-letter/edit-payload`：保存待投报文（不重投）
 //! - `POST /dbz/dead-letter/discard`：单条/批量废弃
 //!
 //! 上报接口允许不带 `X-User-Id`（脚本没有登录态），其余接口沿用框架约定，
 //! 缺少用户头按参数校验失败处理。
 
 use crate::dto::{
-    DbzDeadLetterCountDto, DbzDeadLetterDiscardDto, DbzDeadLetterQueryDto, DbzDeadLetterReportDto,
-    DbzDeadLetterRetryDto,
+    DbzDeadLetterCountDto, DbzDeadLetterDiscardDto, DbzDeadLetterEditPayloadDto,
+    DbzDeadLetterQueryDto, DbzDeadLetterReportDto, DbzDeadLetterRetryDto,
 };
 use crate::svc::DbzDeadLetterSvc;
 use crate::vo::{DbzDeadLetterCountVo, DbzDeadLetterRetryResultVo, DbzDeadLetterVo};
@@ -22,8 +23,8 @@ use axum::http::HeaderMap;
 use axum::response::Json;
 use robotech::api::{PageRx, Ro, U64};
 use robotech::macros::log_call;
-use robotech::web::CtrlError;
 use robotech::web::ctrl_utils::get_current_user_id;
+use robotech::web::CtrlError;
 
 /// 脚本上报允许没有用户头，缺省记为 0（系统）
 fn optional_operator(headers: &HeaderMap) -> U64 {
@@ -94,8 +95,10 @@ pub async fn pending_count(
 
 /// # 批量重投
 ///
-/// 把原报文重新 POST 到下游连接器配置里的 magic sync 地址；HTTP 2xx 且
-/// `result=1` 才转「已重投」，失败保持待处理。单条重投只传一个 ID。
+/// 把报文重新 POST 到下游连接器配置里的 magic sync 地址；HTTP 2xx 且
+/// `result=1` 才转「已重投」，失败保持待处理并把原因回写到记录。单条重投只传一个 ID。
+/// 可选 `payload` 为修改后的报文（JSON 文本）；仅单条、且记录必须是「确定性失败 +
+/// 字段不合规」时允许，原始报文始终保留。
 #[utoipa::path(
     post,
     path = "/dbz/dead-letter/retry",
@@ -109,6 +112,26 @@ pub async fn retry(
     Json(dto): Json<DbzDeadLetterRetryDto>,
 ) -> Result<Json<Ro<Vec<DbzDeadLetterRetryResultVo>>>, CtrlError> {
     let ro = DbzDeadLetterSvc::retry(dto, required_operator(&headers)?).await?;
+    Ok(Json(ro))
+}
+
+/// # 保存待投报文
+///
+/// 只写 `pending_payload` 与编辑人/编辑时间，不重投；原始报文不覆盖。
+/// 传输类、响应异常类以及非字段不合规的确定性失败都会被接口拒绝。
+#[utoipa::path(
+    post,
+    path = "/dbz/dead-letter/edit-payload",
+    request_body = DbzDeadLetterEditPayloadDto,
+    responses((status = OK, body = Ro<DbzDeadLetterVo>))
+)]
+#[debug_handler]
+#[log_call]
+pub async fn edit_payload(
+    headers: HeaderMap,
+    Json(dto): Json<DbzDeadLetterEditPayloadDto>,
+) -> Result<Json<Ro<DbzDeadLetterVo>>, CtrlError> {
+    let ro = DbzDeadLetterSvc::edit_payload(dto, required_operator(&headers)?).await?;
     Ok(Json(ro))
 }
 

@@ -125,6 +125,16 @@ body {
   word-break: break-word;
 }
 
+/* 待投报文的编辑审计：编辑人 + 编辑时间 */
+.dbz-payload-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+  margin-bottom: 6px;
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+}
+
 /* 概览页统计卡 */
 .dbz-stat-card .ant-card-body {
   padding: 18px 20px;

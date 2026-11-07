@@ -13,6 +13,7 @@ use robotech::macros::router;
     ("/dbz/dead-letter/page", get(page)),
     ("/dbz/dead-letter/pending-count", get(pending_count)),
     ("/dbz/dead-letter/retry", post(retry)),
+    ("/dbz/dead-letter/edit-payload", post(edit_payload)),
     ("/dbz/dead-letter/discard", post(discard)),
 ])]
 struct DbzDeadLetterRouter;

@@ -170,7 +170,7 @@ const sinks = [
   },
 ];
 
-/** 死信：一条待处理（确定性失败）、一条已重投（传输类失败） */
+/** 死信：901/903 为可改报文的确定性字段不合规，902 为传输类（禁止改报文） */
 const deadLetters = [
   {
     id: '901',
@@ -180,8 +180,15 @@ const deadLetters = [
     recordKey: '{"id":1001}',
     payload: { id: 1001, order_no: 'SO-20261107-1', amount: 99.5 },
     failureCategory: 1,
-    failureDetail:
-      'HTTP 200 result=-2：duplicate key value violates unique constraint "uk_order_no"',
+    failureSubtype: 1,
+    canEditPayload: true,
+    pendingPayload: null,
+    payloadEditedBy: null,
+    payloadEditedMs: null,
+    lastRetrySuccess: null,
+    lastRetryMs: null,
+    lastRetryMessage: null,
+    failureDetail: '字段校验失败：amount 必须是数字，收货地址 shipping_address 缺失',
     retryCount: 1,
     firstSeenMs: '1760000000000',
     lastSeenMs: '1760000100000',
@@ -200,6 +207,14 @@ const deadLetters = [
     recordKey: '{"id":1002}',
     payload: { id: 1002, order_no: 'SO-20261107-2', amount: 66 },
     failureCategory: 2,
+    failureSubtype: 0,
+    canEditPayload: false,
+    pendingPayload: null,
+    payloadEditedBy: null,
+    payloadEditedMs: null,
+    lastRetrySuccess: null,
+    lastRetryMs: null,
+    lastRetryMessage: null,
     failureDetail: '连接下游超时（15s），退避 10 次后仍失败：request timed out',
     retryCount: 10,
     firstSeenMs: '1759990000000',
@@ -210,6 +225,33 @@ const deadLetters = [
     remark: '重投成功',
     createMs: '1759990000000',
     updateMs: '1759999950000',
+  },
+  {
+    id: '903',
+    connectorType: 2,
+    connectorId: '301',
+    topic: 'dbz.orders',
+    recordKey: '{"id":1003}',
+    payload: { id: 1003, order_no: 'SO-20261107-3', amount: 'abc', shipping_address: null },
+    failureCategory: 1,
+    failureSubtype: 1,
+    canEditPayload: true,
+    pendingPayload: { id: 1003, order_no: 'SO-20261107-3', amount: 88, shipping_address: null },
+    payloadEditedBy: '1',
+    payloadEditedMs: '1760000500000',
+    lastRetrySuccess: null,
+    lastRetryMs: null,
+    lastRetryMessage: null,
+    failureDetail: '字段校验失败：amount 必须是数字，shipping_address 必填',
+    retryCount: 2,
+    firstSeenMs: '1760000200000',
+    lastSeenMs: '1760000400000',
+    status: 0,
+    handledBy: null,
+    handledMs: null,
+    remark: null,
+    createMs: '1760000200000',
+    updateMs: '1760000500000',
   },
 ];
 
@@ -467,13 +509,34 @@ await page.route('**/dbz/**', async (route) => {
     if (path === '/dbz/kafka-broker/check') {
       return route.fulfill({ json: ro({ reachable: true, topicCount: 12, elapsedMs: 34 }) });
     }
-    // 死信重投：返回逐条结果，页面按 success 汇总提示
+    // 死信重投：返回逐条结果；带 payload 表示用修改后的报文，903 模拟仍然失败
     if (path === '/dbz/dead-letter/retry') {
       const body = request.postDataJSON();
       return route.fulfill({
         json: ro(
-          (body.ids ?? []).map((id) => ({ id, success: true, message: '重投成功' })),
+          (body.ids ?? []).map((id) =>
+            id === '903' && body.payload
+              ? {
+                  id,
+                  success: false,
+                  message: '字段校验仍失败：shipping_address 必填，amount 类型不匹配',
+                }
+              : { id, success: true, message: '重投成功' },
+          ),
         ),
+      });
+    }
+    // 保存待投报文：只返回待投与编辑审计，模拟原始报文不被覆盖
+    if (path === '/dbz/dead-letter/edit-payload') {
+      const body = request.postDataJSON();
+      const record = deadLetters.find((item) => item.id === body.id);
+      return route.fulfill({
+        json: ro({
+          ...record,
+          pendingPayload: JSON.parse(body.payload),
+          payloadEditedBy: '1',
+          payloadEditedMs: String(Date.now()),
+        }),
       });
     }
     // 死信废弃只改状态，返回空信封即可
@@ -1023,7 +1086,7 @@ try {
   await page.waitForSelector('.ant-table-tbody tr.ant-table-row');
   check(
     '死信列表按连接器深链筛选',
-    (await page.locator('.ant-table-tbody tr.ant-table-row').count()) === 2,
+    (await page.locator('.ant-table-tbody tr.ant-table-row').count()) === 3,
     `实际 ${await page.locator('.ant-table-tbody tr.ant-table-row').count()}`,
   );
   check(
@@ -1035,40 +1098,168 @@ try {
     (await page.locator('.ant-tag:has-text("待处理")').count()) >= 1 &&
       (await page.locator('.ant-tag:has-text("已重投")').count()) >= 1 &&
       (await page.locator('.ant-tag:has-text("确定性失败")').count()) >= 1 &&
-      (await page.locator('.ant-tag:has-text("传输类失败")').count()) >= 1,
+      (await page.locator('.ant-tag:has-text("传输类失败")').count()) >= 1 &&
+      (await page.locator('.ant-tag:has-text("字段不合规")').count()) >= 1,
   );
 
-  await page
-    .locator('.ant-table-tbody tr.ant-table-row')
-    .first()
-    .locator('button:has-text("详情")')
-    .click();
+  /* 901：确定性字段不合规 —— 改报文、保存待投、改后重投成功 */
+  const row901 = page.locator('.ant-table-tbody tr.ant-table-row').nth(0);
+  await row901.locator('button:has-text("详情")').click();
   await page.waitForSelector('.ant-drawer-title:has-text("死信详情")');
   const deadLetterDetail = await page.locator('.ant-drawer-body').innerText();
   check(
     '死信详情展示失败原因与原始报文',
-    deadLetterDetail.includes('duplicate key value violates unique constraint') &&
-      deadLetterDetail.includes('SO-20261107-1'),
+    deadLetterDetail.includes('字段校验失败') &&
+      deadLetterDetail.includes('SO-20261107-1') &&
+      deadLetterDetail.includes('99.5'),
     deadLetterDetail.slice(0, 160),
   );
+  check(
+    '可改报文的死信展示编辑与并排原始报文',
+    (await page.locator('.ant-drawer-body textarea.dbz-json-editor').count()) === 1 &&
+      deadLetterDetail.includes('原始报文（永不覆盖）') &&
+      deadLetterDetail.includes('已保存的待投报文'),
+  );
 
-  // 单条重投：请求体是选中记录 id，返回逐条结果
-  await page.locator('.ant-drawer-extra button:has-text("重投")').click();
-  const retryConfirm = page.locator('.ant-modal-confirm', { hasText: '重投 1 条死信' });
-  await retryConfirm.waitFor();
-  await retryConfirm.locator('.ant-btn-primary').click();
-  await page.waitForTimeout(600);
-  const retryRequest = posted.find(
-    (item) => item.method === 'POST' && item.path === '/dbz/dead-letter/retry',
+  // 提交前 JSON 校验：非法 JSON 给出可读错误，且不发保存请求
+  await page.locator('.ant-drawer-body textarea.dbz-json-editor').fill('{');
+  await page.locator('.ant-drawer-body button:has-text("保存待投")').click();
+  await page.waitForTimeout(300);
+  check(
+    '非法 JSON 给出可读错误且不提交',
+    (await page.locator('.ant-drawer-body .ant-alert-error:has-text("不是合法 JSON")').count()) === 1 &&
+      posted.filter((item) => item.path === '/dbz/dead-letter/edit-payload').length === 0,
+  );
+
+  // 改成合法报文并保存待投：原始报文保留，审计字段回显
+  const editedPayload = '{"id":1001,"order_no":"SO-20261107-1","amount":88,"shipping_address":"上海市"}';
+  await page.locator('.ant-drawer-body textarea.dbz-json-editor').fill(editedPayload);
+  await page.locator('.ant-drawer-body button:has-text("保存待投")').click();
+  await page.waitForTimeout(500);
+  const savePendingRequest = posted.find(
+    (item) => item.method === 'POST' && item.path === '/dbz/dead-letter/edit-payload',
   );
   check(
-    '重投调用死信重投接口',
-    retryRequest?.body?.ids?.[0] === '901',
-    JSON.stringify(retryRequest?.body),
+    '保存待投报文调用接口并携带修改内容',
+    savePendingRequest?.body?.id === '901' && savePendingRequest?.body?.payload?.includes('"amount":88'),
+    JSON.stringify(savePendingRequest?.body ?? null),
   );
   check(
-    '重投成功给出提示',
+    '待投报文保存成功并回显编辑人/时间',
+    (await page.locator('.ant-message-notice-content:has-text("待投报文已保存")').count()) >= 1,
+  );
+  const afterSaveDetail = await page.locator('.ant-drawer-body').innerText();
+  check(
+    '保存待投后原始报文仍在且待投可查',
+    afterSaveDetail.includes('99.5') &&
+      afterSaveDetail.includes('上海市') &&
+      afterSaveDetail.includes('编辑人 #1'),
+    afterSaveDetail.slice(0, 200),
+  );
+
+  // 编辑后直接重投：请求带 payload；成功后原始报文仍保留
+  await page.locator('.ant-drawer-body button:has-text("改后重投")').click();
+  const editedRetryConfirm = page.locator('.ant-modal-confirm', { hasText: '用修改后的报文重投' });
+  await editedRetryConfirm.waitFor();
+  await editedRetryConfirm.locator('.ant-btn-primary').click();
+  await page.waitForTimeout(700);
+  const editedRetryRequest = posted.find(
+    (item) => item.method === 'POST' && item.path === '/dbz/dead-letter/retry' && item.body?.payload,
+  );
+  check(
+    '改后重投携带修改后的报文',
+    editedRetryRequest?.body?.ids?.[0] === '901' &&
+      editedRetryRequest?.body?.payload?.includes('"amount": 88'),
+    JSON.stringify(editedRetryRequest?.body ?? null),
+  );
+  check(
+    '改后重投成功给出提示',
     (await page.locator('.ant-message-notice-content:has-text("1 条重投成功")').count()) >= 1,
+  );
+  const afterRetryDetail = await page.locator('.ant-drawer-body').innerText();
+  check(
+    '改后重投成功后原始报文仍保留',
+    afterRetryDetail.includes('最近一次重投成功') &&
+      afterRetryDetail.includes('99.5') &&
+      afterRetryDetail.includes('上海市'),
+    afterRetryDetail.slice(0, 200),
+  );
+  await page.click('.ant-drawer-close');
+  await page.waitForTimeout(300);
+
+  /* 903：改完仍失败 —— 原因回写到记录，原始报文不被待投覆盖 */
+  const row903 = page.locator('.ant-table-tbody tr.ant-table-row').nth(2);
+  await row903.locator('button:has-text("详情")').click();
+  await page.waitForSelector('.ant-drawer-title:has-text("死信详情")');
+  const detail903 = await page.locator('.ant-drawer-body').innerText();
+  check(
+    '待投报文与原始报文并排展示',
+    detail903.includes('"abc"') && detail903.includes('88'),
+    detail903.slice(0, 200),
+  );
+  await page.locator('.ant-drawer-body button:has-text("改后重投")').click();
+  const failRetryConfirm = page.locator('.ant-modal-confirm', { hasText: '用修改后的报文重投' });
+  await failRetryConfirm.waitFor();
+  await failRetryConfirm.locator('.ant-btn-primary').click();
+  await page.waitForTimeout(700);
+  const failedRetryRequests = posted.filter(
+    (item) => item.method === 'POST' && item.path === '/dbz/dead-letter/retry' && item.body?.payload,
+  );
+  const failedRetryRequest = failedRetryRequests.at(-1);
+  check(
+    '再次失败的回写请求带 id 与待投报文',
+    failedRetryRequest?.body?.ids?.[0] === '903' &&
+      failedRetryRequest?.body?.payload?.includes('"shipping_address": null'),
+    JSON.stringify(failedRetryRequest?.body ?? null),
+  );
+  check(
+    '再次失败原因回显到详情',
+    (await page.locator('.ant-modal-confirm:has-text("1 条重投失败")').count()) === 1,
+  );
+  await page
+    .locator('.ant-modal-confirm', { hasText: '1 条重投失败' })
+    .locator('.ant-btn-primary')
+    .click();
+  await page.waitForTimeout(300);
+  const failedDetail = await page.locator('.ant-drawer-body').innerText();
+  check(
+    '再次失败原因回写到记录且原始报文保留',
+    failedDetail.includes('最近一次重投仍失败') &&
+      failedDetail.includes('shipping_address 必填') &&
+      failedDetail.includes('"abc"'),
+    failedDetail.slice(0, 220),
+  );
+
+  // 不传报文 = 按原报文重投，行为与旧版一致
+  await page.locator('.ant-drawer-extra button:has-text("按原报文重投")').click();
+  const originalRetryConfirm = page.locator('.ant-modal-confirm', { hasText: '重投 1 条死信' });
+  await originalRetryConfirm.waitFor();
+  await originalRetryConfirm.locator('.ant-btn-primary').click();
+  await page.waitForTimeout(700);
+  const originalRetryRequest = posted.filter(
+    (item) => item.method === 'POST' && item.path === '/dbz/dead-letter/retry',
+  ).at(-1);
+  check(
+    '原报文重投不携带 payload',
+    originalRetryRequest?.body?.ids?.[0] === '903' &&
+      !originalRetryRequest?.body?.payload,
+    JSON.stringify(originalRetryRequest?.body ?? null),
+  );
+  await page.click('.ant-drawer-close');
+  await page.waitForTimeout(300);
+
+  /* 902：传输类失败 —— 页面上没有改报文入口 */
+  const row902 = page.locator('.ant-table-tbody tr.ant-table-row').nth(1);
+  await row902.locator('button:has-text("详情")').click();
+  await page.waitForSelector('.ant-drawer-title:has-text("死信详情")');
+  const transportDetail = await page.locator('.ant-drawer-body').innerText();
+  check(
+    '传输类死信禁止编辑报文',
+    transportDetail.includes('该记录不允许修改报文') &&
+      (await page.locator('.ant-drawer-body textarea.dbz-json-editor').count()) === 0 &&
+      (await page.locator('.ant-drawer-body button:has-text("保存待投")').count()) === 0 &&
+      (await page.locator('.ant-drawer-body button:has-text("改后重投")').count()) === 0,
+    transportDetail.slice(0, 180),
   );
   await page.click('.ant-drawer-close');
   await page.waitForTimeout(300);

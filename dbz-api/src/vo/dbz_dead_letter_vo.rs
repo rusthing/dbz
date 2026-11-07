@@ -2,7 +2,9 @@
 //!
 //! `payload` 是原始报文，保持 JSON 原样；其余字段按行映射，枚举以整数输出。
 
-use crate::dic::{DeadLetterConnectorType, DeadLetterFailureCategory, DeadLetterStatus};
+use crate::dic::{
+    DeadLetterConnectorType, DeadLetterFailureCategory, DeadLetterFailureSubtype, DeadLetterStatus,
+};
 use robotech::api::U64;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
@@ -26,6 +28,23 @@ pub struct DbzDeadLetterVo {
     pub payload: serde_json::Value,
     /// 失败分类
     pub failure_category: DeadLetterFailureCategory,
+    /// 失败子类（确定性失败下细分；字段不合规才允许改报文）
+    pub failure_subtype: DeadLetterFailureSubtype,
+    /// 是否允许修改报文后重投（服务端判定，前端只按此值给入口）
+    pub can_edit_payload: bool,
+    /// 修改后的待投报文；为空表示没有修改过，原始报文永不覆盖
+    #[schema(value_type = Option<Object>)]
+    pub pending_payload: Option<serde_json::Value>,
+    /// 待投报文的最后编辑人
+    pub payload_edited_by: Option<U64>,
+    /// 待投报文的最后编辑时间戳（毫秒）
+    pub payload_edited_ms: Option<i64>,
+    /// 最近一次人工重投是否成功；为空表示还没有人工重投过
+    pub last_retry_success: Option<bool>,
+    /// 最近一次人工重投的时间戳（毫秒）
+    pub last_retry_ms: Option<i64>,
+    /// 最近一次人工重投的结果说明（失败时为对端返回的原因）
+    pub last_retry_message: Option<String>,
     /// 失败详情
     pub failure_detail: String,
     /// 累计失败次数

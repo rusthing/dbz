@@ -11,6 +11,7 @@ import { apiGet, apiGetPage, apiPost, type QueryParams } from './client';
 import type {
   DbzDeadLetterCountVo,
   DbzDeadLetterDiscardInput,
+  DbzDeadLetterEditPayloadInput,
   DbzDeadLetterRetryInput,
   DbzDeadLetterRetryResultVo,
   DbzDeadLetterVo,
@@ -28,9 +29,13 @@ export const deadLetterApi = {
   pendingCount: (params?: QueryParams): Promise<DbzDeadLetterCountVo[]> =>
     apiGet(BASE + '/pending-count', params),
 
-  /** 单条或批量重投 */
+  /** 单条或批量重投；`payload` 传修改后的 JSON 文本时仅支持单条 */
   retry: (input: DbzDeadLetterRetryInput): Promise<DbzDeadLetterRetryResultVo[]> =>
     apiPost(BASE + '/retry', input),
+
+  /** 保存修改后的待投报文（不重投），原始报文不覆盖 */
+  editPayload: (input: DbzDeadLetterEditPayloadInput): Promise<DbzDeadLetterVo> =>
+    apiPost(BASE + '/edit-payload', input),
 
   /** 单条或批量废弃 */
   discard: (input: DbzDeadLetterDiscardInput): Promise<void> =>

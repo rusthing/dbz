@@ -15,6 +15,7 @@ import type {
   ConnectorRunStatus,
   DeadLetterConnectorType,
   DeadLetterFailureCategory,
+  DeadLetterFailureSubtype,
   DeadLetterStatus,
   KafkaBrokerStatus,
   KafkaConnectStatus,
@@ -105,6 +106,12 @@ export const deadLetterFailureCategoryDic: DicItem<DeadLetterFailureCategory>[] 
   { value: 1, label: '确定性失败', color: 'error' },
   { value: 2, label: '传输类失败', color: 'warning' },
   { value: 3, label: '响应异常', color: 'gold' },
+];
+
+/** # 死信失败子类 */
+export const deadLetterFailureSubtypeDic: DicItem<DeadLetterFailureSubtype>[] = [
+  { value: 0, label: '未细分', color: 'default' },
+  { value: 1, label: '字段不合规', color: 'orange' },
 ];
 
 /** # 死信连接器方向 */

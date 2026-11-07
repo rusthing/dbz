@@ -408,6 +408,9 @@ export type DeadLetterConnectorType = 1 | 2;
 /** # 死信失败分类（`DeadLetterFailureCategory`） */
 export type DeadLetterFailureCategory = 1 | 2 | 3;
 
+/** # 死信失败子类（`DeadLetterFailureSubtype`）：1=字段不合规，允许改报文 */
+export type DeadLetterFailureSubtype = 0 | 1;
+
 /** # 死信处理状态（`DeadLetterStatus`） */
 export type DeadLetterStatus = 0 | 1 | 2 | 3;
 
@@ -426,6 +429,22 @@ export interface DbzDeadLetterVo {
   /** 原始报文（JSONB），字段随来源表变化 */
   payload: unknown;
   failureCategory: DeadLetterFailureCategory;
+  /** 确定性失败细分；1=字段不合规才允许改报文 */
+  failureSubtype: DeadLetterFailureSubtype;
+  /** 服务端判定的「是否允许修改报文后重投」 */
+  canEditPayload: boolean;
+  /** 修改后的待投报文；为空表示没改过，原始 payload 永不覆盖 */
+  pendingPayload?: unknown | null;
+  /** 待投报文的最后编辑人 */
+  payloadEditedBy?: string | null;
+  /** 待投报文的最后编辑时间（毫秒） */
+  payloadEditedMs?: string | null;
+  /** 最近一次人工重投是否成功；为空表示还没人工重投过 */
+  lastRetrySuccess?: boolean | null;
+  /** 最近一次人工重投时间（毫秒） */
+  lastRetryMs?: string | null;
+  /** 最近一次人工重投的结果说明（失败时为对端原因） */
+  lastRetryMessage?: string | null;
   /** 对端原始报错 */
   failureDetail: string;
   /** 累计失败次数（含进入死信前的重试） */
@@ -457,7 +476,16 @@ export interface DbzDeadLetterRetryResultVo {
 /** # 重投请求体 */
 export interface DbzDeadLetterRetryInput {
   ids: Id[];
+  /** 修改后的报文（JSON 文本）；不传按原始报文重投，仅单条可用 */
+  payload?: string;
   remark?: string;
+}
+
+/** # 保存待投报文请求体 */
+export interface DbzDeadLetterEditPayloadInput {
+  id: Id;
+  /** 修改后的报文（JSON 文本） */
+  payload: string;
 }
 
 /** # 废弃请求体 */

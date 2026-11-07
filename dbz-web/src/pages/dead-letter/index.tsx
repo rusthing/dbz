@@ -3,7 +3,8 @@
  *
  * 死信由 magic 脚本在失败分支显式上报，不由 Kafka Connect 的 DLQ 产生：
  * HttpSink 对 HTTP 4xx/5xx 只记日志并照常提交偏移量，Connect 层兜不住任何东西。
- * 页面只做三件事：看报文与失败原因、把原报文重投回 magic、废弃不再处理。
+ * 页面只做四件事：看报文与失败原因、改报文后重投（仅确定性字段不合规类）、
+ * 按原报文重投、废弃不再处理。
  *
  * 从控制面连接器卡片进来时带 `connectorType` / `connectorId`，筛选器会预先选中。
  */
@@ -13,10 +14,12 @@ import {
   App as AntdApp,
   Button,
   Card,
+  Col,
   DatePicker,
   Drawer,
   Empty,
   Input,
+  Row,
   Select,
   Space,
   Table,
@@ -28,8 +31,12 @@ import type { ColumnsType } from 'antd/es/table';
 import {
   CheckCircleOutlined,
   DeleteOutlined,
+  EditOutlined,
   RedoOutlined,
   ReloadOutlined,
+  SaveOutlined,
+  UndoOutlined,
+  WarningOutlined,
 } from '@ant-design/icons';
 import type { Dayjs } from 'dayjs';
 import { useCallback, useMemo, useState } from 'react';
@@ -38,6 +45,7 @@ import { deadLetterApi } from '../../api/dead-letter';
 import { sinkConnectorApi } from '../../api/sink-connector';
 import { sourceConnectorApi } from '../../api/source-connector';
 import type {
+  DbzDeadLetterRetryResultVo,
   DbzDeadLetterVo,
   DeadLetterConnectorType,
   DeadLetterFailureCategory,
@@ -48,6 +56,7 @@ import StatusTag from '../../components/StatusTag';
 import {
   deadLetterConnectorTypeDic,
   deadLetterFailureCategoryDic,
+  deadLetterFailureSubtypeDic,
   deadLetterStatusDic,
   dicOptions,
 } from '../../dic';
@@ -93,13 +102,42 @@ function initialDraft(params: URLSearchParams): FilterDraft {
   };
 }
 
+/** 把报文对象格式化成编辑框文本 */
+function payloadText(value: unknown): string {
+  return JSON.stringify(value ?? null, null, 2) ?? '';
+}
+
+/** 编辑框里的 JSON：只做前端可读校验，字段检查由服务端按连接器配置做 */
+function parsePayloadDraft(text: string): { value?: unknown; error?: string } {
+  if (!text.trim()) {
+    return { error: '待投报文不能为空' };
+  }
+  try {
+    return { value: JSON.parse(text) };
+  } catch (reason) {
+    return {
+      error: `不是合法 JSON：${reason instanceof Error ? reason.message : String(reason)}`,
+    };
+  }
+}
+
 export default function DeadLetterPage() {
   const { message, modal } = AntdApp.useApp();
   const [searchParams] = useSearchParams();
   const [draft, setDraft] = useState<FilterDraft>(() => initialDraft(searchParams));
   const [detail, setDetail] = useState<DbzDeadLetterVo | null>(null);
+  const [payloadDraft, setPayloadDraft] = useState('');
+  const [payloadError, setPayloadError] = useState<string | undefined>(undefined);
+  const [savingPayload, setSavingPayload] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Id[]>([]);
   const [acting, setActing] = useState(false);
+
+  /** 打开详情时把「待投报文（优先）或原始报文」放进编辑框 */
+  const openDetail = useCallback((record: DbzDeadLetterVo) => {
+    setDetail(record);
+    setPayloadDraft(payloadText(record.pendingPayload ?? record.payload));
+    setPayloadError(undefined);
+  }, []);
 
   /** 上游/下游连接器都取一次，id → 名称与筛选下拉共用 */
   const connectors = useAsync<ConnectorOption[]>(async () => {
@@ -160,34 +198,18 @@ export default function DeadLetterPage() {
     [connectors.data, draft.connectorType],
   );
 
-  const retryRecords = async (records: DbzDeadLetterVo[]) => {
+  /** 重投：不传 payload 按原始报文；传 payload 表示用修改后的待投报文（仅单条） */
+  const retryRecords = async (records: DbzDeadLetterVo[], payload?: string) => {
     if (records.length === 0) {
       return;
     }
     setActing(true);
     try {
-      const results = await deadLetterApi.retry({ ids: records.map((item) => item.id) });
-      const ok = results.filter((item) => item.success).length;
-      const failed = results.filter((item) => !item.success);
-      if (ok > 0) {
-        message.success(`${ok} 条重投成功，已转为「已重投」`);
-      }
-      if (failed.length > 0) {
-        modal.warning({
-          title: `${failed.length} 条重投失败`,
-          content: (
-            <div className="dbz-status-detail">
-              {failed.slice(0, 5).map((item) => (
-                <div key={item.id} className="dbz-status-row">
-                  <span className="dbz-mono">#{shortId(item.id)}</span>
-                  <span className="dbz-status-row-value">{item.message}</span>
-                </div>
-              ))}
-              {failed.length > 5 && <div>……其余 {failed.length - 5} 条见服务端日志</div>}
-            </div>
-          ),
-        });
-      }
+      const results = await deadLetterApi.retry({
+        ids: records.map((item) => item.id),
+        ...(payload ? { payload } : {}),
+      });
+      applyRetryResults(results);
       setSelectedIds([]);
       reload();
     } catch (reason) {
@@ -195,6 +217,95 @@ export default function DeadLetterPage() {
     } finally {
       setActing(false);
     }
+  };
+
+  /** 汇总逐条结果，并把单条详情上的最近重投结果同步刷新 */
+  const applyRetryResults = (results: DbzDeadLetterRetryResultVo[]) => {
+    const ok = results.filter((item) => item.success).length;
+    const failed = results.filter((item) => !item.success);
+    if (ok > 0) {
+      message.success(`${ok} 条重投成功，已转为「已重投」`);
+    }
+    if (failed.length > 0) {
+      modal.warning({
+        title: `${failed.length} 条重投失败`,
+        content: (
+          <div className="dbz-status-detail">
+            {failed.slice(0, 5).map((item) => (
+              <div key={item.id} className="dbz-status-row">
+                <span className="dbz-mono">#{shortId(item.id)}</span>
+                <span className="dbz-status-row-value">{item.message}</span>
+              </div>
+            ))}
+            {failed.length > 5 && <div>……其余 {failed.length - 5} 条见服务端日志</div>}
+          </div>
+        ),
+      });
+    }
+
+    const result = results.length === 1 ? results[0] : undefined;
+    if (result) {
+      setDetail((prev) =>
+        prev && prev.id === result.id
+          ? {
+              ...prev,
+              status: result.success ? 1 : prev.status,
+              lastRetrySuccess: result.success,
+              lastRetryMs: String(Date.now()),
+              lastRetryMessage: result.message,
+            }
+          : prev,
+      );
+    }
+  };
+
+  /** 保存待投报文：只写 pending_payload 与编辑审计，不覆盖原始报文 */
+  const savePendingPayload = async () => {
+    if (!detail) {
+      return;
+    }
+    const parsed = parsePayloadDraft(payloadDraft);
+    if (parsed.error) {
+      setPayloadError(parsed.error);
+      return;
+    }
+    setPayloadError(undefined);
+    setSavingPayload(true);
+    try {
+      const updated = await deadLetterApi.editPayload({
+        id: detail.id,
+        payload: payloadDraft,
+      });
+      setDetail(updated);
+      setPayloadDraft(payloadText(updated.pendingPayload ?? updated.payload));
+      message.success('待投报文已保存，原始报文未被覆盖');
+      reload();
+    } catch (reason) {
+      message.error(errorMessage(reason));
+    } finally {
+      setSavingPayload(false);
+    }
+  };
+
+  /** 用编辑框里的报文直接重投 */
+  const confirmRetryEdited = () => {
+    if (!detail) {
+      return;
+    }
+    const parsed = parsePayloadDraft(payloadDraft);
+    if (parsed.error) {
+      setPayloadError(parsed.error);
+      return;
+    }
+    setPayloadError(undefined);
+    modal.confirm({
+      title: '用修改后的报文重投 1 条死信？',
+      content:
+        '待投报文会另外保存，原始报文不会被覆盖；对端返回 HTTP 2xx 且 result=1 才转为「已重投」，失败原因会回写到本条死信。',
+      okText: '改后重投',
+      cancelText: '取消',
+      onOk: () => retryRecords([detail], payloadDraft),
+    });
   };
 
   const discardRecords = (records: DbzDeadLetterVo[]) => {
@@ -261,9 +372,16 @@ export default function DeadLetterPage() {
     {
       title: '失败分类',
       dataIndex: 'failureCategory',
-      width: 110,
-      render: (value: DeadLetterFailureCategory) => (
-        <StatusTag dic={deadLetterFailureCategoryDic} value={value} />
+      width: 150,
+      render: (value: DeadLetterFailureCategory, record) => (
+        <Space size={4} wrap>
+          <StatusTag dic={deadLetterFailureCategoryDic} value={value} />
+          {record.failureSubtype === 1 && (
+            <Tag color="orange" bordered={false}>
+              字段不合规
+            </Tag>
+          )}
+        </Space>
       ),
     },
     {
@@ -313,13 +431,28 @@ export default function DeadLetterPage() {
       render: (ms: string) => formatMs(ms),
     },
     {
+      title: '最近重投',
+      key: 'lastRetry',
+      width: 160,
+      render: (_, record) =>
+        record.lastRetryMs ? (
+          <Tooltip title={record.lastRetryMessage ?? ''}>
+            <Tag color={record.lastRetrySuccess ? 'success' : 'error'} bordered={false}>
+              {record.lastRetrySuccess ? '成功' : '失败'} · {formatMs(record.lastRetryMs)}
+            </Tag>
+          </Tooltip>
+        ) : (
+          <Typography.Text type="secondary">未重投</Typography.Text>
+        ),
+    },
+    {
       title: '操作',
       key: 'actions',
       width: 150,
       fixed: 'right',
       render: (_, record) => (
         <Space size={4}>
-          <Button type="link" size="small" onClick={() => setDetail(record)}>
+          <Button type="link" size="small" onClick={() => openDetail(record)}>
             详情
           </Button>
           {record.status !== 1 && record.status !== 2 && (
@@ -485,7 +618,7 @@ export default function DeadLetterPage() {
           getCheckboxProps: (record) => ({ disabled: record.status === 1 || record.status === 2 }),
         }}
         locale={{ emptyText: loading ? '加载中…' : '暂无死信记录' }}
-        scroll={{ x: 1240 }}
+        scroll={{ x: 1400 }}
         pagination={{
           current: pageNum,
           pageSize,
@@ -516,7 +649,7 @@ export default function DeadLetterPage() {
                   loading={acting}
                   onClick={() => confirmRetry([detail])}
                 >
-                  重投
+                  按原报文重投
                 </Button>
               )}
               {detail.status === STATUS_PENDING && (
@@ -530,6 +663,15 @@ export default function DeadLetterPage() {
       >
         {detail && (
           <div className="dbz-status-detail">
+            {detail.lastRetryMs && (
+              <Alert
+                showIcon
+                style={{ marginBottom: 8 }}
+                type={detail.lastRetrySuccess ? 'success' : 'error'}
+                message={detail.lastRetrySuccess ? '最近一次重投成功' : '最近一次重投仍失败'}
+                description={`${detail.lastRetryMessage ?? ''}（${formatMs(detail.lastRetryMs)}）`}
+              />
+            )}
             <div className="dbz-status-row">
               <span className="dbz-status-row-label">状态</span>
               <span className="dbz-status-row-value">
@@ -552,7 +694,10 @@ export default function DeadLetterPage() {
             <div className="dbz-status-row">
               <span className="dbz-status-row-label">失败分类</span>
               <span className="dbz-status-row-value">
-                <StatusTag dic={deadLetterFailureCategoryDic} value={detail.failureCategory} />
+                <Space size={6} wrap>
+                  <StatusTag dic={deadLetterFailureCategoryDic} value={detail.failureCategory} />
+                  <StatusTag dic={deadLetterFailureSubtypeDic} value={detail.failureSubtype} />
+                </Space>
               </span>
             </div>
             <div className="dbz-status-row">
@@ -597,12 +742,110 @@ export default function DeadLetterPage() {
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有失败详情" />
             )}
 
-            <Typography.Title level={5} style={{ marginTop: 16 }}>
-              原始报文
-            </Typography.Title>
-            <pre className="dbz-json-view">
-              {JSON.stringify(detail.payload, null, 2) ?? ''}
-            </pre>
+            <Row gutter={16} style={{ marginTop: 16 }}>
+              <Col span={detail.canEditPayload ? 12 : 24}>
+                <Typography.Title level={5}>原始报文（永不覆盖）</Typography.Title>
+                <pre className="dbz-json-view">{payloadText(detail.payload)}</pre>
+              </Col>
+              {detail.canEditPayload && (
+                <Col span={12}>
+                  <Typography.Title level={5}>已保存的待投报文</Typography.Title>
+                  {detail.pendingPayload ? (
+                    <>
+                      <div className="dbz-payload-meta">
+                        <span>
+                          编辑人
+                          {detail.payloadEditedBy
+                            ? ` #${shortId(detail.payloadEditedBy)}`
+                            : '未知'}
+                        </span>
+                        <span>
+                          {detail.payloadEditedMs ? formatMs(detail.payloadEditedMs) : ''}
+                        </span>
+                      </div>
+                      <pre className="dbz-json-view">
+                        {payloadText(detail.pendingPayload)}
+                      </pre>
+                    </>
+                  ) : (
+                    <Empty
+                      image={Empty.PRESENTED_IMAGE_SIMPLE}
+                      description="还没有保存过待投报文，下面是按当前编辑框提交"
+                    />
+                  )}
+                </Col>
+              )}
+            </Row>
+
+            {detail.canEditPayload ? (
+              <>
+                <Alert
+                  type="info"
+                  showIcon
+                  style={{ marginTop: 16 }}
+                  message="修改报文与校验说明"
+                  description="提交前会校验 JSON 合法性与结构；若下游连接器配置声明 pk.fields，服务端还会检查主键字段必填。目标表的列类型没有写在连接器配置里，无法离线做完整类型校验。"
+                />
+                <Typography.Title level={5} style={{ marginTop: 16 }}>
+                  <EditOutlined /> 编辑待投报文
+                </Typography.Title>
+                <Input.TextArea
+                  className="dbz-json-editor"
+                  value={payloadDraft}
+                  status={payloadError ? 'error' : undefined}
+                  autoSize={{ minRows: 10, maxRows: 18 }}
+                  onChange={(event) => {
+                    setPayloadDraft(event.target.value);
+                    setPayloadError(undefined);
+                  }}
+                />
+                {payloadError && (
+                  <Alert
+                    type="error"
+                    showIcon
+                    style={{ marginTop: 8 }}
+                    message="报文校验未通过"
+                    description={payloadError}
+                  />
+                )}
+                <Space style={{ marginTop: 12 }} wrap>
+                  <Button
+                    icon={<SaveOutlined />}
+                    loading={savingPayload}
+                    onClick={savePendingPayload}
+                  >
+                    保存待投
+                  </Button>
+                  <Button
+                    type="primary"
+                    icon={<RedoOutlined />}
+                    loading={acting}
+                    disabled={detail.status === 1 || detail.status === 2}
+                    onClick={confirmRetryEdited}
+                  >
+                    改后重投
+                  </Button>
+                  <Button
+                    icon={<UndoOutlined />}
+                    onClick={() => {
+                      setPayloadDraft(payloadText(detail.pendingPayload ?? detail.payload));
+                      setPayloadError(undefined);
+                    }}
+                  >
+                    恢复
+                  </Button>
+                </Space>
+              </>
+            ) : (
+              <Alert
+                type="warning"
+                showIcon
+                icon={<WarningOutlined />}
+                style={{ marginTop: 16 }}
+                message="该记录不允许修改报文"
+                description="只有「确定性失败 + 字段不合规」的死信可以改报文重投；传输类、响应异常类以及唯一键冲突等其他确定性失败只能按原报文重投或废弃。"
+              />
+            )}
 
             {(detail.status === 1 || detail.status === 2) && (
               <Tag
