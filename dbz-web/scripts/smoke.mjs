@@ -188,7 +188,16 @@ const deadLetters = [
     lastRetrySuccess: null,
     lastRetryMs: null,
     lastRetryMessage: null,
-    failureDetail: '字段校验失败：amount 必须是数字，收货地址 shipping_address 缺失',
+    reason: '字段校验不通过，请核对并修改报文后重投',
+    failureDetail:
+      'HTTP 200 result=-2\n' +
+      'response: {"code":"FIELD_INVALID","message":"amount must be number","field":"amount"}\n' +
+      'record: {"id":1001,"order_no":"SO-20261107-1","amount":99.5}\n' +
+      'validate: amount=99.5 is not a number\n' +
+      'validate: shipping_address is required\n' +
+      'rtw: error_code=2201\n' +
+      'trace: com.dbz.sync.FieldValidator.validate(FieldValidator.java:88)\n' +
+      'trace: com.dbz.sync.HttpSink.apply(HttpSink.java:41)',
     retryCount: 1,
     firstSeenMs: '1760000000000',
     lastSeenMs: '1760000100000',
@@ -215,6 +224,7 @@ const deadLetters = [
     lastRetrySuccess: null,
     lastRetryMs: null,
     lastRetryMessage: null,
+    reason: '下游连接失败，重试多次后仍失败',
     failureDetail: '连接下游超时（15s），退避 10 次后仍失败：request timed out',
     retryCount: 10,
     firstSeenMs: '1759990000000',
@@ -242,7 +252,12 @@ const deadLetters = [
     lastRetrySuccess: null,
     lastRetryMs: null,
     lastRetryMessage: null,
-    failureDetail: '字段校验失败：amount 必须是数字，shipping_address 必填',
+    reason: '字段校验不通过，请核对并修改报文后重投',
+    failureDetail:
+      '历史记录原始报错：\n' +
+      'HTTP 200 result=-2\n' +
+      'response: {"code":"FIELD_INVALID","message":"amount must be number"}\n' +
+      'validate: shipping_address is required',
     retryCount: 2,
     firstSeenMs: '1760000200000',
     lastSeenMs: '1760000400000',
@@ -1102,17 +1117,40 @@ try {
       (await page.locator('.ant-tag:has-text("字段不合规")').count()) >= 1,
   );
 
+  const listText = await page.locator('.ant-table-tbody').innerText();
+  check(
+    '死信列表显示给人看的失败原因',
+    listText.includes('字段校验不通过，请核对并修改报文后重投') &&
+      listText.includes('下游连接失败，重试多次后仍失败'),
+    listText.slice(0, 120),
+  );
+
   /* 901：确定性字段不合规 —— 改报文、保存待投、改后重投成功 */
   const row901 = page.locator('.ant-table-tbody tr.ant-table-row').nth(0);
   await row901.locator('button:has-text("详情")').click();
   await page.waitForSelector('.ant-drawer-title:has-text("死信详情")');
   const deadLetterDetail = await page.locator('.ant-drawer-body').innerText();
   check(
-    '死信详情展示失败原因与原始报文',
-    deadLetterDetail.includes('字段校验失败') &&
+    '死信详情把失败原因与失败详情分开呈现',
+    deadLetterDetail.includes('失败原因') &&
+      deadLetterDetail.includes('失败详情') &&
+      deadLetterDetail.includes('字段校验不通过，请核对并修改报文后重投') &&
+      deadLetterDetail.includes('HTTP 200 result=-2') &&
       deadLetterDetail.includes('SO-20261107-1') &&
       deadLetterDetail.includes('99.5'),
-    deadLetterDetail.slice(0, 160),
+    deadLetterDetail.slice(0, 200),
+  );
+  check(
+    '失败详情可展开且可复制',
+    (await page.locator('.ant-drawer-body .ant-typography-expand:has-text("展开完整详情")').count()) ===
+      1 &&
+      (await page.locator('.ant-drawer-body .ant-typography-copy').count()) === 1,
+  );
+  await page.locator('.ant-drawer-body .ant-typography-expand:has-text("展开完整详情")').click();
+  await page.waitForTimeout(200);
+  check(
+    '失败详情展开后可继续操作',
+    (await page.locator('.ant-drawer-body button:has-text("保存待投")').count()) === 1,
   );
   check(
     '可改报文的死信展示编辑与并排原始报文',
@@ -1193,9 +1231,12 @@ try {
   await page.waitForSelector('.ant-drawer-title:has-text("死信详情")');
   const detail903 = await page.locator('.ant-drawer-body').innerText();
   check(
-    '待投报文与原始报文并排展示',
-    detail903.includes('"abc"') && detail903.includes('88'),
-    detail903.slice(0, 200),
+    '历史记录回填后原因清晰、原始详情仍在',
+    detail903.includes('字段校验不通过，请核对并修改报文后重投') &&
+      detail903.includes('历史记录原始报错') &&
+      detail903.includes('"abc"') &&
+      detail903.includes('88'),
+    detail903.slice(0, 220),
   );
   await page.locator('.ant-drawer-body button:has-text("改后重投")').click();
   const failRetryConfirm = page.locator('.ant-modal-confirm', { hasText: '用修改后的报文重投' });

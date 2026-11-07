@@ -62,7 +62,7 @@ import {
 } from '../../dic';
 import { useAsync } from '../../hooks/useAsync';
 import { usePagedQuery } from '../../hooks/usePagedQuery';
-import { errorMessage, formatMs, orDash, shortId, truncate } from '../../utils/format';
+import { errorMessage, formatMs, orDash, shortId } from '../../utils/format';
 
 /** 待处理状态：角标与默认筛选都用它 */
 const STATUS_PENDING: DeadLetterStatus = 0;
@@ -408,11 +408,11 @@ export default function DeadLetterPage() {
     },
     {
       title: '失败原因',
-      dataIndex: 'failureDetail',
+      dataIndex: 'reason',
       ellipsis: true,
-      render: (detail: string) => (
-        <Tooltip title={detail}>
-          <span>{orDash(truncate(detail, 80))}</span>
+      render: (reason: string) => (
+        <Tooltip title={reason}>
+          <span>{orDash(reason)}</span>
         </Tooltip>
       ),
     },
@@ -736,8 +736,23 @@ export default function DeadLetterPage() {
             <Typography.Title level={5} style={{ marginTop: 16 }}>
               失败原因
             </Typography.Title>
+            <Typography.Text strong>{orDash(detail.reason)}</Typography.Text>
+
+            <Typography.Title level={5} style={{ marginTop: 16 }}>
+              失败详情
+            </Typography.Title>
             {detail.failureDetail ? (
-              <pre className="dbz-status-reason">{detail.failureDetail}</pre>
+              <Typography.Paragraph
+                className="dbz-status-reason"
+                style={{ marginBottom: 0, whiteSpace: 'pre-wrap' }}
+                copyable={{
+                  text: detail.failureDetail,
+                  tooltips: ['复制失败详情', '已复制'],
+                }}
+                ellipsis={{ rows: 6, expandable: true, symbol: '展开完整详情' }}
+              >
+                {detail.failureDetail}
+              </Typography.Paragraph>
             ) : (
               <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有失败详情" />
             )}

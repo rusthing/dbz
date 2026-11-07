@@ -45,7 +45,9 @@ pub struct DbzDeadLetterVo {
     pub last_retry_ms: Option<i64>,
     /// 最近一次人工重投的结果说明（失败时为对端返回的原因）
     pub last_retry_message: Option<String>,
-    /// 失败详情
+    /// 失败原因：由后端按分类/子类生成的一句清晰说明
+    pub reason: String,
+    /// 失败详情：对端返回的原始技术内容，原样保存不加工
     pub failure_detail: String,
     /// 累计失败次数
     pub retry_count: u32,

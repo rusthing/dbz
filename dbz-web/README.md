@@ -404,6 +404,12 @@ CRUD 页保留为「明细维护」入口，从每个节点的「明细」按钮
 不新增行。重投是把报文重新 POST 到下游连接器 `connector_config.url`（magic sync 接口），
 HTTP 2xx 且 `result=1` 才转「已重投」；废弃只改状态，不删报文。
 
+失败信息拆成两列：`failure_detail` 原样保存 HTTP 状态与响应体、校验报错原文、RTW 错误码、
+异常栈摘要等原始内容，不做加工也不截断；`reason` 由后端按 `failureCategory` / `failureSubtype`
+统一生成一句给人看的说明（例如「字段校验不通过，请核对并修改报文后重投」「下游连接失败，
+重试多次后仍失败」），上游脚本无需也无法改写措辞。最近一次人工重投的 `last_retry_message`
+仍保留对端原始内容。
+
 死信详情支持**修改报文后重投**：
 
 - 只有 `failureCategory=1`（确定性失败）且 `failureSubtype=1`（字段不合规）的记录可以改；

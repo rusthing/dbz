@@ -26,7 +26,10 @@ pub struct Model {
     pub payload: Json,
     /// 失败分类：2=传输类，3=响应异常
     pub failure_category: i16,
-    /// 最近一次失败详情
+    /// 给人看的一句失败原因，与死信表同一口径
+    #[sea_orm(column_type = "Text")]
+    pub reason: String,
+    /// 最近一次失败详情（原始技术内容，原样保存）
     #[sea_orm(column_type = "Text")]
     pub failure_detail: String,
     /// 已重试次数

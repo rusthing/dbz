@@ -445,7 +445,9 @@ export interface DbzDeadLetterVo {
   lastRetryMs?: string | null;
   /** 最近一次人工重投的结果说明（失败时为对端原因） */
   lastRetryMessage?: string | null;
-  /** 对端原始报错 */
+  /** 失败原因：后端按分类/子类生成的一句清晰说明 */
+  reason: string;
+  /** 失败详情：对端返回的原始技术内容，原样保存 */
   failureDetail: string;
   /** 累计失败次数（含进入死信前的重试） */
   retryCount: number;

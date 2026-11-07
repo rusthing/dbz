@@ -35,7 +35,8 @@ pub struct DbzDeadLetterReportDto {
     /// 失败子类：字段不合规时传 `1`，只有这类确定性失败允许修改报文后重投
     #[serde(default)]
     pub failure_subtype: DeadLetterFailureSubtype,
-    /// 失败详情（对端的原始报错）
+    /// 失败详情（HTTP 状态与响应体、校验报错原文、RTW 错误码、异常栈摘要等）
+    /// 服务端原样保存，不做加工、不截断；给人看的原因由后端按分类生成
     #[serde(default)]
     pub failure_detail: String,
     /// 本次失败事件已经重试的次数；确定性失败传 0

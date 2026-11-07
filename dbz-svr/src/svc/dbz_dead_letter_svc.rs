@@ -97,7 +97,8 @@ impl DbzDeadLetterSvc {
         let db = get_db_conn().map_err(|e| anyhow!("获取数据库连接失败: {e}"))?;
         let now = now_ms() as i64;
         let record_key = truncate(&dto.record_key, 512);
-        let failure_detail = truncate(&dto.failure_detail, 5_000);
+        // 失败详情是原始技术内容，按要求原样保存、不截断
+        let failure_detail = dto.failure_detail;
         let attempts = dto.retry_count as i32;
         let operator = i64::from(operator_id);
 
@@ -511,7 +512,7 @@ impl DbzDeadLetterSvc {
                         row.payload.clone(),
                         row.failure_category,
                         i16::from(DeadLetterFailureSubtype::Other),
-                        &truncate(&format!("{error}{extra}"), 5_000),
+                        &format!("{error}{extra}"),
                         attempts,
                         row.first_seen_ms,
                         now,
@@ -608,7 +609,7 @@ impl DbzDeadLetterSvc {
         }
         model.last_retry_success = Some(success);
         model.last_retry_ms = Some(now);
-        model.last_retry_message = Some(truncate(&message, 5_000));
+        model.last_retry_message = Some(message.clone());
         model.updater_id = operator;
         model.update_ms = now;
 
@@ -640,6 +641,39 @@ impl DbzDeadLetterSvc {
     fn can_edit_payload(failure_category: i16, failure_subtype: i16) -> bool {
         failure_category == i16::from(DeadLetterFailureCategory::Deterministic)
             && failure_subtype == i16::from(DeadLetterFailureSubtype::FieldValidation)
+    }
+
+    /// # 死信记录给人看的一句失败原因
+    ///
+    /// 只按分类/子类归一出结论，绝不把原始技术内容塞进这一列；无法识别分类时
+    /// 给保守但仍可读的兜底说明。与重试队列的口径保持一致。
+    fn dead_letter_reason(failure_category: i16, failure_subtype: i16) -> String {
+        if failure_category == i16::from(DeadLetterFailureCategory::Deterministic) {
+            if failure_subtype == i16::from(DeadLetterFailureSubtype::FieldValidation) {
+                "字段校验不通过，请核对并修改报文后重投".to_string()
+            } else {
+                "数据与下游约束冲突（唯一键冲突或外键缺失），请核对数据".to_string()
+            }
+        } else if failure_category == i16::from(DeadLetterFailureCategory::Transient) {
+            "下游连接失败，重试多次后仍失败".to_string()
+        } else if failure_category == i16::from(DeadLetterFailureCategory::Unknown) {
+            "下游响应异常，无法确认处理结果，请核对后重投".to_string()
+        } else {
+            "处理失败，请查看失败详情".to_string()
+        }
+    }
+
+    /// # 重试队列给人看的一句失败原因
+    ///
+    /// 与死信表同一口径，只差生命周期状态：队列里的记录还在重试，死信已经终态。
+    fn retry_reason(failure_category: i16) -> String {
+        if failure_category == i16::from(DeadLetterFailureCategory::Transient) {
+            "下游连接失败，已进入重试队列".to_string()
+        } else if failure_category == i16::from(DeadLetterFailureCategory::Unknown) {
+            "下游响应异常，已进入重试队列".to_string()
+        } else {
+            "处理失败，请查看失败详情".to_string()
+        }
     }
 
     /// 解析待投报文文本，错误信息直接可读
@@ -807,6 +841,7 @@ impl DbzDeadLetterSvc {
             let mut active: RetryActiveModel = existing.into();
             active.payload = Set(payload);
             active.failure_category = Set(failure_category);
+            active.reason = Set(Self::retry_reason(failure_category));
             active.failure_detail = Set(failure_detail.to_string());
             active.attempts = Set(next_attempts);
             active.next_at_ms = Set(now + retry_delay_ms(next_attempts));
@@ -823,6 +858,7 @@ impl DbzDeadLetterSvc {
             record_key: Set(record_key.to_string()),
             payload: Set(payload),
             failure_category: Set(failure_category),
+            reason: Set(Self::retry_reason(failure_category)),
             failure_detail: Set(failure_detail.to_string()),
             attempts: Set(attempts.max(0)),
             next_at_ms: Set(now + retry_delay_ms(attempts.max(0))),
@@ -872,6 +908,7 @@ impl DbzDeadLetterSvc {
             active.payload = Set(payload);
             active.failure_category = Set(failure_category);
             active.failure_subtype = Set(failure_subtype);
+            active.reason = Set(Self::dead_letter_reason(failure_category, failure_subtype));
             active.failure_detail = Set(failure_detail.to_string());
             active.retry_count = Set(next_retry_count);
             active.first_seen_ms = Set(first_seen);
@@ -893,6 +930,7 @@ impl DbzDeadLetterSvc {
             payload: Set(payload),
             failure_category: Set(failure_category),
             failure_subtype: Set(failure_subtype),
+            reason: Set(Self::dead_letter_reason(failure_category, failure_subtype)),
             failure_detail: Set(failure_detail.to_string()),
             retry_count: Set(increment.max(0)),
             first_seen_ms: Set(first_seen_ms),
@@ -1025,6 +1063,7 @@ fn to_vo(model: DeadLetterModel) -> DbzDeadLetterVo {
         last_retry_success: model.last_retry_success,
         last_retry_ms: model.last_retry_ms,
         last_retry_message: model.last_retry_message,
+        reason: model.reason,
         failure_detail: model.failure_detail,
         retry_count: model.retry_count.max(0) as u32,
         first_seen_ms: model.first_seen_ms,
@@ -1127,5 +1166,50 @@ mod tests {
     #[test]
     fn without_sink_config_only_json_is_checked() {
         assert!(DbzDeadLetterSvc::validate_field_payload(&json!({ "id": 1001 }), None).is_ok());
+    }
+
+    #[test]
+    fn dead_letter_reason_is_human_readable_by_category() {
+        let field_validation = DbzDeadLetterSvc::dead_letter_reason(
+            category(DeadLetterFailureCategory::Deterministic),
+            subtype(DeadLetterFailureSubtype::FieldValidation),
+        );
+        assert!(
+            field_validation.contains("字段校验不通过"),
+            "{field_validation}"
+        );
+
+        let deterministic = DbzDeadLetterSvc::dead_letter_reason(
+            category(DeadLetterFailureCategory::Deterministic),
+            subtype(DeadLetterFailureSubtype::Other),
+        );
+        assert!(deterministic.contains("约束冲突"), "{deterministic}");
+
+        let transient =
+            DbzDeadLetterSvc::dead_letter_reason(category(DeadLetterFailureCategory::Transient), 0);
+        assert!(transient.contains("下游连接失败"), "{transient}");
+
+        let unknown =
+            DbzDeadLetterSvc::dead_letter_reason(category(DeadLetterFailureCategory::Unknown), 0);
+        assert!(unknown.contains("下游响应异常"), "{unknown}");
+    }
+
+    #[test]
+    fn unknown_category_has_conservative_reason() {
+        let reason = DbzDeadLetterSvc::dead_letter_reason(99, 99);
+        assert_eq!(reason, "处理失败，请查看失败详情");
+        let retry = DbzDeadLetterSvc::retry_reason(99);
+        assert_eq!(retry, "处理失败，请查看失败详情");
+    }
+
+    #[test]
+    fn retry_queue_reason_uses_same_category_language() {
+        let transient =
+            DbzDeadLetterSvc::retry_reason(category(DeadLetterFailureCategory::Transient));
+        assert!(transient.contains("下游连接失败"), "{transient}");
+        assert!(transient.contains("重试队列"), "{transient}");
+
+        let unknown = DbzDeadLetterSvc::retry_reason(category(DeadLetterFailureCategory::Unknown));
+        assert!(unknown.contains("下游响应异常"), "{unknown}");
     }
 }

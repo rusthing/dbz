@@ -46,7 +46,10 @@ pub struct Model {
     /// 最近一次人工重投的结果说明（失败时为对端返回的原因）
     #[sea_orm(column_type = "Text")]
     pub last_retry_message: Option<String>,
-    /// 失败详情（对端的原始报错）
+    /// 给人看的一句失败原因，由后端按分类/子类统一生成
+    #[sea_orm(column_type = "Text")]
+    pub reason: String,
+    /// 失败详情（对端的原始报错，原样保存不截断）
     #[sea_orm(column_type = "Text")]
     pub failure_detail: String,
     /// 累计失败次数（传输类包含了进入死信前的重试次数）
