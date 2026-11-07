@@ -169,6 +169,7 @@ impl DbzDeadLetterSvc {
             attempts,
             now,
             now,
+            operator,
         )
         .await?;
         Ok(Ro::success("已加入重试队列".to_string()))
@@ -210,7 +211,7 @@ impl DbzDeadLetterSvc {
 
         let (page_num, total, models) = DbzDeadLetterDao::page_by_condition::<_, DeadLetterModel>(
             condition,
-            &Some("last_seen_ms desc".to_string()),
+            &Some("last_seen_ms:desc".to_string()),
             page_num,
             page_size,
             db.as_ref(),
@@ -571,6 +572,7 @@ impl DbzDeadLetterSvc {
         config
             .get("url")
             .or_else(|| config.get("http.url"))
+            .or_else(|| config.get("http.api.url"))
             .and_then(Value::as_str)
             .map(|url| url.to_string())
             .ok_or_else(|| format!("连接器<{}>配置缺少 url，无法重投", record.name))
@@ -625,6 +627,7 @@ impl DbzDeadLetterSvc {
         attempts: i32,
         first_seen_ms: i64,
         last_seen_ms: i64,
+        operator: i64,
     ) -> anyhow::Result<RetryModel> {
         let condition = Self::retry_key_condition(connector_type, connector_id, topic, record_key);
         let now = now_ms() as i64;
@@ -642,6 +645,7 @@ impl DbzDeadLetterSvc {
             active.attempts = Set(next_attempts);
             active.next_at_ms = Set(now + retry_delay_ms(next_attempts));
             active.last_seen_ms = Set(last_seen_ms);
+            active.updater_id = Set(operator);
             active.update_ms = Set(now);
             return Ok(DbzDeadLetterRetryDao::update(active, db).await?);
         }
@@ -659,7 +663,9 @@ impl DbzDeadLetterSvc {
             last_error: Set(None),
             first_seen_ms: Set(first_seen_ms),
             last_seen_ms: Set(last_seen_ms),
+            creater_id: Set(operator),
             create_ms: Set(now),
+            updater_id: Set(operator),
             update_ms: Set(now),
             ..Default::default()
         };
