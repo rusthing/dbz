@@ -1,14 +1,13 @@
 /**
- * # 控制面自由画布
+ * # 控制面画布
  *
- * 交互按方案 A：节点拖拽、空白平移、以指针为中心缩放、缩略图、正交折线箭头。
+ * 交互按「只选上游、其余自动推导」收敛：
+ * - 节点可拖、空白可平移、滚轮以指针为中心缩放、缩略图、正交折线箭头；
+ * - 连线只作展示：两端都没有把手，不能拖动改上下游，也不能删除；
+ * - 新增下级只走节点底部的「+」按钮，点击后由页面打开父级已固定的表单；
+ * - 四类卡片同一骨架，类型图标 + 类型文字 + 主色用于识别，状态只用标签表达。
  *
- * 连线的规则是「下游锁定」：
- * - 上游端带圆形把手，可以拖到同类节点上更换上游；
- * - 下游端是方形锁标，不响应拖拽，悬停提示「下游目标不可更改」；
- * - 连线本身没有删除入口，要断开链路只能删除下游节点。
- *
- * 组件只负责画与拖，真正写库的动作（改外键、删节点、保存位置）由页面调用。
+ * 组件只负责画与拖，真正写库的动作（保存位置、打开表单、节点操作）由页面调用。
  */
 
 import {
@@ -17,16 +16,15 @@ import {
   DeleteOutlined,
   EditOutlined,
   ExportOutlined,
+  FileExclamationOutlined,
+  HistoryOutlined,
   ImportOutlined,
   MinusOutlined,
-  PlayCircleOutlined,
   PlusOutlined,
   ReloadOutlined,
-  StopOutlined,
   ThunderboltOutlined,
-  WarningOutlined,
 } from '@ant-design/icons';
-import { Button, Tag, Tooltip } from 'antd';
+import { Button, Switch, Tag, Tooltip } from 'antd';
 import {
   useCallback,
   useEffect,
@@ -37,8 +35,12 @@ import {
   type ReactNode,
 } from 'react';
 import type { Id } from '../../api/types';
-import { liveFailureReason, liveStatusLabel, taskSummary, type ManagedConnectorRecord } from './model';
+import { formatMs } from '../../utils/format';
+import { connectorRunStatusDic } from '../../dic';
+import { taskSummary, type ManagedConnectorRecord } from './model';
 import {
+  NODE_KIND_COLOR,
+  NODE_KIND_LABEL,
   NODE_SIZE,
   defaultPosition,
   nodeTone,
@@ -55,23 +57,11 @@ const MAX_SCALE = 2;
 const WORLD_WIDTH = 2400;
 const WORLD_HEIGHT = 1600;
 
-const PALETTE_ITEMS: { kind: CanvasNodeKind; label: string; hint: string; icon: ReactNode }[] = [
-  { kind: 'broker', label: 'Kafka 集群', hint: '消息集群的地址与认证', icon: <DatabaseOutlined /> },
-  { kind: 'connect', label: 'Kafka Connect', hint: '连接器跑在哪台 worker', icon: <CloudServerOutlined /> },
-  { kind: 'source', label: '上游连接器', hint: 'Debezium source', icon: <ImportOutlined /> },
-  { kind: 'sink', label: '下游连接器', hint: '写入目标 sink', icon: <ExportOutlined /> },
-];
-
-/** 连线的上游端可以换成哪类节点 */
-const UPSTREAM_KIND: Record<CanvasEdge['relation']['type'], CanvasNodeKind> = {
-  'broker-connect': 'broker',
-  'connect-connector': 'connect',
-};
-
-/** 从某个节点拉出连线时，目标节点必须是哪类 */
-const LINK_TARGET_KINDS: Partial<Record<CanvasNodeKind, CanvasNodeKind[]>> = {
-  broker: ['connect'],
-  connect: ['source', 'sink'],
+/** 「+」能新增的下级类型；下游连接器没有下一级，不显示按钮 */
+const CHILD_KIND: Partial<Record<CanvasNodeKind, CanvasNodeKind>> = {
+  broker: 'connect',
+  connect: 'source',
+  source: 'sink',
 };
 
 interface Point {
@@ -90,8 +80,6 @@ interface EdgeGeometry {
   path: string;
   start: Point;
   end: Point;
-  handle: Point;
-  lock: Point;
   color: string;
   marker: string;
 }
@@ -106,18 +94,15 @@ interface ControlPlaneCanvasProps {
   onNodeMove: (key: string, x: number, y: number, commit: boolean) => void;
   onSelectNode: (key: string | null) => void;
   onSelectEdge: (id: string | null) => void;
-  /** 从节点锚点拉出连线 */
-  onCreateEdge: (from: CanvasNode, to: CanvasNode) => void;
-  /** 拖动连线上游端，改挂到新的上游节点 */
-  onReconnectEdge: (edge: CanvasEdge, target: CanvasNode) => void;
-  /** 从调色板拖到画布，落位后由页面打开新增表单 */
-  onCreateAt: (kind: CanvasNodeKind, x: number, y: number) => void;
-  /** 尝试删除选中连线时的提示 */
-  onEdgeDeleteRejected: (edge: CanvasEdge) => void;
-  /** 卡片上的启用/重启/编辑/删除/检测 */
+  /** 点击节点底部「+」：父级固定，页面按子类型打开新增表单 */
+  onAddChild: (node: CanvasNode) => void;
+  /** 卡片上的重启/编辑/删除/检测/查看死信 */
   onNodeAction: (node: CanvasNode, action: CanvasNodeAction) => void;
+  /** 卡片上的启用开关：选中即启用，关闭即停用 */
+  onToggleNode: (node: CanvasNode, enabled: boolean) => void;
   /** 各操作的 loading 状态 */
   busyNodeKey: string | null;
+  togglingNodeKey: string | null;
   checkingBrokerId: Id | null;
   restartingKey: string | null;
   /** 右侧检查器内容 */
@@ -128,17 +113,15 @@ function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
 }
 
-function pointInNode(test: Point, node: CanvasNode, point: Point): boolean {
-  const size = NODE_SIZE[node.kind];
-  return (
-    test.x >= point.x &&
-    test.x <= point.x + size.w &&
-    test.y >= point.y &&
-    test.y <= point.y + size.h
-  );
+/** 停用态：整卡降饱和/降透明度，与「状态异常」的红色标签区分开 */
+function nodeDisabledOf(node: CanvasNode): boolean {
+  if (node.kind === 'connect') {
+    return !node.cluster?.enabled;
+  }
+  return !(node.record as { enabled: boolean }).enabled;
 }
 
-/** 连线几何：归属关系统一走竖向折线；同源多条线在底部错开，避免把手叠在一起 */
+/** 连线几何：归属关系统一走竖向折线；同源多条线在底部错开，避免重叠 */
 function geometryOf(
   edge: CanvasEdge,
   nodeMap: Map<string, CanvasNode>,
@@ -167,75 +150,113 @@ function geometryOf(
     edge,
     start,
     end,
-    handle: { x: start.x, y: start.y + 14 },
-    lock: { x: end.x, y: end.y - 14 },
     path: `M${start.x},${start.y} L${start.x},${midY} L${end.x},${midY} L${end.x},${end.y}`,
-    color: '#a9b6c9',
+    color: '#b7c2d1',
     marker: 'dbz-arrow-edge',
   };
 }
 
-/** 节点状态标签：实时优先，库内只做对照 */
-function NodeStatus({ node }: { node: CanvasNode }) {
+/**
+ * # 统一状态值
+ *
+ * 连接器直接用后端回写的 `run_status`；broker/connect 没有统一列，按启停 + 最近
+ * 检查结果折算成同一枚举，避免卡片各写一套字符串。
+ */
+function unifiedStatusOf(node: CanvasNode): number {
+  if (node.kind === 'source' || node.kind === 'sink') {
+    const record = node.record as ManagedConnectorRecord;
+    // 已停用（或所属 Connect 已停用）直接是「已停用」，不再看库内最后一次结论
+    if (!record.enabled || node.connectDisabled) {
+      return 2;
+    }
+    return record.runStatus;
+  }
   if (node.kind === 'broker') {
-    const broker = node.record as { runStatus: number; runMsg?: string | null; enabled: boolean };
-    const tone = !broker.enabled ? 'default' : broker.runStatus === 1 ? 'success' : broker.runStatus === 3 ? 'error' : 'warning';
-    return (
-      <Tag color={tone} title={broker.runMsg ?? undefined}>
-        {!broker.enabled ? '已停用' : broker.runStatus === 1 ? '正常' : broker.runStatus === 3 ? '连接失败' : '无状态'}
-      </Tag>
-    );
+    const broker = node.record as { enabled: boolean; runStatus: number };
+    if (!broker.enabled) return 2;
+    if (broker.runStatus === 1) return 1;
+    if (broker.runStatus === 3) return 5;
+    return 0;
+  }
+  if (!node.cluster?.enabled) return 2;
+  if (node.health?.error || node.health?.health?.reachable === false || node.liveIssue) return 5;
+  if (node.health?.health?.reachable) return 1;
+  return 0;
+}
+
+/** 状态标签：只展示一个统一枚举，状态色不占用类型主色 */
+function StatusTag({ node }: { node: CanvasNode }) {
+  const value = unifiedStatusOf(node);
+  const item = connectorRunStatusDic.find((dic) => dic.value === value);
+  return <Tag color={item?.color ?? 'default'}>{item?.label ?? '未知'}</Tag>;
+}
+
+/** 状态悬停详情：统一状态 + 最后检查时间 + 失败原因（不可达时带上最后已知） */
+function StatusHint({ node }: { node: CanvasNode }) {
+  const statusValue = unifiedStatusOf(node);
+  const statusLabel =
+    connectorRunStatusDic.find((dic) => dic.value === statusValue)?.label ?? '未知';
+  const record = node.record as {
+    runStatus: number;
+    runMsg?: string | null;
+    updateMs?: Id;
+    enabled: boolean;
+  };
+  const tasks = node.live ? taskSummary(node.live) : null;
+  const disabled = statusValue === 2;
+  const rows: { label: string; value: string }[] = [
+    {
+      label: '状态',
+      value:
+        statusValue === 5
+          ? '不可达（Connect 连不上，显示最后已知状态）'
+          : statusLabel,
+    },
+    { label: '最后检查时间', value: formatMs(record.updateMs) },
+    {
+      label: '失败原因',
+      value: disabled ? '已停用，不发起实时检查' : record.runMsg?.trim() || '无异常',
+    },
+  ];
+  if (node.kind === 'source' || node.kind === 'sink') {
+    rows.push({
+      label: '任务',
+      value: disabled
+        ? '已停用，不发起实时请求'
+        : tasks
+          ? `共 ${tasks.total} 个，失败 ${tasks.abnormal} 个`
+          : '无实时任务数据',
+    });
   }
 
-  if (node.kind === 'connect') {
-    if (!node.cluster?.enabled) {
-      return <Tag>已停用</Tag>;
-    }
-    if (node.health?.error) {
-      return <Tag color="error">健康探测失败</Tag>;
-    }
-    if (node.health?.health && !node.health.health.reachable) {
-      return <Tag color="error">不可达</Tag>;
-    }
-    if (node.liveIssue) {
-      return <Tag color="error">连接器查询失败</Tag>;
-    }
-    if (node.health?.health?.reachable) {
-      const health = node.health.health;
-      return (
-        <Tag color="success" title={`Commit ${health.commit ?? '--'} · ${health.workerCount} worker · ${health.connectorCount} 连接器`}>
-          {health.version ? `v${health.version}` : '可达'} · {health.workerCount} worker
-        </Tag>
-      );
-    }
-    return <Tag>未探测</Tag>;
-  }
-
-  if (!node.record.enabled) {
-    return <Tag>已停用</Tag>;
-  }
-  if (node.connectDisabled) {
-    return <Tag color="warning">所属 Connect 已停用</Tag>;
-  }
-  if (node.liveIssue) {
-    return <Tag color="error">实时查询失败</Tag>;
-  }
-  if (!node.live) {
-    return <Tag color="warning">集群未部署</Tag>;
-  }
-  const { abnormal, total } = taskSummary(node.live);
   return (
-    <Tag
-      color={node.live.state === 0 ? 'success' : node.live.state === 1 ? 'error' : 'warning'}
-      title={`${total} 个任务${abnormal > 0 ? `，异常 ${abnormal} 个` : ''}${
-        liveFailureReason(node.live) ? `\n${liveFailureReason(node.live)}` : ''
-      }`}
-    >
-      {liveStatusLabel(node.live.state)}
-    </Tag>
+    <div className="dbz-status-hint">
+      {rows.map((row) => (
+        <div className="dbz-status-hint-row" key={row.label}>
+          <span className="dbz-status-hint-label">{row.label}</span>
+          <span className="dbz-status-hint-value">{row.value}</span>
+        </div>
+      ))}
+    </div>
   );
 }
 
+/** 状态标签：悬停给出运行详情；标签本身不参与卡片拖动 */
+function NodeStatus({ node }: { node: CanvasNode }) {
+  return (
+    <Tooltip
+      title={<StatusHint node={node} />}
+      styles={{ root: { maxWidth: 380 } }}
+      placement="topLeft"
+    >
+      <span className="dbz-graph-status-tag" data-no-drag>
+        <StatusTag node={node} />
+      </span>
+    </Tooltip>
+  );
+}
+
+/** 四类各用一个语义明确的图标：集群 / 服务节点 / 入方向 / 出方向 */
 function NodeIcon({ kind }: { kind: CanvasNodeKind }) {
   switch (kind) {
     case 'broker':
@@ -252,22 +273,27 @@ function NodeIcon({ kind }: { kind: CanvasNodeKind }) {
 interface NodeActionsProps {
   node: CanvasNode;
   busyNodeKey: string | null;
+  togglingNodeKey: string | null;
   checkingBrokerId: Id | null;
   restartingKey: string | null;
   onSelect: (key: string) => void;
   onAction: (node: CanvasNode, action: CanvasNodeAction) => void;
+  onToggle: (node: CanvasNode, enabled: boolean) => void;
 }
 
-/** 卡片底部的操作行：只给图标，文案放 Tooltip */
+/** 卡片底部的操作行：启用开关 + 图标操作，图标文案放 Tooltip，整行不换行 */
 function NodeActions({
   node,
   busyNodeKey,
+  togglingNodeKey,
   checkingBrokerId,
   restartingKey,
   onSelect,
   onAction,
+  onToggle,
 }: NodeActionsProps) {
   const enabled = (node.record as { enabled: boolean }).enabled;
+  const toggling = togglingNodeKey === node.key;
   const items: {
     action: CanvasNodeAction;
     title: string;
@@ -275,13 +301,7 @@ function NodeActions({
     danger?: boolean;
     disabled?: boolean;
     loading?: boolean;
-  }[] = [
-    {
-      action: 'toggle',
-      title: enabled ? '停用' : '启用',
-      icon: enabled ? <StopOutlined /> : <PlayCircleOutlined />,
-    },
-  ];
+  }[] = [];
 
   if (node.kind === 'broker') {
     items.push({
@@ -316,6 +336,20 @@ function NodeActions({
       disabled,
       loading: restartingKey === `${record.kafkaConnectId}:${record.connectorName}`,
     });
+    items.push({
+      action: 'reset-offsets',
+      title: '重置位点（停止 → 清空位点 → 可选恢复）',
+      icon: <HistoryOutlined />,
+    });
+  }
+
+  // 下游连接器额外提供死信入口，复用死信页按「类型 + id」筛选的深链
+  if (node.kind === 'sink') {
+    items.push({
+      action: 'dead-letter',
+      title: node.dead > 0 ? `查看死信（${node.dead} 条待处理）` : '查看死信',
+      icon: <FileExclamationOutlined />,
+    });
   }
 
   items.push({ action: 'edit', title: '编辑配置', icon: <EditOutlined /> });
@@ -333,6 +367,24 @@ function NodeActions({
       data-no-drag
       onPointerDown={(event) => event.stopPropagation()}
     >
+      {/* 启用开关：选中即启用、关闭即停用；请求中 loading 且禁止重复点击 */}
+      <Tooltip title={enabled ? '已启用，关闭即停用' : '已停用，打开即启用'}>
+        <span className="dbz-graph-switch" data-no-drag>
+          <Switch
+            size="small"
+            checked={enabled}
+            loading={toggling}
+            disabled={toggling}
+            aria-label={enabled ? '停用' : '启用'}
+            aria-checked={enabled}
+            data-node-toggle={node.kind}
+            onChange={(checked) => {
+              onSelect(node.key);
+              onToggle(node, checked);
+            }}
+          />
+        </span>
+      </Tooltip>
       {items.map((item) => (
         <Tooltip key={item.action} title={item.title}>
           <span className="dbz-graph-action">
@@ -366,12 +418,11 @@ export default function ControlPlaneCanvas({
   onNodeMove,
   onSelectNode,
   onSelectEdge,
-  onCreateEdge,
-  onReconnectEdge,
-  onCreateAt,
-  onEdgeDeleteRejected,
+  onAddChild,
   onNodeAction,
+  onToggleNode,
   busyNodeKey,
+  togglingNodeKey,
   checkingBrokerId,
   restartingKey,
   renderInspector,
@@ -383,7 +434,7 @@ export default function ControlPlaneCanvas({
 
   const nodeMap = useMemo(() => new Map(nodes.map((node) => [node.key, node])), [nodes]);
 
-  /** 同一个上游节点拉出的多条连线在底部错开，否则把手会叠在同一个点上 */
+  /** 同一个上游节点引出的多条归属线在底部错开，避免叠在同一个点上 */
   const edgeOffsets = useMemo(() => {
     const groups = new Map<string, CanvasEdge[]>();
     for (const edge of edges) {
@@ -409,35 +460,6 @@ export default function ControlPlaneCanvas({
         .map((edge) => geometryOf(edge, nodeMap, positions, edgeOffsets.get(edge.id) ?? 0))
         .filter((item): item is EdgeGeometry => Boolean(item)),
     [edges, nodeMap, positions, edgeOffsets],
-  );
-  const geometryByEdge = useMemo(
-    () => new Map(geometries.map((item) => [item.edge.id, item])),
-    [geometries],
-  );
-
-  /** 连线换上游、节点拉连线两种拖拽共用一套指针坐标 */
-  const [reconnectEdge, setReconnectEdge] = useState<CanvasEdge | null>(null);
-  const [reconnectPoint, setReconnectPoint] = useState<Point | null>(null);
-  const [reconnectHover, setReconnectHover] = useState<string | null>(null);
-  const [linkFrom, setLinkFrom] = useState<CanvasNode | null>(null);
-  const [linkPoint, setLinkPoint] = useState<Point | null>(null);
-  const [linkHover, setLinkHover] = useState<string | null>(null);
-
-  /** 调色板拖拽时的浮层 */
-  const [paletteDrag, setPaletteDrag] = useState<{ kind: CanvasNodeKind; x: number; y: number } | null>(null);
-
-  const screenToWorld = useCallback(
-    (clientX: number, clientY: number): Point => {
-      const rect = viewportRef.current?.getBoundingClientRect();
-      if (!rect) {
-        return { x: 0, y: 0 };
-      }
-      return {
-        x: (clientX - rect.left - view.x) / view.scale,
-        y: (clientY - rect.top - view.y) / view.scale,
-      };
-    },
-    [view],
   );
 
   /** 画布尺寸跟着容器变化，缩略图与适应画布要用 */
@@ -471,7 +493,11 @@ export default function ControlPlaneCanvas({
     }
     const width = Math.max(1, maxX - minX);
     const height = Math.max(1, maxY - minY);
-    const scale = clamp(Math.min((viewportSize.w - 80) / width, (viewportSize.h - 80) / height), MIN_SCALE, 1.1);
+    const scale = clamp(
+      Math.min((viewportSize.w - 80) / width, (viewportSize.h - 80) / height),
+      MIN_SCALE,
+      1.1,
+    );
     setView({
       scale,
       x: (viewportSize.w - width * scale) / 2 - minX * scale,
@@ -523,8 +549,6 @@ export default function ControlPlaneCanvas({
     if (
       target.closest('.dbz-graph-node') ||
       target.closest('.dbz-graph-edge-hit') ||
-      target.closest('.dbz-graph-edge-handle') ||
-      target.closest('.dbz-graph-edge-lock') ||
       target.closest('.dbz-graph-controls') ||
       target.closest('.dbz-graph-minimap')
     ) {
@@ -587,143 +611,6 @@ export default function ControlPlaneCanvas({
     window.addEventListener('pointerup', up);
   };
 
-  /** 从节点锚点拉出连线 */
-  const handleAnchorPointerDown = (event: ReactPointerEvent<HTMLSpanElement>, node: CanvasNode) => {
-    if (event.button !== 0) {
-      return;
-    }
-    event.stopPropagation();
-    event.preventDefault();
-    const targets = LINK_TARGET_KINDS[node.kind];
-    if (!targets) {
-      return;
-    }
-    setLinkFrom(node);
-    setLinkPoint(null);
-    const move = (moveEvent: PointerEvent) => {
-      const point = screenToWorld(moveEvent.clientX, moveEvent.clientY);
-      setLinkPoint(point);
-      const hit = findNodeAt(point, targets);
-      setLinkHover(hit?.key ?? null);
-    };
-    const up = (upEvent: PointerEvent) => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      const point = screenToWorld(upEvent.clientX, upEvent.clientY);
-      const hit = findNodeAt(point, targets);
-      setLinkFrom(null);
-      setLinkPoint(null);
-      setLinkHover(null);
-      if (hit) {
-        onCreateEdge(node, hit);
-      }
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
-  };
-
-  /** 拖动宿线上游端，换到另一台同类节点 */
-  const handleEdgeHandlePointerDown = (
-    event: ReactPointerEvent<SVGGElement>,
-    edge: CanvasEdge,
-  ) => {
-    if (event.button !== 0) {
-      return;
-    }
-    event.stopPropagation();
-    event.preventDefault();
-    const targetKind = UPSTREAM_KIND[edge.relation.type];
-    setReconnectEdge(edge);
-    setReconnectPoint(null);
-    const move = (moveEvent: PointerEvent) => {
-      const point = screenToWorld(moveEvent.clientX, moveEvent.clientY);
-      setReconnectPoint(point);
-      const hit = findNodeAt(point, [targetKind])?.key ?? null;
-      setReconnectHover(hit);
-    };
-    const up = (upEvent: PointerEvent) => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      const point = screenToWorld(upEvent.clientX, upEvent.clientY);
-      const hit = findNodeAt(point, [targetKind]);
-      setReconnectEdge(null);
-      setReconnectPoint(null);
-      setReconnectHover(null);
-      if (hit) {
-        onReconnectEdge(edge, hit);
-      }
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
-  };
-
-  /** 按几何位置命中节点，避免与 DOM 事件顺序纠缠 */
-  const findNodeAt = (point: Point, kinds: CanvasNodeKind[]): CanvasNode | null => {
-    for (let index = nodes.length - 1; index >= 0; index -= 1) {
-      const node = nodes[index];
-      if (!kinds.includes(node.kind)) {
-        continue;
-      }
-      const pos = positions[node.key] ?? defaultPosition(node.kind, 0);
-      if (pointInNode(point, node, pos)) {
-        return node;
-      }
-    }
-    return null;
-  };
-
-  /** 调色板拖到画布：松手位置换算成世界坐标后交给页面开表单 */
-  const handlePalettePointerDown = (event: ReactPointerEvent<HTMLDivElement>, kind: CanvasNodeKind) => {
-    if (event.button !== 0) {
-      return;
-    }
-    event.preventDefault();
-    setPaletteDrag({ kind, x: event.clientX, y: event.clientY });
-    const move = (moveEvent: PointerEvent) => {
-      setPaletteDrag({ kind, x: moveEvent.clientX, y: moveEvent.clientY });
-    };
-    const up = (upEvent: PointerEvent) => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      setPaletteDrag(null);
-      const rect = viewportRef.current?.getBoundingClientRect();
-      if (!rect) {
-        return;
-      }
-      if (
-        upEvent.clientX < rect.left ||
-        upEvent.clientX > rect.right ||
-        upEvent.clientY < rect.top ||
-        upEvent.clientY > rect.bottom
-      ) {
-        return;
-      }
-      const point = screenToWorld(upEvent.clientX, upEvent.clientY);
-      onCreateAt(kind, point.x, point.y);
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
-  };
-
-  /** 删除快捷键对连线无效：页面对选中连线给出提示 */
-  useEffect(() => {
-    if (!selectedEdgeId) {
-      return;
-    }
-    const handleKey = (event: KeyboardEvent) => {
-      if (event.key !== 'Delete' && event.key !== 'Backspace') {
-        return;
-      }
-      const edge = edges.find((item) => item.id === selectedEdgeId);
-      if (edge) {
-        event.preventDefault();
-        onEdgeDeleteRejected(edge);
-      }
-    };
-    window.addEventListener('keydown', handleKey);
-    return () => window.removeEventListener('keydown', handleKey);
-  }, [edges, onEdgeDeleteRejected, selectedEdgeId]);
-
   /** 缩略图范围 */
   const bounds = useMemo(() => {
     if (!nodes.length) {
@@ -756,63 +643,8 @@ export default function ControlPlaneCanvas({
     };
   }, [bounds, view, viewportSize]);
 
-  const linkStart = linkFrom
-    ? (() => {
-        const pos = positions[linkFrom.key] ?? defaultPosition(linkFrom.kind, 0);
-        const size = NODE_SIZE[linkFrom.kind];
-        return { x: pos.x + size.w / 2, y: pos.y + size.h };
-      })()
-    : null;
-
-  const reconnectGeometry = reconnectEdge ? geometryByEdge.get(reconnectEdge.id) : null;
-
-  /** 高亮可换连/可接收的节点 */
-  const nodeDropState = (node: CanvasNode): string => {
-    if (reconnectEdge) {
-      if (node.key === reconnectHover) {
-        return ' is-link-hover';
-      }
-      if (node.kind === UPSTREAM_KIND[reconnectEdge.relation.type]) {
-        return ' is-link-target';
-      }
-    }
-    if (linkFrom) {
-      if (node.key === linkHover) {
-        return ' is-link-hover';
-      }
-      if (LINK_TARGET_KINDS[linkFrom.kind]?.includes(node.kind)) {
-        return ' is-link-target';
-      }
-    }
-    return '';
-  };
-
   return (
     <div className="dbz-canvas-shell">
-      <aside className="dbz-palette">
-        <div className="dbz-palette-title">组件</div>
-        {PALETTE_ITEMS.map((item) => (
-          <div
-            key={item.kind}
-            className="dbz-palette-item"
-            data-kind={item.kind}
-            role="button"
-            tabIndex={0}
-            title={item.hint}
-            onPointerDown={(event) => handlePalettePointerDown(event, item.kind)}
-          >
-            <span className="dbz-palette-icon">{item.icon}</span>
-            <span>
-              <strong>{item.label}</strong>
-              <small>{item.hint}</small>
-            </span>
-          </div>
-        ))}
-        <div className="dbz-palette-tip">
-          拖到画布落位后填配置。节点位置会保存到 dbz 库，其他人打开看到同一套布局。
-        </div>
-      </aside>
-
       <div className="dbz-canvas-main">
         <div
           className="dbz-graph-viewport"
@@ -835,7 +667,7 @@ export default function ControlPlaneCanvas({
             >
               <defs>
                 <marker id="dbz-arrow-edge" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-                  <path d="M0,0 L10,5 L0,10 z" fill="#a9b6c9" />
+                  <path d="M0,0 L10,5 L0,10 z" fill="#b7c2d1" />
                 </marker>
               </defs>
               {geometries.map(({ edge, path, color, marker }) => (
@@ -846,6 +678,7 @@ export default function ControlPlaneCanvas({
                     stroke={color}
                     markerEnd={`url(#${marker})`}
                   />
+                  {/* 连线只作展示：可点选查看归属说明，但不提供拖拽或删除 */}
                   <path
                     className="dbz-graph-edge-hit"
                     data-edge-id={edge.id}
@@ -855,7 +688,7 @@ export default function ControlPlaneCanvas({
                       onSelectEdge(edge.id);
                     }}
                   >
-                    <title>归属关系：上游可更换，下游锁定，不可删除</title>
+                    <title>归属关系只作展示，不能拖动或删除</title>
                   </path>
                 </g>
               ))}
@@ -865,119 +698,89 @@ export default function ControlPlaneCanvas({
               const pos = positions[node.key] ?? defaultPosition(node.kind, 0);
               const size = NODE_SIZE[node.kind];
               const selected = selectedNodeKey === node.key;
+              const childKind = CHILD_KIND[node.kind];
               return (
                 <div
                   key={node.key}
-                  className={`dbz-graph-node dbz-graph-node--${node.kind} dbz-graph-node--${nodeTone(node)}${selected ? ' is-selected' : ''}${nodeDropState(node)}`}
+                  className={`dbz-graph-node dbz-graph-node--${node.kind}${
+                    nodeDisabledOf(node) ? ' is-disabled' : ''
+                  }${selected ? ' is-selected' : ''}`}
                   data-node-key={node.key}
                   data-node-type={node.kind}
                   style={{ left: pos.x, top: pos.y, width: size.w, height: size.h }}
                   onPointerDown={(event) => handleNodePointerDown(event, node)}
                 >
-                  <div className="dbz-graph-node-head">
-                    <span className="dbz-graph-node-icon">
+                  <div className="dbz-graph-node-type">
+                    <span
+                      className="dbz-graph-node-icon"
+                      style={{ backgroundColor: NODE_KIND_COLOR[node.kind] }}
+                    >
                       <NodeIcon kind={node.kind} />
                     </span>
-                    <span className="dbz-graph-node-name" title={node.name}>
-                      {node.name}
+                    <span
+                      className="dbz-graph-node-type-label"
+                      style={{ color: NODE_KIND_COLOR[node.kind] }}
+                    >
+                      {NODE_KIND_LABEL[node.kind]}
                     </span>
-                    {node.mismatch && (
-                      <Tooltip title={node.mismatch}>
-                        <WarningOutlined className="dbz-graph-mismatch" data-no-drag aria-label={node.mismatch} />
-                      </Tooltip>
-                    )}
                   </div>
-                  <div className="dbz-graph-node-status">
-                    <NodeStatus node={node} />
-                    {node.dead > 0 && (
-                      <Tag color="error" title="待处理死信，点开检查器可进入死信页">
-                        死信 {node.dead}
-                      </Tag>
-                    )}
+
+                  <div className="dbz-graph-node-name" title={node.name}>
+                    {node.name}
                   </div>
+
                   <div className="dbz-graph-node-sub dbz-mono" title={node.sub}>
                     {node.sub}
+                  </div>
+
+                  <div className="dbz-graph-node-status" data-no-drag>
+                    <NodeStatus node={node} />
+                    {node.dead > 0 && (
+                      <Tooltip title={`待处理死信 ${node.dead} 条，点击进入死信页并按该连接器筛选`}>
+                        <Tag
+                          color="error"
+                          className="dbz-graph-dead-tag"
+                          data-no-drag
+                          onClick={() => onNodeAction(node, 'dead-letter')}
+                        >
+                          死信 {node.dead}
+                        </Tag>
+                      </Tooltip>
+                    )}
                   </div>
 
                   <NodeActions
                     node={node}
                     busyNodeKey={busyNodeKey}
+                    togglingNodeKey={togglingNodeKey}
                     checkingBrokerId={checkingBrokerId}
                     restartingKey={restartingKey}
                     onSelect={onSelectNode}
                     onAction={onNodeAction}
+                    onToggle={onToggleNode}
                   />
 
-                  {(node.kind === 'broker' || node.kind === 'connect') && (
-                    <span
-                      className="dbz-graph-pin dbz-graph-pin-out"
+                  {/* 有下级的节点底部给一个「+」，新增只从这里走；sink 没有下级 */}
+                  {childKind && (
+                    <button
+                      type="button"
+                      className="dbz-graph-add-child"
                       data-no-drag
-                      title="从这里拖出连线"
-                      onPointerDown={(event) => handleAnchorPointerDown(event, node)}
-                    />
-                  )}
-                  {(node.kind === 'connect' || node.kind === 'source' || node.kind === 'sink') && (
-                    <span
-                      className="dbz-graph-pin dbz-graph-pin-in dbz-graph-pin-top"
-                      data-no-drag
-                      title="归属入口（下游锁定）"
-                    />
+                      data-add-child={childKind}
+                      title={`新增${NODE_KIND_LABEL[childKind]}`}
+                      aria-label={`新增${NODE_KIND_LABEL[childKind]}`}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onAddChild(node);
+                      }}
+                    >
+                      <PlusOutlined />
+                    </button>
                   )}
                 </div>
               );
             })}
-
-            <svg
-              className="dbz-graph-overlay"
-              width={WORLD_WIDTH}
-              height={WORLD_HEIGHT}
-              aria-hidden={false}
-            >
-              {geometries.map((geometry) => {
-                const { edge, handle, lock, color } = geometry;
-                return (
-                  <g key={edge.id}>
-                    <g
-                      className="dbz-graph-edge-handle"
-                      data-edge-id={edge.id}
-                      transform={`translate(${handle.x},${handle.y})`}
-                      onPointerDown={(event) => handleEdgeHandlePointerDown(event, edge)}
-                    >
-                      <circle r={9} fill="#fff" stroke={color} strokeWidth={2} />
-                      <path d="M-4,0 L4,0 M0,-4 L0,4" stroke={color} strokeWidth={1.6} />
-                      <title>拖动此端更换上游（下游目标不可更改）</title>
-                    </g>
-                    <g
-                      className="dbz-graph-edge-lock"
-                      data-edge-id={edge.id}
-                      transform={`translate(${lock.x},${lock.y})`}
-                      data-no-drag
-                      onPointerDown={(event) => {
-                        event.stopPropagation();
-                        event.preventDefault();
-                      }}
-                    >
-                      <rect x={-8} y={-8} width={16} height={16} rx={3} fill="#a9b6c9" />
-                      {/* 锁标用 SVG 画，避免把 HTML 的 antd 图标塞进 SVG 里 */}
-                      <rect x={-4} y={-1} width={8} height={6} rx={1} fill="#fff" />
-                      <path d="M-2.5,-1 A2.5,2.5 0 0 1 2.5,-1" fill="none" stroke="#fff" strokeWidth={1.2} />
-                      <title>下游目标不可更改，连线不能删除</title>
-                    </g>
-                  </g>
-                );
-              })}
-
-              {reconnectEdge && reconnectPoint && reconnectGeometry && (
-                <path
-                  className="dbz-graph-reconnect-preview"
-                  d={`M${reconnectPoint.x},${reconnectPoint.y} L${reconnectGeometry.lock.x},${reconnectGeometry.lock.y}`}
-                />
-              )}
-
-              {linkFrom && linkPoint && linkStart && (
-                <path className="dbz-graph-reconnect-preview" d={`M${linkStart.x},${linkStart.y} L${linkPoint.x},${linkPoint.y}`} />
-              )}
-            </svg>
           </div>
 
           <div className="dbz-graph-controls">
@@ -1046,22 +849,12 @@ export default function ControlPlaneCanvas({
           </div>
 
           <div className="dbz-graph-legend">
-            <span><i className="dbz-legend-line" />归属</span>
-            <span><i className="dbz-legend-lock" />下游锁定</span>
+            <span><i className="dbz-legend-line" />归属线（只读）</span>
           </div>
         </div>
       </div>
 
       <aside className="dbz-graph-inspector">{renderInspector()}</aside>
-
-      {paletteDrag && (
-        <div
-          className="dbz-palette-ghost"
-          style={{ left: paletteDrag.x + 12, top: paletteDrag.y + 12 }}
-        >
-          {PALETTE_ITEMS.find((item) => item.kind === paletteDrag.kind)?.label}
-        </div>
-      )}
     </div>
   );
 }

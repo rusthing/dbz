@@ -24,6 +24,8 @@ import { errorMessage } from '../../utils/format';
 interface SourceConnectorFormProps {
   open: boolean;
   record?: DbzSourceConnectorVo | null;
+  /** 从控制面 Connect 节点的「+」新增时，所属 Connect 已固定，表单不再出现该选择 */
+  fixedKafkaConnectId?: Id | null;
   /** 集群下拉选项，由页面统一提供，避免弹窗里再请求一次 */
   clusterOptions: { value: Id; label: string }[];
   onCancel: () => void;
@@ -31,7 +33,7 @@ interface SourceConnectorFormProps {
 }
 
 interface FormValues {
-  kafkaConnectId: Id;
+  kafkaConnectId?: Id;
   name: string;
   connectorName: string;
   connectorConfig: string;
@@ -49,6 +51,7 @@ async function validateJson(_rule: unknown, value?: string): Promise<void> {
 export default function SourceConnectorForm({
   open,
   record,
+  fixedKafkaConnectId,
   clusterOptions,
   onCancel,
   onSuccess,
@@ -57,6 +60,11 @@ export default function SourceConnectorForm({
   const [form] = Form.useForm<FormValues>();
   const [submitting, setSubmitting] = useState(false);
   const isEdit = Boolean(record);
+  /**
+   * 编辑时所属 Connect 已确定；从控制面 + 新增时由父节点固定。两种情况下都不显示
+   * 该字段，也不做只读或 disabled 控件 —— 归属信息只在卡片与属性框里呈现。
+   */
+  const hideConnect = isEdit || fixedKafkaConnectId != null;
   const { handleCancel, markPristine } = useCancelConfirm(form, onCancel);
 
   /**
@@ -93,19 +101,24 @@ export default function SourceConnectorForm({
 
     setSubmitting(true);
     try {
-      const payload = {
-        kafkaConnectId: values.kafkaConnectId,
+      const common = {
         name: values.name.trim(),
         connectorName: values.connectorName.trim(),
         connectorConfig: values.connectorConfig,
         remark: values.remark?.trim() ?? '',
       };
       if (record) {
-        // 不带 enabled：没传的字段不会被写回，不会把列表上刚切换的开关覆盖掉
-        await sourceConnectorApi.modify({ ...payload, id: record.id });
+        // 编辑不改所属 Connect；不带 enabled：没传的字段不会被写回，不会覆盖列表上的开关
+        await sourceConnectorApi.modify({ ...common, id: record.id });
       } else {
+        const kafkaConnectId = fixedKafkaConnectId ?? values.kafkaConnectId;
+        if (!kafkaConnectId) {
+          message.error('请选择 Kafka Connect 集群');
+          setSubmitting(false);
+          return;
+        }
         // 新增一律先建成启用，之后在列表的启用列里切换（与服务端库默认值一致）
-        await sourceConnectorApi.add({ ...payload, enabled: true });
+        await sourceConnectorApi.add({ ...common, kafkaConnectId, enabled: true });
       }
       message.success(isEdit ? '修改成功' : '新增成功');
       onSuccess();
@@ -129,19 +142,22 @@ export default function SourceConnectorForm({
       width={860}
     >
       <Form form={form} layout="vertical" style={{ marginTop: 12 }} className="dbz-form-scroll">
-        <Form.Item
-          name="kafkaConnectId"
-          label="Kafka Connect 集群"
-          extra="保存时会当场把连接器部署到这台集群上；改挂集群则先注销旧位置，再在新集群部署。"
-          rules={[{ required: true, message: '请选择集群' }]}
-        >
-          <Select
-            showSearch
-            optionFilterProp="label"
-            placeholder="选择集群"
-            options={clusterOptions}
-          />
-        </Form.Item>
+        {/* 所属 Connect 已确定（编辑或从控制面 + 新增）时整项不出现 */}
+        {!hideConnect && (
+          <Form.Item
+            name="kafkaConnectId"
+            label="Kafka Connect 集群"
+            extra="保存时会当场把连接器部署到这台集群上；改挂集群则先注销旧位置，再在新集群部署。"
+            rules={[{ required: true, message: '请选择集群' }]}
+          >
+            <Select
+              showSearch
+              optionFilterProp="label"
+              placeholder="选择集群"
+              options={clusterOptions}
+            />
+          </Form.Item>
+        )}
 
         <Form.Item
           name="name"

@@ -197,7 +197,7 @@ impl DbzKafkaConnectSvc {
         } else if enabled_after && (url_changed || enabled_changed) {
             // 改地址或重新启用后，连接器要在（新）地址上重新部署，
             // 实际状态等下一轮检查确认
-            Self::set_connectors_status(old.id, ConnectorRunStatus::None).await?;
+            Self::set_connectors_status(old.id, ConnectorRunStatus::Unknown).await?;
         }
 
         if enabled_changed || url_changed {
@@ -530,7 +530,7 @@ impl DbzKafkaConnectSvc {
                 "{kc_label}: {}",
                 KafkaConnectStatus::ConnectFailed.value()
             ));
-            let status = ConnectorRunStatus::KafkaConnectFailed;
+            let status = ConnectorRunStatus::Unreachable;
             // 连接器的数据线上游，真正的根因在这台集群上；这里只说清「为什么没连上」，
             // 不把整段探测错误复制到每条连接器上（集群那一行已经有完整原因）
             let reason = Some(format!("所属 Kafka Connect 不可达：{reason}"));
@@ -703,7 +703,7 @@ impl DbzKafkaConnectSvc {
             .await
             .map_err(|e| {
                 warn!("{label}: 检查连接器<{connector_name}>是否存在失败: {e}");
-                ConnectorFault::new(ConnectorRunStatus::CheckFailed, RepairAction::None)
+                ConnectorFault::new(ConnectorRunStatus::Unreachable, RepairAction::None)
                     .with_reason(format!("检查连接器是否存在失败: {e}"))
             })?;
 
@@ -716,7 +716,7 @@ impl DbzKafkaConnectSvc {
                     "{label}: 配置开了 kafka 信号通道但没有 signal.kafka.bootstrap.servers，跳过部署"
                 );
                 return Err(ConnectorFault::new(
-                    ConnectorRunStatus::RegisterFailed,
+                    ConnectorRunStatus::Failed,
                     RepairAction::None,
                 )
                 .with_reason(
@@ -730,7 +730,7 @@ impl DbzKafkaConnectSvc {
                 .await
                 .map_err(|e| {
                     warn!("{label}: 部署连接器<{connector_name}>失败: {e}");
-                    ConnectorFault::new(ConnectorRunStatus::RegisterFailed, RepairAction::None)
+                    ConnectorFault::new(ConnectorRunStatus::Failed, RepairAction::None)
                         .with_reason(format!("部署连接器失败: {e}"))
                 })?;
             info!("{label}: 连接器<{connector_name}>部署成功");
@@ -742,7 +742,7 @@ impl DbzKafkaConnectSvc {
             .await
             .map_err(|e| {
                 warn!("{label}: 查询连接器<{connector_name}>状态失败: {e}");
-                ConnectorFault::new(ConnectorRunStatus::CheckStatusFailed, RepairAction::None)
+                ConnectorFault::new(ConnectorRunStatus::Unreachable, RepairAction::None)
                     .with_reason(format!("查询连接器状态失败: {e}"))
             })?;
 
@@ -758,7 +758,7 @@ impl DbzKafkaConnectSvc {
                 health.failed_tasks
             );
             let fault = ConnectorFault::new(
-                ConnectorRunStatus::CheckStatusError,
+                ConnectorRunStatus::Failed,
                 RepairAction::RestartTasks(health.failed_tasks),
             );
             return Err(match health.reason {
@@ -773,7 +773,7 @@ impl DbzKafkaConnectSvc {
                 health.state
             );
             return Err(ConnectorFault::new(
-                ConnectorRunStatus::CheckError,
+                ConnectorRunStatus::Failed,
                 RepairAction::RestartConnector,
             )
             .with_reason(format!("连接器返回未知状态: {}", health.state)));
@@ -783,13 +783,24 @@ impl DbzKafkaConnectSvc {
             "{label}: 连接器<{connector_name}>状态异常: {}",
             health.state
         );
-        // 只有 failed 有确定的修复动作；paused 多为人工维护、destroyed 只能重建，都不动
+        // 只有 failed 有确定的修复动作；paused / stopped 多为人工维护、destroyed 只能重建，都不动
+        let paused = matches!(
+            health.state,
+            KafkaConnectorStatus::Paused | KafkaConnectorStatus::Stopped
+        );
         let action = if health.state == KafkaConnectorStatus::Failed {
             RepairAction::RestartConnector
         } else {
             RepairAction::None
         };
-        let fault = ConnectorFault::new(ConnectorRunStatus::CheckStatusError, action);
+        let fault = ConnectorFault::new(
+            if paused {
+                ConnectorRunStatus::Stopped
+            } else {
+                ConnectorRunStatus::Failed
+            },
+            action,
+        );
         Err(match health.reason {
             // 有 trace 时用 trace：它说明了「为什么 FAILED」
             Some(reason) => fault.with_reason(reason),
@@ -930,7 +941,7 @@ impl DbzKafkaConnectSvc {
         kafka_connect_id: U64,
         run_status: ConnectorRunStatus,
     ) -> Result<(), SvcError> {
-        let only_enabled = run_status == ConnectorRunStatus::None;
+        let only_enabled = run_status == ConnectorRunStatus::Unknown;
         for source in Self::list_sources_of(kafka_connect_id).await? {
             if only_enabled && !source.enabled {
                 continue;

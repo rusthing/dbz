@@ -1,34 +1,31 @@
 use robotech::macros::dic;
 use strum::{AsRefStr, Display, EnumString};
 
-/// 连接器记录的运行状态，对应 `dbz_source_connector.run_status` /
+/// 连接器记录的**统一状态**，对应 `dbz_source_connector.run_status` /
 /// `dbz_sink_connector.run_status` 两列（两表语义一致，共用一个枚举）。
 ///
-/// 这是**检查任务得出的结论**，会回写库；远端集群上的实时状态是
-/// [`KafkaConnectorStatus`](crate::dic::KafkaConnectorStatus)、集群自身的可达性是
-/// [`KafkaConnectStatus`](crate::dic::KafkaConnectStatus)，三者分工见前者的文档。
+/// 控制面只展示这一个状态，不再把「库内状态 / 实时状态 / 不一致」并列。状态由
+/// 后端统一推导并回写：既有健康检查任务，也有进入控制面时触发的一次刷新。
+/// 远端集群上的原始状态 [`KafkaConnectorStatus`](crate::dic::KafkaConnectorStatus)
+/// 只作为推导输入，不下发到前端。
 ///
 /// 被 `DbzSourceConnectorVo` / `DbzSinkConnectorVo` 用作字段，所以必须声明 `default`。
-#[dic(default = None)]
+#[dic(default = Unknown)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, AsRefStr, Display, EnumString)]
 #[strum(serialize_all = "kebab-case")]
 pub enum ConnectorRunStatus {
-    /// 无状态（刚添加记录）
-    None = 0,
-    /// 运行中
+    /// 未知：还没有任何检查结论
+    Unknown = 0,
+    /// 运行中：连接器与任务都在正常跑
     Running = 1,
-    /// 已禁用
+    /// 已停用：库里 `enabled = false`，不发实时请求
     Disabled = 2,
-    /// 连接 KafkaConnect 失败
-    KafkaConnectFailed = 3,
-    /// 注册连接器失败
-    RegisterFailed = 4,
-    /// 检测连接器失败
-    CheckFailed = 5,
-    /// 检测连接器异常
-    CheckError = 6,
-    /// 检测连接器状态失败
-    CheckStatusFailed = 7,
-    /// 检测连接器状态异常
-    CheckStatusError = 8,
+    /// 失败：连接器失败、任务异常或作业销毁
+    Failed = 3,
+    /// 仅纳管未部署：库里启用，但 Connect 上不存在该连接器
+    NotDeployed = 4,
+    /// 不可达：Kafka Connect 本身连不上，保留最后已知状态与时间
+    Unreachable = 5,
+    /// 已停止：Connect 上的连接器为 PAUSED / STOPPED
+    Stopped = 6,
 }

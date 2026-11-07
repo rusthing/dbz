@@ -1,4 +1,5 @@
 pub mod dbz_control_plane_layout_dto;
+pub mod dbz_control_plane_status_dto;
 pub mod dbz_dead_letter_dto;
 pub mod dbz_kafka_broker_check_dto;
 pub mod dbz_kafka_broker_dto;
@@ -9,6 +10,7 @@ pub mod dbz_source_connector_snapshot_dto;
 pub mod kafka_connector_dto;
 
 pub use dbz_control_plane_layout_dto::*;
+pub use dbz_control_plane_status_dto::*;
 pub use dbz_dead_letter_dto::*;
 pub use dbz_kafka_broker_check_dto::*;
 pub use dbz_kafka_broker_dto::*;

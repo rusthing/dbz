@@ -1,4 +1,5 @@
 mod dbz_control_plane_layout_svc;
+mod dbz_control_plane_status_svc;
 mod dbz_dead_letter_svc;
 mod dbz_kafka_broker_svc;
 mod dbz_kafka_connect_svc;
@@ -8,6 +9,7 @@ mod dbz_source_connector_svc;
 mod kafka_connector_svc;
 
 pub use dbz_control_plane_layout_svc::*;
+pub use dbz_control_plane_status_svc::*;
 pub use dbz_dead_letter_svc::*;
 pub use dbz_kafka_broker_svc::*;
 pub use dbz_kafka_connect_svc::*;

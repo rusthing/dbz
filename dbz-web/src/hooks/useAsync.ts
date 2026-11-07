@@ -14,6 +14,8 @@ export interface AsyncState<T> {
   loading: boolean;
   error: ApiError | null;
   reload: () => void;
+  /** 轻量刷新时直接合并数据，不触发整页 loading，也不打断当前选中与表单 */
+  setData: (updater: (previous: T) => T) => void;
 }
 
 /**
@@ -63,5 +65,10 @@ export function useAsync<T>(fetcher: () => Promise<T>, deps: unknown[], initial:
     setNonce((value) => value + 1);
   }, []);
 
-  return { data, loading, error, reload };
+  /** 轻量合并：只替换变化的字段，不重置 loading / error */
+  const update = useCallback((updater: (previous: T) => T) => {
+    setData((previous) => updater(previous));
+  }, []);
+
+  return { data, loading, error, reload, setData: update };
 }

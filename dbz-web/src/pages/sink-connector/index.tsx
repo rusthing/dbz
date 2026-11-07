@@ -344,8 +344,6 @@ export default function SinkConnectorPage() {
       <SinkConnectorForm
         open={formOpen}
         record={editing}
-        clusterOptions={cluster.options}
-        sourceOptions={source.options}
         onCancel={() => setFormOpen(false)}
         onSuccess={() => {
           setFormOpen(false);

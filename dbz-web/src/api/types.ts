@@ -65,8 +65,13 @@ export interface AuditFields {
 /** # Kafka Connect 集群状态（`KafkaConnectStatus`） */
 export type KafkaConnectStatus = 0 | 1 | 2 | 3;
 
-/** # 连接器运行状态（`ConnectorRunStatus`），上游/下游共用 */
-export type ConnectorRunStatus = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
+/**
+ * # 连接器运行状态（`ConnectorRunStatus`），上游/下游共用
+ *
+ * 0 未知 / 1 运行中 / 2 已停用 / 3 失败 / 4 仅纳管未部署 / 5 不可达 / 6 已停止。
+ * 后端只回写这一个枚举，前端不再自行拼「库内 + 实时」两套状态。
+ */
+export type ConnectorRunStatus = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 
 /** # 远端连接器实时状态（`KafkaConnectorStatus`） */
 export type KafkaConnectorStatus = 0 | 1 | 2 | 3 | 4 | 5;

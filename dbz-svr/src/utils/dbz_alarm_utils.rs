@@ -233,15 +233,13 @@ impl ConnectorAlarmSubject<'_> {
 /// 这里按枚举补一份——加变体时编译器会在这里报缺失，不会漏。
 const fn run_status_name(status: ConnectorRunStatus) -> &'static str {
     match status {
-        ConnectorRunStatus::None => "无状态",
+        ConnectorRunStatus::Unknown => "未知",
         ConnectorRunStatus::Running => "运行中",
-        ConnectorRunStatus::Disabled => "已禁用",
-        ConnectorRunStatus::KafkaConnectFailed => "连接 Kafka Connect 失败",
-        ConnectorRunStatus::RegisterFailed => "注册连接器失败",
-        ConnectorRunStatus::CheckFailed => "检测连接器失败",
-        ConnectorRunStatus::CheckError => "检测连接器异常",
-        ConnectorRunStatus::CheckStatusFailed => "检测连接器状态失败",
-        ConnectorRunStatus::CheckStatusError => "检测连接器状态异常",
+        ConnectorRunStatus::Disabled => "已停用",
+        ConnectorRunStatus::Failed => "失败",
+        ConnectorRunStatus::NotDeployed => "未部署",
+        ConnectorRunStatus::Unreachable => "不可达",
+        ConnectorRunStatus::Stopped => "已停止",
     }
 }
 
@@ -740,7 +738,7 @@ mod tests {
             connector_id: 3,
             connector_name: "订单同步",
             connector_name_on_cluster: "order_sync",
-            run_status: ConnectorRunStatus::CheckError,
+            run_status: ConnectorRunStatus::Failed,
             kafka_connect_name: "生产集群",
             kafka_connect_url: "http://kafka-connect:8083",
             relation: "上游连接器<订单源>",

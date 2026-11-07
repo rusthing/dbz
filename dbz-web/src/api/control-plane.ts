@@ -5,7 +5,7 @@
  * 这里不重复造节点接口。
  */
 
-import { apiDelete, apiGetList, apiPut } from './client';
+import { apiDelete, apiGet, apiGetList, apiPost, apiPut } from './client';
 import type {
   ControlPlaneNodeType,
   DbzControlPlaneLayoutUpsertInput,
@@ -15,7 +15,40 @@ import type {
 
 const BASE = '/dbz/control-plane/layout';
 
+/** 重置位点输入：节点类型只接受 source / sink */
+export interface DbzResetConnectorOffsetsInput {
+  connectorType: 'source' | 'sink';
+  connectorId: Id;
+  /** 清空后立即恢复运行 */
+  resume: boolean;
+  /** 下游必需：确认会重放历史消息、可能重复写入 */
+  confirmReplay: boolean;
+}
+
+/** 单步结果 */
+export interface DbzResetOffsetsStepVo {
+  step: string;
+  ok: boolean;
+  message?: string | null;
+}
+
+/** 重置位点整体结果 */
+export interface DbzResetConnectorOffsetsVo {
+  ok: boolean;
+  failedStep?: string | null;
+  message: string;
+  connectorState: string;
+  steps: DbzResetOffsetsStepVo[];
+}
+
 export const controlPlaneApi = {
+  /** 进入页面/轮询时刷新统一状态；失败由调用方降级为最后已知展示 */
+  refreshStatus: (): Promise<number> => apiGet<number>('/dbz/control-plane/status/refresh'),
+
+  /** 重置位点：后端串行执行 stop → delete offsets → 可选 resume */
+  resetOffsets: (input: DbzResetConnectorOffsetsInput): Promise<DbzResetConnectorOffsetsVo> =>
+    apiPost<DbzResetConnectorOffsetsVo>('/dbz/control-plane/connector/reset-offsets', input),
+
   /** 读取全部节点位置；返回空数组表示还没人整理过画布 */
   listLayout: (): Promise<DbzControlPlaneLayoutVo[]> => apiGetList(BASE),
 

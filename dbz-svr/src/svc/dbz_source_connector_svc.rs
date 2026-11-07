@@ -92,7 +92,7 @@ impl DbzSourceConnectorSvc {
             let reason = format!("{error:#}");
             if let Err(e) = Self::update_run_status(
                 &one,
-                ConnectorRunStatus::RegisterFailed,
+                ConnectorRunStatus::Failed,
                 Some(reason.clone()),
             )
             .await
@@ -290,7 +290,7 @@ impl DbzSourceConnectorSvc {
 
         if let Some(enabled) = modify_dto.enabled.filter(|enabled| *enabled != old.enabled) {
             modify_dto.run_status = Some(if enabled {
-                ConnectorRunStatus::None
+                ConnectorRunStatus::Unknown
             } else {
                 ConnectorRunStatus::Disabled
             });
@@ -298,7 +298,7 @@ impl DbzSourceConnectorSvc {
             modify_dto.run_msg = Some(None);
         } else if enabled_after && (config_changed || relocated) {
             // 连接器刚被注销或配置刚变更，实际状态要等下一轮检查确认
-            modify_dto.run_status = Some(ConnectorRunStatus::None);
+            modify_dto.run_status = Some(ConnectorRunStatus::Unknown);
             modify_dto.run_msg = Some(None);
         }
 

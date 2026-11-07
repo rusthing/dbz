@@ -5,10 +5,15 @@
  * 只按归属关系生成连线：
  *
  * - broker → connect（`kafka_broker_id`）；
- * - connect → source/sink（`kafka_connect_id`）。
+ * - connect → source（`kafka_connect_id`）；
+ * - source → sink（`source_connector_id`）。
  *
- * source → sink 的数据流不在画布上画：两组连接器同属一台 Connect，归属线已经
- * 表达了它们跑在哪，再画数据流只会让图变乱。
+ * sink 只保留通向它上游 source 的一条归属线，不再单独连到 Connect；这样
+ * broker → connect → source → sink 始终是一条完整的链路。数据流本身不在画布上
+ * 另画，归属线已经表达了上下游关系。
+ *
+ * 连线只作展示：上游一律由下游表单（sink 表单选 source）或「+」新增时的父节点
+ * 决定，画布上不提供拖拽改接、也不提供删除。
  *
  * 位置不在这里算：有持久化位置就用持久化的，没有才按默认网格摆放。
  */
@@ -31,8 +36,29 @@ import type {
 
 export type CanvasNodeKind = 'broker' | 'connect' | 'source' | 'sink';
 
-/** 节点卡片上的操作 */
-export type CanvasNodeAction = 'toggle' | 'restart' | 'edit' | 'delete' | 'check';
+/** 节点卡片操作行里除启用开关以外的图标操作 */
+export type CanvasNodeAction =
+  | 'restart'
+  | 'reset-offsets'
+  | 'edit'
+  | 'delete'
+  | 'check'
+  | 'dead-letter';
+
+/** 四类卡片统一的类型标识：图标旁的文字与主色，颜色只用于图标底色和左侧色条 */
+export const NODE_KIND_LABEL: Record<CanvasNodeKind, string> = {
+  broker: 'Kafka 集群',
+  connect: 'Kafka Connect',
+  source: '上游连接器',
+  sink: '下游连接器',
+};
+
+export const NODE_KIND_COLOR: Record<CanvasNodeKind, string> = {
+  broker: '#1677ff',
+  connect: '#722ed1',
+  source: '#13a8a8',
+  sink: '#eb2f96',
+};
 
 export type NodeTone = 'success' | 'error' | 'warning' | 'default';
 
@@ -48,9 +74,7 @@ export interface CanvasNode {
   /** topic 字段名，用于悬停说明 */
   topicLabel?: string;
   record: DbzKafkaBrokerVo | DbzKafkaConnectVo | ManagedConnectorRecord;
-  /** 库内与实时不一致的说明 */
-  mismatch?: string;
-  /** 连接器的实时记录 */
+  /** 连接器的实时记录（只用于属性框任务明细，不再作为状态来源） */
   live?: ManagedConnectorNode['live'];
   /** 实时查询失败原因（所属 Connect 不可达） */
   liveIssue?: string;
@@ -65,10 +89,11 @@ export interface CanvasNode {
   broker?: DbzKafkaBrokerVo;
 }
 
-/** 连线的真实业务关系；换上游时按这个分支写回不同的外键 */
+/** 连线的真实业务关系，仅用于属性框说明；画布上不提供编辑入口 */
 export type CanvasEdgeRelation =
   | { type: 'broker-connect'; connectId: Id }
-  | { type: 'connect-connector'; connectorKind: 'source' | 'sink'; connectorId: Id };
+  | { type: 'connect-source'; sourceId: Id }
+  | { type: 'source-sink'; sinkId: Id };
 
 export interface CanvasEdge {
   id: string;
@@ -77,12 +102,15 @@ export interface CanvasEdge {
   relation: CanvasEdgeRelation;
 }
 
-/** 节点尺寸：宽度放完整连接器名，高度给底部操作按钮留一行 */
+/**
+ * 节点尺寸：四类卡片同一骨架（类型标识 → 名称 → 关键字段 → 状态 → 操作行），
+ * 固定宽高让同类卡片高度一致，操作行贴底对齐。
+ */
 export const NODE_SIZE: Record<CanvasNodeKind, { w: number; h: number }> = {
-  broker: { w: 240, h: 136 },
-  connect: { w: 240, h: 140 },
-  source: { w: 240, h: 132 },
-  sink: { w: 240, h: 132 },
+  broker: { w: 240, h: 154 },
+  connect: { w: 240, h: 154 },
+  source: { w: 240, h: 154 },
+  sink: { w: 240, h: 154 },
 };
 
 export const NODE_TYPE_OF: Record<CanvasNodeKind, ControlPlaneNodeType> = {
@@ -105,11 +133,11 @@ export function defaultPosition(
     case 'broker':
       return { x: 420 + index * 300, y: 24 };
     case 'connect':
-      return { x: 420 + index * 300, y: 168 };
+      return { x: 420 + index * 300, y: 210 };
     case 'source':
-      return { x: 40 + index * 300, y: 360 };
+      return { x: 40 + index * 300, y: 396 };
     case 'sink':
-      return { x: 40 + (index % 2) * 320, y: 520 + Math.floor(index / 2) * 150 };
+      return { x: 40 + (index % 2) * 320, y: 580 + Math.floor(index / 2) * 170 };
   }
 }
 
@@ -169,12 +197,14 @@ export function nodeTone(node: CanvasNode): NodeTone {
   }
 }
 
-/** 扁平化节点 */
+/** 扁平化节点：副标题带出归属对象，归属信息只在卡片与属性框里呈现 */
 export function flattenNodes(
   tree: BrokerNode[],
   deadLetterOf: (kind: 'source' | 'sink', id: Id) => number,
+  sources: DbzSourceConnectorVo[],
 ): CanvasNode[] {
   const list: CanvasNode[] = [];
+  const sourceById = new Map(sources.map((source) => [source.id, source]));
 
   for (const brokerNode of tree) {
     const broker = brokerNode.broker;
@@ -198,9 +228,8 @@ export function flattenNodes(
         kind: 'connect',
         id: cluster.id,
         name: cluster.name,
-        sub: cluster.url,
+        sub: `${broker.name} · ${cluster.url}`,
         record: cluster,
-        mismatch: connect.mismatch,
         liveIssue: connect.liveIssue,
         health: connect.health,
         cluster,
@@ -210,16 +239,23 @@ export function flattenNodes(
 
       for (const item of [...connect.sources, ...connect.sinks]) {
         const topic = topicInfoOf(item.kind, item.record);
+        // 连接器副标题先带归属对象，再带关键字段：sink 的上游是 source，source 的
+        // 上游是当前 Connect。归属异常统一由后端的 run_status 表达，不再单独标黄。
+        const upstreamName =
+          item.kind === 'sink'
+            ? sourceById.get((item.record as DbzSinkConnectorVo).sourceConnectorId)?.name
+            : cluster.name;
         list.push({
           key: nodeKeyOf(item.kind, item.record.id),
           nodeType: NODE_TYPE_OF[item.kind],
           kind: item.kind,
           id: item.record.id,
           name: item.record.name,
-          sub: topic ? `${topic.label}: ${topic.value}` : '未配置 topic',
+          sub: [upstreamName ?? '上游缺失', topic ? `${topic.label}: ${topic.value}` : '未配置 topic']
+            .filter(Boolean)
+            .join(' · '),
           topicLabel: topic?.label,
           record: item.record,
-          mismatch: item.mismatch,
           live: item.live,
           liveIssue: item.liveIssue,
           connectDisabled: item.connectDisabled,
@@ -257,16 +293,17 @@ export function buildEdges(
       id: `own:connect:${source.kafkaConnectId}:source:${source.id}`,
       from: nodeKeyOf('connect', source.kafkaConnectId),
       to: nodeKeyOf('source', source.id),
-      relation: { type: 'connect-connector', connectorKind: 'source', connectorId: source.id },
+      relation: { type: 'connect-source', sourceId: source.id },
     });
   }
 
   for (const sink of sinks) {
+    // 下游只保留一条归属线：连到它的上游连接器（source），不另连 Connect
     edges.push({
-      id: `own:connect:${sink.kafkaConnectId}:sink:${sink.id}`,
-      from: nodeKeyOf('connect', sink.kafkaConnectId),
+      id: `own:source:${sink.sourceConnectorId}:sink:${sink.id}`,
+      from: nodeKeyOf('source', sink.sourceConnectorId),
       to: nodeKeyOf('sink', sink.id),
-      relation: { type: 'connect-connector', connectorKind: 'sink', connectorId: sink.id },
+      relation: { type: 'source-sink', sinkId: sink.id },
     });
   }
 

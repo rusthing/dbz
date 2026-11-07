@@ -1,4 +1,5 @@
 pub mod dbz_control_plane_layout_vo;
+pub mod dbz_control_plane_status_vo;
 pub mod dbz_dead_letter_vo;
 pub mod dbz_kafka_broker_check_vo;
 pub mod dbz_kafka_broker_vo;
@@ -10,6 +11,7 @@ pub mod dbz_source_connector_vo;
 pub mod kafka_connector_vo;
 
 pub use dbz_control_plane_layout_vo::*;
+pub use dbz_control_plane_status_vo::*;
 pub use dbz_dead_letter_vo::*;
 pub use dbz_kafka_broker_check_vo::*;
 pub use dbz_kafka_broker_vo::*;

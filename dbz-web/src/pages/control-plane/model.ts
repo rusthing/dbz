@@ -1,36 +1,25 @@
 /**
  * # 控制面视图的数据整理
  *
- * 把四张表（broker / connect / source / sink）与每个 Connect 的实时连接器状态
- * 拼成一棵 broker → connect → connector 的树，并给出「库内记录 vs 集群实时状态」
- * 的差异结论。
+ * 把四张表（broker / connect / source / sink）与每个 Connect 的实时记录
+ * 拼成一棵 broker → connect → connector 的树。
  *
- * 状态口径：
- * - **实时**：来自 Kafka Connect REST（`GET /connectors?expand=info&expand=status`），
- *   不落库，最新一次采集时间由页面记录；
- * - **库内**：`run_status` 是健康检查任务上一次回写的结论，只代表「最近一次检查」。
+ * 状态口径只有一份：连接器的 `run_status` 由服务端统一回写（健康检查任务 +
+ * 进入控制面时的刷新），前端按 {@link connectorRunStatusDic} 映射展示，
+ * 不再并列「库内状态 + 实时状态」，也不再自行判断不一致。
  *
- * 两者不是同一时刻的数据，所以只按「是否在运行」这一层做比对：库内运行中而实时
- * 不是运行中（或反过来）才标为不一致；同为异常时不追究具体错误类型。
+ * 实时记录只用于卡片悬停提示与属性框的任务明细，不参与状态判定。
  */
 
 import type {
-  ConnectorRunStatus,
   DbzKafkaBrokerVo,
   DbzKafkaConnectHealthVo,
   DbzKafkaConnectVo,
   DbzSinkConnectorVo,
   DbzSourceConnectorVo,
   Id,
-  KafkaConnectorStatus,
   KafkaConnectorVo,
 } from '../../api/types';
-import { connectorRunStatusDic, dicLabel, kafkaConnectorStatusDic } from '../../dic';
-
-/** 库内「运行中」的判别式 */
-const DB_RUNNING: ConnectorRunStatus = 1;
-/** 实时「运行中」的判别式 */
-const LIVE_RUNNING: KafkaConnectorStatus = 0;
 
 /** 连接器方向 */
 export type ConnectorKind = 'source' | 'sink';
@@ -78,8 +67,6 @@ export interface ManagedConnectorNode {
   liveIssue?: string;
   /** 所属 Connect 已停用，不参与实时比对 */
   connectDisabled: boolean;
-  /** 库内记录与实时状态不一致的说明 */
-  mismatch?: string;
 }
 
 /** 一台 Connect 的节点 */
@@ -95,10 +82,6 @@ export interface ConnectNode {
   liveIssue?: string;
   /** Connect 自身健康探测结果 */
   health?: ConnectHealth;
-  /** 名下连接器与实时状态不一致的条数 */
-  mismatchCount: number;
-  /** 库内记录与实时可达性不一致的说明 */
-  mismatch?: string;
 }
 
 /** 一颗 Kafka 集群及其下全部 Connect 的节点 */
@@ -107,17 +90,6 @@ export interface BrokerNode {
   connects: ConnectNode[];
   sourceCount: number;
   sinkCount: number;
-  mismatchCount: number;
-}
-
-/** 库内状态文案 */
-export function connectorRunStatusLabel(value: ConnectorRunStatus): string {
-  return dicLabel(connectorRunStatusDic, value);
-}
-
-/** 实时状态文案 */
-export function liveStatusLabel(value: KafkaConnectorStatus): string {
-  return dicLabel(kafkaConnectorStatusDic, value);
 }
 
 /** 任务总数与异常任务数（FAILED / UNASSIGNED，与后端 `is_task_abnormal` 同一套判定） */
@@ -133,61 +105,6 @@ export function liveFailureReason(live: KafkaConnectorVo): string | null {
     .map((task) => task.trace?.trim())
     .find((trace): trace is string => Boolean(trace));
   return live.trace?.trim() || taskTrace || null;
-}
-
-/**
- * # 库内记录与实时状态是否对不上
- *
- * 返回说明文案，`undefined` 表示一致或无法比对（实时查询失败）。
- */
-export function deriveConnectorMismatch(
-  record: ManagedConnectorRecord,
-  live: KafkaConnectorVo | undefined,
-): string | undefined {
-  if (!record.enabled) {
-    // 禁用时服务端会注销集群上的连接器；还留着并在跑就是真的不一致
-    if (live && live.state === LIVE_RUNNING) {
-      return '库内已禁用，但集群上的连接器仍在运行';
-    }
-    return undefined;
-  }
-
-  if (!live) {
-    return `库内已启用，但集群上没有「${record.connectorName}」`;
-  }
-
-  const dbRunning = record.runStatus === DB_RUNNING;
-  const liveRunning = live.state === LIVE_RUNNING;
-  if (dbRunning !== liveRunning) {
-    return `库内状态「${connectorRunStatusLabel(record.runStatus)}」与集群实时状态「${liveStatusLabel(
-      live.state,
-    )}」不一致`;
-  }
-  return undefined;
-}
-
-/** Connect 的库内结论与实时可达性是否对不上 */
-export function deriveConnectMismatch(
-  cluster: DbzKafkaConnectVo,
-  live: LiveResult | undefined,
-): string | undefined {
-  // 禁用的 Connect 不参与健康检查，可达与否不构成状态差异
-  if (!cluster.enabled) {
-    return undefined;
-  }
-  if (!live) {
-    return undefined;
-  }
-  if (live.error) {
-    return cluster.runStatus === 1 ? '库内记录为「正常」，但集群实时不可达' : undefined;
-  }
-  if (cluster.runStatus === 3) {
-    return '库内记录为「连接失败」，实时已可访问';
-  }
-  if (cluster.runStatus === 0) {
-    return '库内尚无检查结论，实时已可访问';
-  }
-  return undefined;
 }
 
 /**
@@ -250,9 +167,6 @@ export function buildControlPlane(
             live: liveConnector,
             liveIssue: live?.error,
             connectDisabled: !cluster.enabled,
-            // 实时查询失败或所属 Connect 已停用时都不判定差异，免得把「查不到」误报成「不一致」
-            mismatch:
-              live?.error || live?.skipped ? undefined : deriveConnectorMismatch(record, liveConnector),
           };
         };
 
@@ -270,10 +184,6 @@ export function buildControlPlane(
           .filter((item) => !managedNames.has(item.name))
           .sort((left, right) => left.name.localeCompare(right.name));
 
-        const mismatchCount =
-          sourceNodes.filter((node) => node.mismatch).length +
-          sinkNodes.filter((node) => node.mismatch).length;
-
         return {
           cluster,
           sources: sourceNodes,
@@ -281,8 +191,6 @@ export function buildControlPlane(
           unmanaged,
           liveIssue: live?.error,
           health: healthByConnect.get(cluster.id),
-          mismatchCount,
-          mismatch: deriveConnectMismatch(cluster, live),
         };
       });
 
@@ -291,9 +199,6 @@ export function buildControlPlane(
         connects: connectNodes,
         sourceCount: connectNodes.reduce((sum, node) => sum + node.sources.length, 0),
         sinkCount: connectNodes.reduce((sum, node) => sum + node.sinks.length, 0),
-        mismatchCount:
-          connectNodes.reduce((sum, node) => sum + node.mismatchCount, 0) +
-          connectNodes.filter((node) => node.mismatch).length,
       };
     });
 }

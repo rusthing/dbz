@@ -26,6 +26,8 @@ interface KafkaConnectFormProps {
   open: boolean;
   /** 为空表示新增 */
   record?: DbzKafkaConnectVo | null;
+  /** 从控制面 Kafka 集群节点的「+」新增时，所属集群已固定，表单不再出现该选择 */
+  fixedKafkaBrokerId?: Id | null;
   onCancel: () => void;
   onSuccess: () => void;
 }
@@ -33,13 +35,14 @@ interface KafkaConnectFormProps {
 interface FormValues {
   name: string;
   url: string;
-  kafkaBrokerId: Id;
+  kafkaBrokerId?: Id;
   remark?: string;
 }
 
 export default function KafkaConnectForm({
   open,
   record,
+  fixedKafkaBrokerId,
   onCancel,
   onSuccess,
 }: KafkaConnectFormProps) {
@@ -49,6 +52,8 @@ export default function KafkaConnectForm({
   const [brokerOptions, setBrokerOptions] = useState<{ value: Id; label: string }[]>([]);
   const [brokerError, setBrokerError] = useState<string | null>(null);
   const isEdit = Boolean(record);
+  /** 所属 Kafka 集群已确定（编辑或从控制面 + 新增）时整项不出现 */
+  const hideKafkaBrokerId = isEdit || fixedKafkaBrokerId != null;
   const { handleCancel, markPristine } = useCancelConfirm(form, onCancel);
 
   /**
@@ -75,10 +80,10 @@ export default function KafkaConnectForm({
   }, []);
 
   useEffect(() => {
-    if (open) {
+    if (open && !hideKafkaBrokerId) {
       loadBrokers();
     }
-  }, [open, loadBrokers]);
+  }, [open, hideKafkaBrokerId, loadBrokers]);
 
   /**
    * # 弹窗完全打开后同步表单
@@ -113,19 +118,24 @@ export default function KafkaConnectForm({
 
     setSubmitting(true);
     try {
-      const payload = {
+      const common = {
         name: values.name.trim(),
         url: values.url.trim(),
-        kafkaBrokerId: values.kafkaBrokerId,
         // 传空串而不是 undefined：ModifyDto 用 Option<Option<String>> 区分「不改」与「清空」
         remark: values.remark?.trim() ?? '',
       };
       if (record) {
-        // 不带 enabled：没传的字段不会被写回，不会把列表上刚切换的开关覆盖掉
-        await kafkaConnectApi.modify({ ...payload, id: record.id });
+        // 编辑不改所属 Kafka 集群；不带 enabled：没传的字段不会被写回，不会覆盖列表上的开关
+        await kafkaConnectApi.modify({ ...common, id: record.id });
       } else {
+        const kafkaBrokerId = fixedKafkaBrokerId ?? values.kafkaBrokerId;
+        if (!kafkaBrokerId) {
+          message.error('请选择 Kafka 集群');
+          setSubmitting(false);
+          return;
+        }
         // 新增一律先建成启用，之后在列表的启用列里切换（与服务端库默认值一致）
-        await kafkaConnectApi.add({ ...payload, enabled: true });
+        await kafkaConnectApi.add({ ...common, kafkaBrokerId, enabled: true });
       }
       message.success(isEdit ? '修改成功' : '新增成功');
       onSuccess();
@@ -175,7 +185,7 @@ export default function KafkaConnectForm({
           <Input placeholder="http://10.0.0.1:8083" allowClear />
         </Form.Item>
 
-        {brokerError && (
+        {!hideKafkaBrokerId && brokerError && (
           <Alert
             type="error"
             showIcon
@@ -190,20 +200,23 @@ export default function KafkaConnectForm({
           />
         )}
 
-        <Form.Item
-          name="kafkaBrokerId"
-          label="Kafka 集群"
-          extra="这台 worker 上的连接器把变更（以及再同步的信号）写到这里。没有可选项时先去「Kafka 集群」页建一条。"
-          rules={[{ required: true, message: '请选择 Kafka 集群' }]}
-        >
-          <Select
-            showSearch
-            optionFilterProp="label"
-            placeholder={brokerError ? '列表加载失败，请先重试' : '选择 Kafka 集群'}
-            options={brokerOptions}
-            notFoundContent={brokerError ? '加载失败' : '还没有 Kafka 集群记录'}
-          />
-        </Form.Item>
+        {/* 所属 Kafka 集群已确定（编辑或从控制面 + 新增）时整项不出现 */}
+        {!hideKafkaBrokerId && (
+          <Form.Item
+            name="kafkaBrokerId"
+            label="Kafka 集群"
+            extra="这台 worker 上的连接器把变更（以及再同步的信号）写到这里。没有可选项时先去「Kafka 集群」页建一条。"
+            rules={[{ required: true, message: '请选择 Kafka 集群' }]}
+          >
+            <Select
+              showSearch
+              optionFilterProp="label"
+              placeholder={brokerError ? '列表加载失败，请先重试' : '选择 Kafka 集群'}
+              options={brokerOptions}
+              notFoundContent={brokerError ? '加载失败' : '还没有 Kafka 集群记录'}
+            />
+          </Form.Item>
+        )}
 
         <Form.Item name="remark" label="备注">
           <Input.TextArea rows={2} maxLength={50} showCount placeholder="选填" />

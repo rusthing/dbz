@@ -1,4 +1,5 @@
 pub mod dbz_control_plane_layout_ctrl;
+pub mod dbz_control_plane_status_ctrl;
 pub mod dbz_dead_letter_ctrl;
 pub mod dbz_kafka_broker_check_ctrl;
 pub mod dbz_kafka_broker_ctrl;

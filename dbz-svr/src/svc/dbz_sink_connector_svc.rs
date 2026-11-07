@@ -1,9 +1,9 @@
 //! # 下游连接器服务
 //!
 //! 下游（sink）连接器把 Kafka 中的变更写入目标存储。它通过 `source_connector_id`
-//! 归属于某个上游连接器（一条上游可挂多条下游），通过 `kafka_connect_id` 指定
-//! 运行它的 Kafka Connect 集群。两个字段互相独立：改挂上游只是改变「这条下游同步
-//! 的是哪条上游」，连接器在集群上的位置不变；换集群才会真正搬家。
+//! 归属于某个上游连接器（一条上游可挂多条下游）；`kafka_connect_id` 不再由用户选择，
+//! 必须与上游连接器所在的 Kafka Connect 一致，否则看板上 broker → connect → source
+//! → sink 的链路会断开。新增/编辑时都会做这项归属校验。
 //!
 //! 下游连接器的检查由 [`DbzKafkaConnectSvc::check_all_connectors`] 统一驱动，
 //! 本服务只负责自身记录的写操作与状态回写。写操作同样**当场**同步到 Kafka Connect：
@@ -13,7 +13,7 @@
 //! [`DbzKafkaConnectSvc::check_all_connectors`]: crate::svc::DbzKafkaConnectSvc::check_all_connectors
 
 use crate::dic::ConnectorRunStatus;
-use crate::svc::DbzKafkaConnectSvc;
+use crate::svc::{DbzKafkaConnectSvc, DbzSourceConnectorSvc};
 use crate::utils::{KafkaConnectorUtils, normalize_url, should_deploy};
 use anyhow::anyhow;
 use robotech::macros::svc;
@@ -33,6 +33,38 @@ pub struct DbzSinkConnectorSvc;
 // 无法改成 Box 包裹，这里统一放行该 lint
 #[allow(clippy::result_large_err)]
 impl DbzSinkConnectorSvc {
+    /// # 校验上游连接器与 Kafka Connect 归属一致
+    ///
+    /// 下游的「所属 Connect」由上游连接器自动推导，前端不再单独选择。这里再按库里的
+    /// 真实归属校验一次，避免旧客户端或直接调接口写出「下游跑在 A 集群、上游却在 B
+    /// 集群」的记录 —— 那样看板上 broker → connect → source → sink 的链路会断开。
+    ///
+    /// ## 参数
+    /// * `source_connector_id` - 上游连接器 ID
+    /// * `kafka_connect_id` - 提交给下游的 Kafka Connect ID
+    async fn assert_source_connect_consistent(
+        source_connector_id: U64,
+        kafka_connect_id: U64,
+    ) -> Result<(), SvcError> {
+        let Some(source) =
+            DbzSourceConnectorSvc::get_by_id::<DatabaseConnection>(source_connector_id, None)
+                .await?
+                .extra
+        else {
+            return Err(SvcError::from(anyhow!(
+                "上游连接器<{source_connector_id}>不存在，无法确定下游所属的 Kafka Connect"
+            )));
+        };
+        if source.kafka_connect_id != kafka_connect_id {
+            return Err(SvcError::from(anyhow!(
+                "下游连接器必须与上游连接器归属同一台 Kafka Connect：上游连接器在 Connect<{}>，提交的是 Connect<{}>",
+                source.kafka_connect_id,
+                kafka_connect_id
+            )));
+        }
+        Ok(())
+    }
+
     /// # 新增前钩子：新建即禁用时直接落为「已禁用」
     ///
     /// 被禁用的记录不参与健康检查，不在这里写状态就会一直停在「无状态」。
@@ -40,6 +72,13 @@ impl DbzSinkConnectorSvc {
         mut add_dto: DbzSinkConnectorAddDto,
         _db: &C,
     ) -> Result<DbzSinkConnectorAddDto, SvcError> {
+        let source_connector_id = add_dto.source_connector_id.ok_or_else(|| {
+            SvcError::from(anyhow!("请选择上游连接器，所属 Kafka Connect 由上游自动推导"))
+        })?;
+        let kafka_connect_id = add_dto
+            .kafka_connect_id
+            .ok_or_else(|| SvcError::from(anyhow!("无法确定所属 Kafka Connect")))?;
+        Self::assert_source_connect_consistent(source_connector_id, kafka_connect_id).await?;
         if add_dto.enabled == Some(false) {
             add_dto.run_status = Some(ConnectorRunStatus::Disabled);
         }
@@ -78,7 +117,7 @@ impl DbzSinkConnectorSvc {
             let reason = format!("{error:#}");
             if let Err(e) = Self::update_run_status(
                 &one,
-                ConnectorRunStatus::RegisterFailed,
+                ConnectorRunStatus::Failed,
                 Some(reason.clone()),
             )
             .await
@@ -153,9 +192,11 @@ impl DbzSinkConnectorSvc {
         let Some(id) = modify_dto.id else {
             return Ok(modify_dto);
         };
-        // 健康检查只回写 run_status，下面的判断都用不上，跳过这次查询
+        // 健康检查只回写 run_status，下面的判断都用不上，跳过这次查询；
+        // 但只改上游时也要参与归属校验，不能在这里提前返回
         if modify_dto.enabled.is_none()
             && modify_dto.kafka_connect_id.is_none()
+            && modify_dto.source_connector_id.is_none()
             && modify_dto.connector_name.is_none()
             && modify_dto.connector_config.is_none()
         {
@@ -164,6 +205,17 @@ impl DbzSinkConnectorSvc {
         let Some(old) = Self::get_by_id::<DatabaseConnection>(id, None).await?.extra else {
             return Ok(modify_dto);
         };
+
+        // 上游或所属 Connect 被改动时，按改动后的最终归属校验一次
+        if modify_dto.source_connector_id.is_some() || modify_dto.kafka_connect_id.is_some() {
+            Self::assert_source_connect_consistent(
+                modify_dto
+                    .source_connector_id
+                    .unwrap_or(old.source_connector_id),
+                modify_dto.kafka_connect_id.unwrap_or(old.kafka_connect_id),
+            )
+            .await?;
+        }
 
         let old_url = DbzKafkaConnectSvc::get_url(old.kafka_connect_id).await?;
         let new_kafka_connect_id = modify_dto.kafka_connect_id.unwrap_or(old.kafka_connect_id);
@@ -222,7 +274,7 @@ impl DbzSinkConnectorSvc {
 
         if let Some(enabled) = modify_dto.enabled.filter(|enabled| *enabled != old.enabled) {
             modify_dto.run_status = Some(if enabled {
-                ConnectorRunStatus::None
+                ConnectorRunStatus::Unknown
             } else {
                 ConnectorRunStatus::Disabled
             });
@@ -230,7 +282,7 @@ impl DbzSinkConnectorSvc {
             modify_dto.run_msg = Some(None);
         } else if enabled_after && (config_changed || relocated) {
             // 配置刚下发或连接器刚被注销，实际状态要等下一轮检查确认
-            modify_dto.run_status = Some(ConnectorRunStatus::None);
+            modify_dto.run_status = Some(ConnectorRunStatus::Unknown);
             modify_dto.run_msg = Some(None);
         }
 

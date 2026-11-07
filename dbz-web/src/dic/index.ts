@@ -41,17 +41,15 @@ export const kafkaConnectStatusDic: DicItem<KafkaConnectStatus>[] = [
   { value: 3, label: '连接失败', color: 'error' },
 ];
 
-/** # 连接器运行状态（上游/下游共用） */
+/** # 连接器统一状态（上游/下游共用，与后端 ConnectorRunStatus 保持一致） */
 export const connectorRunStatusDic: DicItem<ConnectorRunStatus>[] = [
-  { value: 0, label: '无状态', color: 'default' },
+  { value: 0, label: '未知', color: 'default' },
   { value: 1, label: '运行中', color: 'success' },
-  { value: 2, label: '已禁用', color: 'default' },
-  { value: 3, label: '连接集群失败', color: 'error' },
-  { value: 4, label: '注册失败', color: 'error' },
-  { value: 5, label: '检测失败', color: 'error' },
-  { value: 6, label: '检测异常', color: 'warning' },
-  { value: 7, label: '状态查询失败', color: 'error' },
-  { value: 8, label: '状态异常', color: 'warning' },
+  { value: 2, label: '已停用', color: 'default' },
+  { value: 3, label: '失败', color: 'error' },
+  { value: 4, label: '仅纳管未部署', color: 'warning' },
+  { value: 5, label: '不可达', color: 'error' },
+  { value: 6, label: '已停止', color: 'warning' },
 ];
 
 /** # 远端连接器实时状态 */

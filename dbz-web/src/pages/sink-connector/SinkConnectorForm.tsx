@@ -1,8 +1,11 @@
 /**
  * # 下游连接器表单
  *
- * 下游连接器通过 `sourceConnectorId` 归属某条上游，通过 `kafkaConnectId` 指定运行它的集群。
- * 两者相互独立：下游与上游可以在同一台集群上，也可以分处不同集群（只要对接同一个 Kafka）。
+ * 下游连接器只选「上游连接器」一个归属项：所属 Kafka Connect 由所选上游自动推导，
+ * 不再让用户单独选择，避免写出上下游分处不同 Connect 的断裂链路。表单里不展示
+ * Connect / Kafka 集群等已确定项，归属信息统一由控制面卡片副标题与属性框呈现。
+ *
+ * 从控制面「+」进来时上游已经固定，表单连上游选择也不出现，只填名称与配置。
  *
  * 配置区用 {@link ConnectorConfigEditor}（`kind="sink"`）：图形化填「消费哪个 topic、写哪个库、
  * 按什么语义写」，也可以直接写 JSON。sink 的参数键与上游完全不同（没有 `database.*`，
@@ -12,26 +15,32 @@
  * 集群上的连接器，不适合混在改配置的表单里一起提交。
  */
 
-import { App as AntdApp, Form, Input, Modal, Select } from 'antd';
-import { useState } from 'react';
+import { Alert, App as AntdApp, Form, Input, Modal, Select } from 'antd';
+import { useEffect, useMemo, useState } from 'react';
+import { sourceConnectorApi } from '../../api/source-connector';
 import { sinkConnectorApi } from '../../api/sink-connector';
-import type { DbzSinkConnectorVo, Id } from '../../api/types';
+import type { DbzSinkConnectorVo, DbzSourceConnectorVo, Id } from '../../api/types';
 import ConnectorConfigEditor, { checkConnectorConfig } from '../../components/ConnectorConfigEditor';
 import { useCancelConfirm } from '../../hooks/useCancelConfirm';
 import { errorMessage } from '../../utils/format';
 
+interface FixedSource {
+  id: Id;
+  /** 上游所在的 Kafka Connect，由控制面当前节点直接带进来，不用再查列表 */
+  kafkaConnectId: Id;
+}
+
 interface SinkConnectorFormProps {
   open: boolean;
   record?: DbzSinkConnectorVo | null;
-  clusterOptions: { value: Id; label: string }[];
-  sourceOptions: { value: Id; label: string }[];
+  /** 从控制面节点的「+」新增时，上游已固定，表单不再出现上游选择 */
+  fixedSource?: FixedSource | null;
   onCancel: () => void;
   onSuccess: () => void;
 }
 
 interface FormValues {
-  sourceConnectorId: Id;
-  kafkaConnectId: Id;
+  sourceConnectorId?: Id;
   name: string;
   connectorName: string;
   connectorConfig: string;
@@ -49,16 +58,47 @@ async function validateJson(_rule: unknown, value?: string): Promise<void> {
 export default function SinkConnectorForm({
   open,
   record,
-  clusterOptions,
-  sourceOptions,
+  fixedSource,
   onCancel,
   onSuccess,
 }: SinkConnectorFormProps) {
   const { message } = AntdApp.useApp();
   const [form] = Form.useForm<FormValues>();
   const [submitting, setSubmitting] = useState(false);
+  const [sources, setSources] = useState<DbzSourceConnectorVo[]>([]);
+  const [sourceError, setSourceError] = useState<string | null>(null);
+  const [loadingSources, setLoadingSources] = useState(false);
   const isEdit = Boolean(record);
   const { handleCancel, markPristine } = useCancelConfirm(form, onCancel);
+
+  const sourceById = useMemo(
+    () => new Map(sources.map((source) => [source.id, source])),
+    [sources],
+  );
+  const sourceOptions = useMemo(
+    () =>
+      [...sources]
+        .sort((left, right) => left.name.localeCompare(right.name))
+        .map((source) => ({ value: source.id, label: source.name })),
+    [sources],
+  );
+
+  /** 上游固定时不需要整份列表；新增/编辑要靠列表把上游换算成所属 Connect */
+  useEffect(() => {
+    if (!open || fixedSource) {
+      return;
+    }
+    setLoadingSources(true);
+    setSourceError(null);
+    sourceConnectorApi
+      .list()
+      .then((list) => setSources(list))
+      .catch((reason: unknown) => {
+        setSources([]);
+        setSourceError(errorMessage(reason));
+      })
+      .finally(() => setLoadingSources(false));
+  }, [open, fixedSource]);
 
   /**
    * # 弹窗完全打开后同步表单
@@ -76,15 +116,34 @@ export default function SinkConnectorForm({
     if (record) {
       form.setFieldsValue({
         sourceConnectorId: record.sourceConnectorId,
-        kafkaConnectId: record.kafkaConnectId,
         name: record.name,
         connectorName: record.connectorName,
         connectorConfig: record.connectorConfig,
         remark: record.remark ?? '',
       });
+    } else if (fixedSource) {
+      form.setFieldsValue({ sourceConnectorId: fixedSource.id });
     }
     // 回填完成，记录基线；此后值有变化才算脏
     markPristine();
+  };
+
+  /** 从所选上游推导所属 Connect；列表加载失败时只允许沿用原记录里的同一上游 */
+  const deriveConnectId = (sourceConnectorId: Id | undefined): Id | null => {
+    if (!sourceConnectorId) {
+      return null;
+    }
+    if (fixedSource?.id === sourceConnectorId) {
+      return fixedSource.kafkaConnectId;
+    }
+    const source = sourceById.get(sourceConnectorId);
+    if (source) {
+      return source.kafkaConnectId;
+    }
+    if (record && record.sourceConnectorId === sourceConnectorId) {
+      return record.kafkaConnectId;
+    }
+    return null;
   };
 
   const handleSubmit = async () => {
@@ -93,11 +152,23 @@ export default function SinkConnectorForm({
       return;
     }
 
+    const sourceConnectorId = fixedSource?.id ?? values.sourceConnectorId;
+    if (!sourceConnectorId) {
+      message.error('请选择上游连接器');
+      return;
+    }
+    // 所属 Connect 完全由上游决定，不单独提交用户选择
+    const kafkaConnectId = deriveConnectId(sourceConnectorId);
+    if (!kafkaConnectId) {
+      message.error('拿不到上游连接器所属的 Kafka Connect，请刷新后重试');
+      return;
+    }
+
     setSubmitting(true);
     try {
       const payload = {
-        sourceConnectorId: values.sourceConnectorId,
-        kafkaConnectId: values.kafkaConnectId,
+        sourceConnectorId,
+        kafkaConnectId,
         name: values.name.trim(),
         connectorName: values.connectorName.trim(),
         connectorConfig: values.connectorConfig,
@@ -106,6 +177,11 @@ export default function SinkConnectorForm({
       if (record) {
         // 不带 enabled：没传的字段不会被写回，不会把列表上刚切换的开关覆盖掉
         await sinkConnectorApi.modify({ ...payload, id: record.id });
+        if (record.kafkaConnectId !== kafkaConnectId) {
+          message.success('修改成功，已按上游连接器对齐所属 Kafka Connect');
+          onSuccess();
+          return;
+        }
       } else {
         // 新增一律先建成启用，之后在列表的启用列里切换（与服务端库默认值一致）
         await sinkConnectorApi.add({ ...payload, enabled: true });
@@ -132,33 +208,35 @@ export default function SinkConnectorForm({
       width={860}
     >
       <Form form={form} layout="vertical" style={{ marginTop: 12 }} className="dbz-form-scroll">
-        <Form.Item
-          name="sourceConnectorId"
-          label="上游连接器"
-          extra="下游归属的上游，用于把同一链路的上下游串起来展示与告警收敛。"
-          rules={[{ required: true, message: '请选择上游连接器' }]}
-        >
-          <Select
-            showSearch
-            optionFilterProp="label"
-            placeholder="选择上游连接器"
-            options={sourceOptions}
+        {sourceError && (
+          <Alert
+            type="error"
+            showIcon
+            style={{ marginBottom: 16 }}
+            message="上游连接器列表加载失败"
+            description={sourceError}
           />
-        </Form.Item>
+        )}
 
-        <Form.Item
-          name="kafkaConnectId"
-          label="Kafka Connect 集群"
-          extra="运行该下游连接器的集群，可以与上游不在同一台集群上。"
-          rules={[{ required: true, message: '请选择集群' }]}
-        >
-          <Select
-            showSearch
-            optionFilterProp="label"
-            placeholder="选择集群"
-            options={clusterOptions}
-          />
-        </Form.Item>
+        {/* 上游固定（从控制面 + 新增）时整项不出现，连只读控件也不留 */}
+        {!fixedSource && (
+          <Form.Item
+            name="sourceConnectorId"
+            label="上游连接器"
+            rules={[{ required: true, message: '请选择上游连接器' }]}
+          >
+            <Select
+              showSearch
+              optionFilterProp="label"
+              placeholder="选择上游连接器"
+              loading={loadingSources}
+              options={sourceOptions}
+              notFoundContent={
+                sourceError ? '列表加载失败，请重试' : loadingSources ? '加载中…' : '暂无上游连接器'
+              }
+            />
+          </Form.Item>
+        )}
 
         <Form.Item
           name="name"
