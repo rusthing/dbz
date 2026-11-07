@@ -36,7 +36,8 @@ use crate::dic::{
 };
 use crate::dto::{
     DbzDeadLetterCountDto, DbzDeadLetterDiscardDto, DbzDeadLetterEditPayloadDto,
-    DbzDeadLetterQueryDto, DbzDeadLetterReportDto, DbzDeadLetterRetryDto,
+    DbzDeadLetterMarkHandledDto, DbzDeadLetterQueryDto, DbzDeadLetterReportDto,
+    DbzDeadLetterRetryDto, DbzDeadLetterUnmarkHandledDto,
 };
 use crate::mo::dbz_dead_letter::{
     ActiveModel as DeadLetterActiveModel, Column as DeadLetterColumn, Entity as DeadLetterEntity,
@@ -93,6 +94,10 @@ impl DbzDeadLetterSvc {
         if connector_id <= 0 {
             return Err(anyhow!("connectorId 必须为正数").into());
         }
+        // 死信只针对下游连接器：上游没有可重投的 HTTP 地址，页面也不再展示上游类型
+        if dto.connector_type != DeadLetterConnectorType::Sink {
+            return Err(anyhow!("死信仅支持下游连接器").into());
+        }
 
         let db = get_db_conn().map_err(|e| anyhow!("获取数据库连接失败: {e}"))?;
         let now = now_ms() as i64;
@@ -118,6 +123,8 @@ impl DbzDeadLetterSvc {
                 connector_id,
                 &topic,
                 &record_key,
+                dto.partition,
+                dto.offset,
                 dto.payload,
                 i16::from(dto.failure_category),
                 i16::from(dto.failure_subtype),
@@ -131,43 +138,15 @@ impl DbzDeadLetterSvc {
             return Ok(Ro::success("已写入死信".to_string()));
         }
 
-        // 上游连接器没有可重投的 HTTP 地址：传输类失败进队列也重投不了，
-        // 直接落死信，避免 worker 空转 10 次。
-        if dto.connector_type == DeadLetterConnectorType::Source {
-            Self::delete_retry(
-                db.as_ref(),
-                connector_type,
-                connector_id,
-                &topic,
-                &record_key,
-            )
-            .await?;
-            let _ = Self::upsert_dead_letter(
-                db.as_ref(),
-                connector_type,
-                connector_id,
-                &topic,
-                &record_key,
-                dto.payload,
-                i16::from(dto.failure_category),
-                i16::from(dto.failure_subtype),
-                &failure_detail,
-                attempts + 1,
-                now,
-                now,
-                operator,
-            )
-            .await?;
-            return Ok(Ro::success("已写入死信（上游连接器不可重投）".to_string()));
-        }
-
-        // 传输类 / 响应异常：先进重试队列
+        // 传输类 / 响应异常：先进重试队列（死信只面向下游连接器）
         let _ = Self::upsert_retry(
             db.as_ref(),
             connector_type,
             connector_id,
             &topic,
             &record_key,
+            dto.partition,
+            dto.offset,
             dto.payload,
             i16::from(dto.failure_category),
             &failure_detail,
@@ -186,7 +165,11 @@ impl DbzDeadLetterSvc {
     pub async fn page(dto: DbzDeadLetterQueryDto) -> Result<Ro<PageRx<DbzDeadLetterVo>>, SvcError> {
         let db = get_db_conn().map_err(|e| anyhow!("获取数据库连接失败: {e}"))?;
 
-        let mut condition = Condition::all();
+        if dto.connector_type == Some(DeadLetterConnectorType::Source) {
+            return Err(anyhow!("死信仅支持下游连接器").into());
+        }
+        let mut condition =
+            Condition::all().add(DeadLetterColumn::ConnectorType.eq(i16::from(DeadLetterConnectorType::Sink)));
         if let Some(connector_type) = dto.connector_type {
             condition =
                 condition.add(DeadLetterColumn::ConnectorType.eq(i16::from(connector_type)));
@@ -199,6 +182,17 @@ impl DbzDeadLetterSvc {
         }
         if let Some(topic) = dto.topic.filter(|topic| !topic.trim().is_empty()) {
             condition = condition.add(DeadLetterColumn::Topic.eq(topic.trim()));
+        }
+        if let Some(category) = dto.failure_category {
+            condition =
+                condition.add(DeadLetterColumn::FailureCategory.eq(i16::from(category)));
+        }
+        if let Some(subtype) = dto.failure_subtype {
+            condition =
+                condition.add(DeadLetterColumn::FailureSubtype.eq(i16::from(subtype)));
+        }
+        if let Some(reason) = dto.reason.filter(|reason| !reason.trim().is_empty()) {
+            condition = condition.add(DeadLetterColumn::Reason.contains(reason.trim()));
         }
         if let Some(start_ms) = dto.start_ms {
             condition = condition.add(DeadLetterColumn::LastSeenMs.gte(start_ms));
@@ -240,8 +234,13 @@ impl DbzDeadLetterSvc {
     ) -> Result<Ro<Vec<DbzDeadLetterCountVo>>, SvcError> {
         let db = get_db_conn().map_err(|e| anyhow!("获取数据库连接失败: {e}"))?;
 
-        let mut condition =
-            Condition::all().add(DeadLetterColumn::Status.eq(i16::from(DeadLetterStatus::Pending)));
+        // 待处理角标只给下游连接器挂；上游死信在迁移中已清理，接口也不再接受上游类型
+        if dto.connector_type == Some(DeadLetterConnectorType::Source) {
+            return Ok(Ro::success("上游连接器不产生死信".to_string()).extra(Some(Vec::new())));
+        }
+        let mut condition = Condition::all()
+            .add(DeadLetterColumn::Status.eq(i16::from(DeadLetterStatus::Pending)))
+            .add(DeadLetterColumn::ConnectorType.eq(i16::from(DeadLetterConnectorType::Sink)));
         if let Some(connector_type) = dto.connector_type {
             condition =
                 condition.add(DeadLetterColumn::ConnectorType.eq(i16::from(connector_type)));
@@ -347,6 +346,9 @@ impl DbzDeadLetterSvc {
             .await
             .map_err(|e| anyhow!("查询死信记录失败: {e}"))?
             .ok_or_else(|| anyhow!("死信记录不存在"))?;
+        if model.status == i16::from(DeadLetterStatus::ManualHandled) {
+            return Err(anyhow!("该记录已标记「已人工处理」，如需修改请先撤销").into());
+        }
 
         Self::ensure_editable(&model)?;
         let payload =
@@ -401,6 +403,89 @@ impl DbzDeadLetterSvc {
             .map_err(|e| anyhow!("更新死信状态失败: {e}"))?;
 
         Ok(Ro::success(format!("已废弃 {} 条死信", ids.len())))
+    }
+
+    /// # 批量标记「已人工处理」
+    ///
+    /// 只处理「待处理」的记录：已重投、已废弃的记录不允许再改结论。标记不删行，
+    /// 处理说明写入 `remark`，处理人与时间由服务端记录，供之后撤销与追溯。
+    pub async fn mark_handled(
+        dto: DbzDeadLetterMarkHandledDto,
+        operator_id: U64,
+    ) -> Result<Ro<()>, SvcError> {
+        if dto.ids.is_empty() {
+            return Err(anyhow!("ids 不能为空").into());
+        }
+        let db = get_db_conn().map_err(|e| anyhow!("获取数据库连接失败: {e}"))?;
+        let operator = i64::from(operator_id);
+        let now = now_ms() as i64;
+        let remark = dto.remark.as_deref().map(|value| truncate(value, 500));
+        let ids: Vec<i64> = dto.ids.into_iter().map(i64::from).collect();
+
+        let updated = DeadLetterEntity::update_many()
+            .col_expr(
+                DeadLetterColumn::Status,
+                Expr::value(i16::from(DeadLetterStatus::ManualHandled)),
+            )
+            .col_expr(DeadLetterColumn::HandledBy, Expr::value(operator))
+            .col_expr(DeadLetterColumn::HandledMs, Expr::value(now))
+            .col_expr(DeadLetterColumn::Remark, Expr::value(remark))
+            .col_expr(DeadLetterColumn::UpdaterId, Expr::value(operator))
+            .col_expr(DeadLetterColumn::UpdateMs, Expr::value(now))
+            .filter(DeadLetterColumn::Id.is_in(ids.clone()))
+            .filter(DeadLetterColumn::Status.eq(i16::from(DeadLetterStatus::Pending)))
+            .exec(db.as_ref())
+            .await
+            .map_err(|e| anyhow!("标记已人工处理失败: {e}"))?;
+
+        Ok(Ro::success(format!(
+            "已标记 {} 条死信为人工处理（跳过 {} 条非待处理记录）",
+            updated.rows_affected,
+            ids.len() as u64 - updated.rows_affected.min(ids.len() as u64)
+        )))
+    }
+
+    /// # 批量撤销「已人工处理」
+    ///
+    /// 只撤销当前状态为「已人工处理」的记录，恢复为「待处理」并清空处理人与
+    /// 处理说明；已废弃、已重投的记录不受影响。
+    pub async fn unmark_handled(
+        dto: DbzDeadLetterUnmarkHandledDto,
+        operator_id: U64,
+    ) -> Result<Ro<()>, SvcError> {
+        if dto.ids.is_empty() {
+            return Err(anyhow!("ids 不能为空").into());
+        }
+        let db = get_db_conn().map_err(|e| anyhow!("获取数据库连接失败: {e}"))?;
+        let operator = i64::from(operator_id);
+        let now = now_ms() as i64;
+        let ids: Vec<i64> = dto.ids.into_iter().map(i64::from).collect();
+
+        let updated = DeadLetterEntity::update_many()
+            .col_expr(
+                DeadLetterColumn::Status,
+                Expr::value(i16::from(DeadLetterStatus::Pending)),
+            )
+            .col_expr(DeadLetterColumn::HandledBy, Expr::value(sea_orm::Value::BigInt(None)))
+            .col_expr(DeadLetterColumn::HandledMs, Expr::value(sea_orm::Value::BigInt(None)))
+            .col_expr(
+                DeadLetterColumn::Remark,
+                Expr::value(sea_orm::Value::String(None)),
+            )
+            .col_expr(DeadLetterColumn::UpdaterId, Expr::value(operator))
+            .col_expr(DeadLetterColumn::UpdateMs, Expr::value(now))
+            .filter(DeadLetterColumn::Id.is_in(ids.clone()))
+            .filter(
+                DeadLetterColumn::Status.eq(i16::from(DeadLetterStatus::ManualHandled)),
+            )
+            .exec(db.as_ref())
+            .await
+            .map_err(|e| anyhow!("撤销人工处理失败: {e}"))?;
+
+        Ok(Ro::success(format!(
+            "已撤销 {} 条死信的人工处理结论",
+            updated.rows_affected
+        )))
     }
 
     /// # 后台重试 worker
@@ -509,6 +594,8 @@ impl DbzDeadLetterSvc {
                         row.connector_id,
                         &row.topic,
                         &row.record_key,
+                        row.partition,
+                        row.offset,
                         row.payload.clone(),
                         row.failure_category,
                         i16::from(DeadLetterFailureSubtype::Other),
@@ -571,6 +658,13 @@ impl DbzDeadLetterSvc {
                 id,
                 success: false,
                 message: "该记录已重投成功，无需重复重投".to_string(),
+            });
+        }
+        if model.status == i16::from(DeadLetterStatus::ManualHandled) {
+            return Ok(DbzDeadLetterRetryResultVo {
+                id,
+                success: false,
+                message: "该记录已标记「已人工处理」，如需重投请先撤销".to_string(),
             });
         }
 
@@ -821,6 +915,8 @@ impl DbzDeadLetterSvc {
         connector_id: i64,
         topic: &str,
         record_key: &str,
+        partition: Option<i32>,
+        offset: Option<i64>,
         payload: Value,
         failure_category: i16,
         failure_detail: &str,
@@ -839,6 +935,8 @@ impl DbzDeadLetterSvc {
         {
             let next_attempts = existing.attempts + attempts.max(0);
             let mut active: RetryActiveModel = existing.into();
+            active.partition = Set(partition);
+            active.offset = Set(offset);
             active.payload = Set(payload);
             active.failure_category = Set(failure_category);
             active.reason = Set(Self::retry_reason(failure_category));
@@ -856,6 +954,8 @@ impl DbzDeadLetterSvc {
             connector_id: Set(connector_id),
             topic: Set(topic.to_string()),
             record_key: Set(record_key.to_string()),
+            partition: Set(partition),
+            offset: Set(offset),
             payload: Set(payload),
             failure_category: Set(failure_category),
             reason: Set(Self::retry_reason(failure_category)),
@@ -885,6 +985,8 @@ impl DbzDeadLetterSvc {
         connector_id: i64,
         topic: &str,
         record_key: &str,
+        partition: Option<i32>,
+        offset: Option<i64>,
         payload: Value,
         failure_category: i16,
         failure_subtype: i16,
@@ -905,6 +1007,8 @@ impl DbzDeadLetterSvc {
             let next_retry_count = existing.retry_count + increment.max(0);
             let first_seen = first_seen_ms.min(existing.first_seen_ms);
             let mut active: DeadLetterActiveModel = existing.into();
+            active.partition = Set(partition);
+            active.offset = Set(offset);
             active.payload = Set(payload);
             active.failure_category = Set(failure_category);
             active.failure_subtype = Set(failure_subtype);
@@ -927,6 +1031,8 @@ impl DbzDeadLetterSvc {
             connector_id: Set(connector_id),
             topic: Set(topic.to_string()),
             record_key: Set(record_key.to_string()),
+            partition: Set(partition),
+            offset: Set(offset),
             payload: Set(payload),
             failure_category: Set(failure_category),
             failure_subtype: Set(failure_subtype),
@@ -1050,6 +1156,8 @@ fn to_vo(model: DeadLetterModel) -> DbzDeadLetterVo {
         connector_id: U64::from(model.connector_id),
         topic: model.topic,
         record_key: model.record_key,
+        partition: model.partition,
+        offset: model.offset,
         payload: model.payload,
         failure_category: model.failure_category.into(),
         failure_subtype: model.failure_subtype.into(),

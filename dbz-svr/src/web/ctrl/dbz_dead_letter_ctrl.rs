@@ -7,13 +7,16 @@
 //! - `POST /dbz/dead-letter/retry`：单条/批量重投（可带修改后的报文）
 //! - `POST /dbz/dead-letter/edit-payload`：保存待投报文（不重投）
 //! - `POST /dbz/dead-letter/discard`：单条/批量废弃
+//! - `POST /dbz/dead-letter/mark-handled`：批量标记「已人工处理」
+//! - `POST /dbz/dead-letter/unmark-handled`：批量撤销「已人工处理」
 //!
 //! 上报接口允许不带 `X-User-Id`（脚本没有登录态），其余接口沿用框架约定，
 //! 缺少用户头按参数校验失败处理。
 
 use crate::dto::{
     DbzDeadLetterCountDto, DbzDeadLetterDiscardDto, DbzDeadLetterEditPayloadDto,
-    DbzDeadLetterQueryDto, DbzDeadLetterReportDto, DbzDeadLetterRetryDto,
+    DbzDeadLetterMarkHandledDto, DbzDeadLetterQueryDto, DbzDeadLetterReportDto,
+    DbzDeadLetterRetryDto, DbzDeadLetterUnmarkHandledDto,
 };
 use crate::svc::DbzDeadLetterSvc;
 use crate::vo::{DbzDeadLetterCountVo, DbzDeadLetterRetryResultVo, DbzDeadLetterVo};
@@ -151,5 +154,44 @@ pub async fn discard(
     Json(dto): Json<DbzDeadLetterDiscardDto>,
 ) -> Result<Json<Ro<()>>, CtrlError> {
     let ro = DbzDeadLetterSvc::discard(dto, required_operator(&headers)?).await?;
+    Ok(Json(ro))
+}
+
+/// # 批量标记「已人工处理」
+///
+/// 记录处理说明、处理人与时间；只对「待处理」的记录生效。与「已废弃」区分：
+/// 人工处理表示问题已在别处解决，废弃表示不再处理。
+#[utoipa::path(
+    post,
+    path = "/dbz/dead-letter/mark-handled",
+    request_body = DbzDeadLetterMarkHandledDto,
+    responses((status = OK, description = "已标记人工处理"))
+)]
+#[debug_handler]
+#[log_call]
+pub async fn mark_handled(
+    headers: HeaderMap,
+    Json(dto): Json<DbzDeadLetterMarkHandledDto>,
+) -> Result<Json<Ro<()>>, CtrlError> {
+    let ro = DbzDeadLetterSvc::mark_handled(dto, required_operator(&headers)?).await?;
+    Ok(Json(ro))
+}
+
+/// # 批量撤销「已人工处理」
+///
+/// 把状态恢复为「待处理」并清空处理人与处理说明；已废弃、已重投的记录不受影响。
+#[utoipa::path(
+    post,
+    path = "/dbz/dead-letter/unmark-handled",
+    request_body = DbzDeadLetterUnmarkHandledDto,
+    responses((status = OK, description = "已撤销人工处理"))
+)]
+#[debug_handler]
+#[log_call]
+pub async fn unmark_handled(
+    headers: HeaderMap,
+    Json(dto): Json<DbzDeadLetterUnmarkHandledDto>,
+) -> Result<Json<Ro<()>>, CtrlError> {
+    let ro = DbzDeadLetterSvc::unmark_handled(dto, required_operator(&headers)?).await?;
     Ok(Json(ro))
 }

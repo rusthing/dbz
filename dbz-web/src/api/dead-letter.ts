@@ -12,7 +12,9 @@ import type {
   DbzDeadLetterCountVo,
   DbzDeadLetterDiscardInput,
   DbzDeadLetterEditPayloadInput,
+  DbzDeadLetterMarkHandledInput,
   DbzDeadLetterRetryInput,
+  DbzDeadLetterUnmarkHandledInput,
   DbzDeadLetterRetryResultVo,
   DbzDeadLetterVo,
   PageRx,
@@ -40,4 +42,12 @@ export const deadLetterApi = {
   /** 单条或批量废弃 */
   discard: (input: DbzDeadLetterDiscardInput): Promise<void> =>
     apiPost(BASE + '/discard', input),
+
+  /** 标记「已人工处理」：问题已在别处修好，记录处理说明 */
+  markHandled: (input: DbzDeadLetterMarkHandledInput): Promise<void> =>
+    apiPost(BASE + '/mark-handled', input),
+
+  /** 撤销「已人工处理」，恢复为「待处理」 */
+  unmarkHandled: (input: DbzDeadLetterUnmarkHandledInput): Promise<void> =>
+    apiPost(BASE + '/unmark-handled', input),
 };

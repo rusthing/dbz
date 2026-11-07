@@ -24,7 +24,7 @@
  * 截图输出到系统临时目录 `dbz-web-smoke/shots`，失败时按截图定位问题。
  */
 
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
@@ -179,6 +179,8 @@ const deadLetters = [
     connectorType: 2,
     connectorId: '301',
     topic: 'dbz.orders',
+    partition: 0,
+    offset: 1001,
     recordKey: '{"id":1001}',
     payload: { id: 1001, order_no: 'SO-20261107-1', amount: 99.5 },
     failureCategory: 1,
@@ -215,6 +217,8 @@ const deadLetters = [
     connectorType: 2,
     connectorId: '301',
     topic: 'dbz.orders',
+    partition: 0,
+    offset: 1002,
     recordKey: '{"id":1002}',
     payload: { id: 1002, order_no: 'SO-20261107-2', amount: 66 },
     failureCategory: 2,
@@ -243,6 +247,8 @@ const deadLetters = [
     connectorType: 2,
     connectorId: '301',
     topic: 'dbz.orders',
+    partition: 1,
+    offset: 1003,
     recordKey: '{"id":1003}',
     payload: { id: 1003, order_no: 'SO-20261107-3', amount: 'abc', shipping_address: null },
     failureCategory: 1,
@@ -289,6 +295,15 @@ const connectors = [
         trace: 'org.apache.kafka.connect.errors.ConnectException: boom\n\tat ...',
       },
     ],
+  },
+  {
+    name: 'jdbc-orders-sink',
+    connectorClass: 'io.debezium.connector.jdbc.JdbcSinkConnector',
+    type: 'sink',
+    state: 0,
+    workerId: '10.0.0.11:8083',
+    trace: null,
+    tasks: [{ id: 0, state: 0, workerId: '10.0.0.11:8083' }],
   },
   {
     name: 'manual-test-connector',
@@ -490,11 +505,34 @@ const browser = await chromium.launch({
   executablePath: process.env.SMOKE_CHROME || undefined,
 });
 const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+
+/**
+ * 登录态夹具：业务用例都跑在已登录的前提下，首次进入前写入 localStorage 会话。
+ * `sessionStorage` 标记保证「登出 / 令牌失效」用例之后不会被重新注入。
+ */
+const seedSession = {
+  token: 'smoke-seed-token',
+  tokenType: 'Bearer',
+  expireMs: String(Date.now() + 24 * 3600 * 1000),
+  userId: '7',
+  name: '冒烟用户',
+  nickName: '冒烟用户',
+  loginPswdDefault: false,
+  loginLogId: '1',
+};
+await context.addInitScript((session) => {
+  if (!sessionStorage.getItem('dbz.smoke.auth-tested')) {
+    localStorage.setItem('dbz.auth.session', JSON.stringify(session));
+  }
+}, seedSession);
+
 const page = await context.newPage();
 
 const pageErrors = [];
 const consoleErrors = [];
 const posted = [];
+/** 只读接口单独记录：`posted` 只装写请求，GET 断言不能从它里翻 */
+const getRequests = [];
 /** 控制面画布布局：PUT 落库、GET 读取，用来验证「刷新后位置保持」 */
 const layoutStore = [];
 let nextBrokerId = 499;
@@ -506,18 +544,90 @@ let refreshCalls = 0;
 let failNextReset = false;
 /** 置 true 让下一次启用开关失败：验证开关回滚 */
 let failNextSinkToggle = false;
+/** 下一次删除口令校验的失败类型：wrong=口令错误，rate=频控，unavailable=认证服务不可用 */
+let failNextDelete = null;
+/** 下一次登录的失败类型：wrong=账号或口令不正确，network=网络错误 */
+let failNextLogin = null;
+/** 置 true 让下一次控制面状态刷新返回 401，验证令牌失效回登录页 */
+let failNext401 = false;
+/** 401 用例期间忽略浏览器打印的资源加载错误（这是用例主动制造的） */
+let ignore401Console = false;
+/** 登录请求记录：验证 loginPswd 是 64 位摘要而不是明文 */
+const loginRequests = [];
+/** 连线折点：edgeId → midY，模拟服务端持久化 */
+const edgeBendStore = new Map();
 
 page.on('pageerror', (error) => pageErrors.push(String(error)));
 page.on('console', (message) => {
   if (message.type() === 'error') {
+    if (ignore401Console && message.text().includes('401')) {
+      return;
+    }
     consoleErrors.push(message.text());
   }
+});
+
+// adm-rs 登录/登出：不依赖真实服务，直接按契约返回
+await page.route('**/admrs-svr/**', async (route) => {
+  const request = route.request();
+  const path = new URL(request.url()).pathname;
+
+  if (path === '/admrs-svr/adm/auth/login' && request.method() === 'POST') {
+    const body = request.postDataJSON();
+    loginRequests.push({ body, headers: request.headers() });
+    if (failNextLogin === 'network') {
+      failNextLogin = null;
+      return route.abort('failed');
+    }
+    if (failNextLogin === 'wrong') {
+      failNextLogin = null;
+      return route.fulfill({
+        json: {
+          result: -2,
+          msg: '账号或口令不正确',
+          code: 'ADM00001',
+          timestamp: Date.now(),
+        },
+      });
+    }
+    return route.fulfill({
+      json: ro({
+        token: 'smoke-login-token',
+        tokenType: 'Bearer',
+        expireMs: String(Date.now() + 3600 * 1000),
+        userId: '7',
+        name: 'smoke-user',
+        nickName: '冒烟用户',
+        loginPswdDefault: false,
+        loginLogId: '2',
+      }),
+    });
+  }
+
+  if (path === '/admrs-svr/adm/auth/logout' && request.method() === 'POST') {
+    return route.fulfill({ json: ro({ logoutMs: String(Date.now()), loginLogId: '1' }) });
+  }
+
+  return route.fulfill({ status: 404, json: { result: -1, msg: '未模拟的认证接口' } });
 });
 
 await page.route('**/dbz/**', async (route) => {
   const request = route.request();
   const url = new URL(request.url());
   const path = url.pathname;
+
+  if (request.method() === 'GET') {
+    getRequests.push({ path, query: url.search, headers: request.headers() });
+  }
+
+  // 令牌失效：返回 401，前端应清会话并跳登录页
+  if (failNext401 && path === '/dbz/control-plane/status/refresh') {
+    failNext401 = false;
+    return route.fulfill({
+      status: 401,
+      json: { result: -1, msg: '登录状态已失效', code: 'ADM00005', timestamp: Date.now() },
+    });
+  }
 
   if (request.method() !== 'GET') {
     posted.push({
@@ -564,6 +674,35 @@ await page.route('**/dbz/**', async (route) => {
     }
     // 死信废弃只改状态，返回空信封即可
     if (path === '/dbz/dead-letter/discard') {
+      return route.fulfill({ json: { result: 1, msg: '成功', timestamp: Date.now() } });
+    }
+    // 标记已人工处理 / 撤销：改夹具状态，验证列表与终态标签
+    if (path === '/dbz/dead-letter/mark-handled') {
+      const body = request.postDataJSON();
+      for (const id of body.ids ?? []) {
+        const record = deadLetters.find((item) => item.id === id);
+        if (record) {
+          record.status = 3;
+          record.handledBy = '1';
+          record.handledMs = String(Date.now());
+          record.remark = body.remark;
+          record.updateMs = String(Date.now());
+        }
+      }
+      return route.fulfill({ json: { result: 1, msg: '成功', timestamp: Date.now() } });
+    }
+    if (path === '/dbz/dead-letter/unmark-handled') {
+      const body = request.postDataJSON();
+      for (const id of body.ids ?? []) {
+        const record = deadLetters.find((item) => item.id === id);
+        if (record) {
+          record.status = 0;
+          record.handledBy = null;
+          record.handledMs = null;
+          record.remark = null;
+          record.updateMs = String(Date.now());
+        }
+      }
       return route.fulfill({ json: { result: 1, msg: '成功', timestamp: Date.now() } });
     }
     // 重置位点：按停 → 清 → 恢复三步返回；失败时给出停在哪一步与当前状态
@@ -653,6 +792,63 @@ await page.route('**/dbz/**', async (route) => {
       }
       return route.fulfill({ json: { result: 1, msg: '成功', timestamp: Date.now() } });
     }
+    // 连线折点：按 edgeId upsert / 删除，模拟服务端持久化
+    if (path === '/dbz/control-plane/edges' && request.method() === 'PUT') {
+      const body = request.postDataJSON();
+      edgeBendStore.set(body.edgeId, body.midY);
+      return route.fulfill({ json: { result: 1, msg: '成功', timestamp: Date.now() } });
+    }
+    if (path === '/dbz/control-plane/edges' && request.method() === 'DELETE') {
+      edgeBendStore.delete(url.searchParams.get('edgeId'));
+      return route.fulfill({ json: { result: 1, msg: '成功', timestamp: Date.now() } });
+    }
+    // 删除节点：口令错误 / 频控 / 认证服务不可用返回可区分文案
+    if (path === '/dbz/control-plane/node-delete' && request.method() === 'POST') {
+      if (failNextDelete === 'wrong') {
+        failNextDelete = null;
+        return route.fulfill({
+          json: {
+            result: 0,
+            msg: '口令错误：当前登录用户口令不正确',
+            timestamp: Date.now(),
+          },
+        });
+      }
+      if (failNextDelete === 'rate') {
+        failNextDelete = null;
+        return route.fulfill({
+          json: {
+            result: 0,
+            msg: '口令校验过于频繁：短时间内错误尝试过多，请稍后重试',
+            timestamp: Date.now(),
+          },
+        });
+      }
+      if (failNextDelete === 'unavailable') {
+        failNextDelete = null;
+        return route.fulfill({
+          json: {
+            result: 0,
+            msg: '认证服务不可用：无法连接认证服务，本次删除未执行',
+            timestamp: Date.now(),
+          },
+        });
+      }
+      return route.fulfill({ json: { result: 1, msg: '成功', timestamp: Date.now() } });
+    }
+    // 上游重新同步：写入信号表，返回写入结果
+    if (path === '/dbz/source-connector/snapshot') {
+      const body = request.postDataJSON();
+      return route.fulfill({
+        json: ro({
+          connectorId: body.id,
+          tables: body.dataCollections ?? [],
+          snapshotType: body.snapshotType,
+          channel: body.channel,
+          message: 'execute-snapshot 信号已写入源库信号表',
+        }),
+      });
+    }
     // 调色板新增 Kafka 集群：真的把记录塞进夹具，页面刷新后才能找到新节点并保存布局
     if (path === '/dbz/kafka-broker' && request.method() === 'POST') {
       const body = request.postDataJSON();
@@ -704,18 +900,25 @@ await page.route('**/dbz/**', async (route) => {
       }),
     });
   }
-  // 集群侧连接器配置：详情抽屉优先展示这一份
+  // 集群侧连接器配置：一致性检测拿它和库内 connectorConfig 比对
   if (path === '/dbz/kafka-connector/config') {
-    return route.fulfill({
-      json: ro({
-        connectorName: url.searchParams.get('connectorName'),
-        config: {
-          'connector.class': 'io.debezium.connector.mysql.MySqlConnector',
-          'database.hostname': '10.0.0.11',
-          'table.include.list': 'dbz.orders',
-        },
-      }),
-    });
+    const connectorName = url.searchParams.get('connectorName');
+    const stored = [...sources, ...sinks].find((item) => item.connectorName === connectorName);
+    let config = {};
+    try {
+      config = JSON.parse(stored?.connectorConfig ?? '{}');
+    } catch {
+      config = {};
+    }
+    // 上游额外多出两个连接键：模拟「库内配置缺字段，Connect 实际有」
+    if (connectorName === 'mysql-orders-source') {
+      config = {
+        ...config,
+        'database.hostname': '10.0.0.11',
+        'table.include.list': 'dbz.orders',
+      };
+    }
+    return route.fulfill({ json: ro({ connectorName, config }) });
   }
   if (path === '/dbz/dead-letter/page') return route.fulfill({ json: pageOf(deadLetters) });
   if (path === '/dbz/control-plane/status/refresh') {
@@ -724,6 +927,17 @@ await page.route('**/dbz/**', async (route) => {
   }
   if (path === '/dbz/control-plane/layout') {
     return route.fulfill({ json: ro(layoutStore) });
+  }
+  if (path === '/dbz/control-plane/edges') {
+    return route.fulfill({
+      json: ro(
+        [...edgeBendStore.entries()].map(([edgeId, midY]) => ({
+          edgeId,
+          midY,
+          updateMs: String(Date.now()),
+        })),
+      ),
+    });
   }
   if (path === '/dbz/dead-letter/pending-count') {
     return route.fulfill({
@@ -745,33 +959,45 @@ await page.route('**/dbz/**', async (route) => {
 });
 
 try {
-  /* 1. 总览：统计与异常清单 */
+  /* 1. 菜单与旧地址：左侧只剩控制面与死信，旧 CRUD 地址重定向到控制面 */
   await page.goto(`${base}/`, { waitUntil: 'networkidle' });
-  await page.waitForSelector('.ant-card-head-title:has-text("异常清单")');
-  check('总览渲染异常清单', await page.locator('.ant-card-head-title:has-text("异常清单")').first().isVisible());
-  const anomalyRows = await page.locator('tbody tr.ant-table-row').count();
-  check('异常清单 4 行（消息集群/集群/上游/下游各 1）', anomalyRows === 4, `实际 ${anomalyRows}`);
-  check('异常清单含消息集群', (await page.locator('tbody .ant-tag:has-text("消息集群")').count()) === 1);
-
-  // 五张卡片：Kafka 集群 / Connect 集群 / 上游 / 下游 / 异常对象
-  const statCards = page.locator('.dbz-stat-card');
-  check('总览 5 张统计卡片', (await statCards.count()) === 5, `实际 ${await statCards.count()}`);
-  const brokerCard = statCards.filter({ hasText: 'Kafka 集群' }).first();
-  check(
-    'Kafka 集群卡片统计到 3 台',
-    (await brokerCard.locator('.dbz-stat-value').textContent()) === '3',
-    String(await brokerCard.locator('.dbz-stat-value').textContent()),
+  await page.waitForSelector('.dbz-graph-node');
+  check('根地址重定向到控制面', page.url().includes('/control-plane'), page.url());
+  const menuTexts = (await page.locator('.ant-menu-item').allInnerTexts()).map((text) =>
+    text.replace(/\s+/g, ''),
   );
   check(
-    '禁用中的集群计入禁用而不是异常',
-    (await brokerCard.locator('.ant-tag:has-text("禁用 1")').count()) === 1 &&
-      (await brokerCard.locator('.ant-tag:has-text("异常 1")').count()) === 1,
+    '左侧菜单只剩控制面与死信',
+    menuTexts.length === 2 &&
+      menuTexts.some((text) => text.includes('控制面')) &&
+      menuTexts.some((text) => text.includes('死信')),
+    menuTexts.join(','),
   );
+  for (const oldPath of [
+    'kafka-broker',
+    'kafka-connect',
+    'source-connector',
+    'sink-connector',
+    'remote-connector',
+    'dashboard',
+  ]) {
+    await page.goto(`${base}/${oldPath}`, { waitUntil: 'networkidle' });
+    // `<Navigate>` 是 React 渲染后才执行的：networkidle 只说明资源加载完，
+    // 这里要等路由真的换掉，否则会把「还没重定向」误判成失败
+    await page.waitForURL('**/control-plane', { timeout: 5000 }).catch(() => {});
+    check(
+      `旧地址 /${oldPath} 重定向到控制面`,
+      page.url().includes('/control-plane'),
+      page.url(),
+    );
+  }
+  await page.goto(`${base}/control-plane`, { waitUntil: 'networkidle' });
+  await page.waitForSelector('.dbz-graph-node');
   check(
-    '链路速查提示没人用的 Kafka 集群',
-    (await page.locator('text=其中 1 个还没有 worker 指向它').count()) > 0,
+    '画布没有指向已删页面的按钮或链接',
+    (await page.locator('.dbz-canvas-page a[href*="/kafka-broker"], .dbz-canvas-page a[href*="/kafka-connect"], .dbz-canvas-page a[href*="/source-connector"], .dbz-canvas-page a[href*="/sink-connector"], .dbz-canvas-page a[href*="/remote-connector"]').count()) === 0 &&
+      !(await page.locator('.dbz-canvas-page').innerText()).includes('打开明细页'),
   );
-  await page.screenshot({ path: `${SHOTS}/01-dashboard.png`, fullPage: true });
 
   /* 1a. 控制面视图：统一状态、统一卡片、+ 新增、只读归属线、自动刷新与重置位点 */
   // 临时补三条下游，凑齐六种统一状态；用完移除，后续死信用例仍按原始夹具
@@ -827,8 +1053,20 @@ try {
   ];
   sinks.push(...tempSinks);
 
-  await page.click('.ant-menu-item:has-text("控制面视图")');
+  // 临时夹具是在页面首次加载之后才塞进 mock 的，仅点菜单不会重新拉数据；
+  // 重新进入控制面并等节点稳定，避免拿首屏未加载完的计数误判
+  await page.goto(`${base}/control-plane`, { waitUntil: 'networkidle' });
   await page.waitForSelector('.dbz-graph-node[data-node-key="1:401"]');
+  await page
+    .waitForFunction(() => document.querySelectorAll('.dbz-graph-node').length === 11, null, {
+      timeout: 15000,
+    })
+    .catch(() => {});
+  await page
+    .waitForFunction(() => document.querySelectorAll('.dbz-graph-edge-hit').length === 8, null, {
+      timeout: 15000,
+    })
+    .catch(() => {});
   check(
     '画布渲染 11 个节点（3 broker + 2 Connect + 2 上游 + 4 下游）',
     (await page.locator('.dbz-graph-node').count()) === 11,
@@ -856,9 +1094,13 @@ try {
       }),
   );
   check(
-    '调色板已移除，建链只走节点上的「+」',
-    (await page.locator('.dbz-palette-item').count()) === 0,
-    `实际 ${await page.locator('.dbz-palette-item').count()}`,
+    '组件面板恢复且只有 Kafka 集群可点击',
+    (await page.locator('.dbz-component-panel').isVisible()) &&
+      (await page.locator('.dbz-component-item[data-component="broker"]').evaluate(
+        (element) => element.tagName === 'BUTTON',
+      )) &&
+      (await page.locator('.dbz-component-item.is-disabled[aria-disabled]').count()) === 3,
+    '面板 1 个可点击 + 3 个禁用',
   );
   check(
     '缩略图与缩放控件可见',
@@ -867,8 +1109,11 @@ try {
   );
   const legendText = await page.locator('.dbz-graph-legend').innerText();
   check(
-    '图例只保留只读归属线',
-    legendText.includes('归属') && legendText.includes('只读') && !legendText.includes('数据流'),
+    '图例说明端点固定、折点可拖',
+    legendText.includes('归属') &&
+      legendText.includes('端点固定') &&
+      legendText.includes('折点') &&
+      !legendText.includes('数据流'),
     legendText,
   );
   check(
@@ -953,6 +1198,84 @@ try {
     heights.map((list) => list.join('/')).join(' | '),
   );
 
+  // A. 卡片布局：开关在左上，编辑最左，删除隔一道分隔线放最右
+  const sinkCard = page.locator('.dbz-graph-node[data-node-key="4:301"]');
+  const sinkCardBox = await sinkCard.boundingBox();
+  const switchBox = await sinkCard.locator('.dbz-graph-node-head .ant-switch').boundingBox();
+  const editBox = await sinkCard.locator('[data-node-action="edit"]').boundingBox();
+  const deleteBox = await sinkCard.locator('[data-node-action="delete"]').boundingBox();
+  const dividerBox = await sinkCard.locator('.dbz-graph-actions-divider').boundingBox();
+  check(
+    '启用开关在卡片左上角',
+    Boolean(switchBox) &&
+      switchBox.x < sinkCardBox.x + 40 &&
+      switchBox.y < sinkCardBox.y + 40,
+    JSON.stringify(switchBox),
+  );
+  check(
+    '操作行没有第二个开关',
+    (await sinkCard.locator('.dbz-graph-node-actions .dbz-graph-switch').count()) === 0,
+  );
+  check(
+    '编辑最左，删除最右且中间有分隔线与间距',
+    Boolean(editBox && deleteBox && dividerBox) &&
+      editBox.x < dividerBox.x &&
+      dividerBox.x < deleteBox.x &&
+      deleteBox.x - dividerBox.x >= 6,
+    `edit=${editBox?.x} divider=${dividerBox?.x} delete=${deleteBox?.x}`,
+  );
+  check(
+    '下游卡片不再有「查看死信」图标',
+    (await page.locator('.dbz-graph-node [data-node-action="dead-letter"]').count()) === 0,
+  );
+
+  // G. 画布搜索：按名称/topic/connectorName 高亮并定位，不隐藏节点
+  const nodeCountBeforeSearch = await page.locator('.dbz-graph-node').count();
+  const searchInput = page.locator('.dbz-canvas-search input');
+  await searchInput.fill('订单消息集群');
+  await page.waitForTimeout(400);
+  check(
+    '搜索按名称命中并高亮',
+    (await page.locator('.dbz-graph-node[data-node-key="1:401"].is-hit').count()) === 1 &&
+      (await page.locator('.dbz-graph-node[data-node-key="1:401"].is-active-hit').count()) === 1,
+  );
+  check(
+    '搜索不隐藏其它节点，整体拓扑保留',
+    (await page.locator('.dbz-graph-node').count()) === nodeCountBeforeSearch,
+    `${nodeCountBeforeSearch}`,
+  );
+  check(
+    '搜索结果显示 1/1',
+    (await page.locator('[data-search-count]').innerText()).trim() === '1/1',
+    await page.locator('[data-search-count]').innerText(),
+  );
+  await searchInput.fill('orders');
+  await page.waitForTimeout(400);
+  const multiHitCount = Number(
+    ((await page.locator('[data-search-count]').innerText()).split('/')[1] ?? '0').trim(),
+  );
+  check('搜索按 topic/connectorName 命中多个节点', multiHitCount >= 2, `${multiHitCount}`);
+  const firstActiveKey = await page
+    .locator('.dbz-graph-node.is-active-hit')
+    .getAttribute('data-node-key');
+  await page.locator('[data-search-next]').click();
+  await page.waitForTimeout(400);
+  const secondActiveKey = await page
+    .locator('.dbz-graph-node.is-active-hit')
+    .getAttribute('data-node-key');
+  check(
+    '「下一个」切换到另一个命中并保持高亮',
+    secondActiveKey !== firstActiveKey,
+    `${firstActiveKey} -> ${secondActiveKey}`,
+  );
+  await page.locator('[data-search-clear]').click();
+  await page.waitForTimeout(300);
+  check(
+    '清空搜索后不再有高亮',
+    (await page.locator('.dbz-graph-node.is-hit').count()) === 0 &&
+      (await page.locator('.dbz-graph-node').count()) === nodeCountBeforeSearch,
+  );
+
   // 只有 broker / connect / source 有「+」，sink 没有下级
   const addCounts = await page
     .locator('.dbz-graph-node')
@@ -994,6 +1317,10 @@ try {
   await page.mouse.move(10, 10);
   const afterHintDrag = await source201.evaluate((element) => element.style.left);
   check('状态标签上按下拖动不会移动卡片', beforeHintDrag === afterHintDrag, `${beforeHintDrag} -> ${afterHintDrag}`);
+
+  // 搜索会用定位平移视口；先「适应画布」把视图复位，避免节点落到缩放控件下面点不中
+  await page.locator('.dbz-graph-controls button[title="适应画布"]').click();
+  await page.waitForTimeout(300);
 
   // 「+」新增下级：父级固定且表单里根本不出现父级/Connect/集群输入控件
   await page.locator('.dbz-graph-node[data-node-key="1:401"] .dbz-graph-add-child').click();
@@ -1110,7 +1437,10 @@ try {
 
   // 卡片上的集群检测
   await page.locator('.dbz-graph-node[data-node-key="1:402"] [data-node-action="check"]').click();
-  await page.waitForTimeout(400);
+  // 检测是异步请求，等提示真的出现再读，避免只看到上一次「修改成功」
+  await page
+    .waitForSelector('.ant-message-notice-content:has-text("集群检测通过")', { timeout: 5000 })
+    .catch(() => {});
   const checkRequest = posted.findLast(
     (item) => item.method === 'POST' && item.path === '/dbz/kafka-broker/check',
   );
@@ -1119,6 +1449,52 @@ try {
     checkRequest?.body?.id === '402',
     JSON.stringify(checkRequest?.body),
   );
+  const brokerMessages = await page.locator('.ant-message-notice-content').allInnerTexts();
+  check(
+    '集群检测给出成功提示',
+    brokerMessages.some((text) => text.includes('集群检测通过')),
+    brokerMessages.join(' | '),
+  );
+
+  // C. Connect 健康检测：可达 / 版本 / worker
+  await page.locator('.dbz-graph-node[data-node-key="2:101"] [data-node-action="check"]').click();
+  await page.waitForTimeout(400);
+  const healthMessage = await page
+    .locator('.ant-message-notice-content:has-text("健康检测通过")')
+    .last()
+    .innerText();
+  check(
+    'Connect 健康检测结果包含版本与 worker',
+    healthMessage.includes('v3.7.1') && healthMessage.includes('1 个 worker'),
+    healthMessage,
+  );
+
+  // C. 连接器一致性检测：下游一致 → 成功；上游库内缺字段 → 失败并列出具体原因
+  await page.locator('.dbz-graph-node[data-node-key="4:301"] [data-node-action="check"]').click();
+  await page
+    .waitForSelector('.ant-message-notice-content:has-text("一致性检测通过")', { timeout: 5000 })
+    .catch(() => {});
+  check(
+    '下游一致性检测通过',
+    (await page
+      .locator('.ant-message-notice-content:has-text("一致性检测通过")')
+      .count()) >= 1,
+  );
+
+  await page.locator('.dbz-graph-node[data-node-key="3:201"] [data-node-action="check"]').click();
+  await page.waitForTimeout(600);
+  const consistencyModal = visibleModal().last();
+  await consistencyModal.waitFor({ state: 'visible' });
+  const consistencyText = (await consistencyModal.innerText()).replace(/\s+/g, ' ');
+  check(
+    '上游一致性检测失败并列出具体差异',
+    consistencyText.includes('一致性检测未通过') &&
+      consistencyText.includes('database.hostname') &&
+      consistencyText.includes('table.include.list'),
+    consistencyText.slice(0, 240),
+  );
+  await consistencyModal.locator('.ant-modal-confirm-btns .ant-btn-primary').click();
+  await consistencyModal.waitFor({ state: 'hidden' });
 
   // 卡片上的重启：确认后请求要打到 Connect 的 restart 接口
   await page.locator('.dbz-graph-node[data-node-key="3:201"] [data-node-action="restart"]').click();
@@ -1194,10 +1570,25 @@ try {
     toggleRequest?.body?.id === '301' && toggleRequest?.body?.enabled === false,
     JSON.stringify(toggleRequest?.body),
   );
+  // 开关是「请求 → 重新拉数据 → 回写卡片」，等卡片真的变成停用态再断言
+  await page
+    .waitForFunction(
+      () =>
+        document
+          .querySelector('.dbz-graph-node[data-node-key="4:301"]')
+          ?.classList.contains('is-disabled') === true,
+      null,
+      { timeout: 5000 },
+    )
+    .catch(() => {});
+  const sinkDisabledClass = await sink301.evaluate((element) =>
+    element.classList.contains('is-disabled'),
+  );
+  const sinkStatusText = (await sink301.locator('.dbz-graph-status-tag .ant-tag').innerText()).trim();
   check(
     '停用态整卡可辨但与异常态不同',
-    (await sink301.evaluate((element) => element.classList.contains('is-disabled'))) &&
-      (await sink301.locator('.dbz-graph-status-tag .ant-tag').innerText()).trim() === '已停用',
+    sinkDisabledClass && sinkStatusText === '已停用',
+    `is-disabled=${sinkDisabledClass} 状态=${sinkStatusText}`,
   );
   await sink301.locator('.dbz-graph-switch .ant-switch').click();
   await page.waitForTimeout(500);
@@ -1220,11 +1611,11 @@ try {
     (await sink303.locator('.dbz-graph-status-tag .ant-tag').innerText()).trim() === '失败',
   );
 
-  // 卡片上的删除：提示只说明归属关系，不再列数据流与写入目标
+  // 卡片上的删除：先看影响，再输入当前登录用户口令；失败分「口令错误 / 频控 / 认证服务不可用」
   await page.locator('.dbz-graph-node[data-node-key="4:301"] [data-node-action="delete"]').click();
-  const deleteConfirm = page.locator('.ant-modal-confirm');
-  await deleteConfirm.waitFor({ state: 'visible' });
-  const deleteText = (await deleteConfirm.innerText()).replace(/\s+/g, ' ');
+  const deleteModal = visibleModal().last();
+  await deleteModal.waitFor({ state: 'visible' });
+  const deleteText = (await deleteModal.innerText()).replace(/\s+/g, ' ');
   check(
     '删除提示说明受影响的归属关系',
     deleteText.includes('归属关系'),
@@ -1235,35 +1626,115 @@ try {
     !deleteText.includes('数据流') && !deleteText.includes('写入目标'),
     deleteText.slice(0, 160),
   );
-  await deleteConfirm.locator('.ant-btn').first().click();
-  await deleteConfirm.waitFor({ state: 'hidden' });
+  check(
+    '删除必须输入当前登录用户口令',
+    deleteText.includes('当前登录用户口令') &&
+      (await deleteModal.locator('[data-delete-password]').count()) === 1,
+  );
+  await deleteModal.locator('.ant-modal-footer .ant-btn').first().click();
+  await waitNoVisibleModal();
   check(
     '取消删除时不调用删除接口',
-    !posted.some((item) => item.method === 'DELETE' && item.path === '/dbz/sink-connector/301'),
+    !posted.some((item) => item.path === '/dbz/control-plane/node-delete'),
   );
+
+  // 口令错误：弹窗保留并给出可区分的提示
+  await page.locator('.dbz-graph-node[data-node-key="4:301"] [data-node-action="delete"]').click();
+  const wrongPasswordModal = visibleModal().last();
+  await wrongPasswordModal.waitFor({ state: 'visible' });
+  await wrongPasswordModal.locator('[data-delete-password]').fill('wrong-password');
+  failNextDelete = 'wrong';
+  await wrongPasswordModal.locator('[data-delete-confirm]').click();
+  await page.waitForTimeout(500);
+  const wrongText = (await wrongPasswordModal.innerText()).replace(/\s+/g, ' ');
+  check(
+    '口令错误时提示口令错误且弹窗不关闭',
+    (await wrongPasswordModal.isVisible()) && wrongText.includes('口令错误'),
+    wrongText.slice(0, 200),
+  );
+
+  // 删除请求必须带登录令牌与真实用户ID，口令只以 64 位 SM3 摘要提交
+  const deleteRequest = posted.find((item) => item.path === '/dbz/control-plane/node-delete');
+  check(
+    '删除请求带 Authorization 与真实用户 ID',
+    deleteRequest?.headers.authorization === `Bearer ${seedSession.token}` &&
+      deleteRequest?.headers['x-user-id'] === seedSession.userId,
+    JSON.stringify({
+      authorization: deleteRequest?.headers.authorization,
+      userId: deleteRequest?.headers['x-user-id'],
+    }),
+  );
+  check(
+    '删除请求体只提交 64 位 SM3 摘要，不含明文口令',
+    typeof deleteRequest?.body?.loginPswd === 'string' &&
+      /^[0-9a-f]{64}$/.test(deleteRequest.body.loginPswd) &&
+      !('password' in (deleteRequest?.body ?? {})),
+    JSON.stringify(deleteRequest?.body),
+  );
+
+  // 频控：提示稍后重试，且说明默认窗口
+  failNextDelete = 'rate';
+  await wrongPasswordModal.locator('[data-delete-confirm]').click();
+  await page.waitForTimeout(500);
+  const rateText = (await wrongPasswordModal.innerText()).replace(/\s+/g, ' ');
+  check(
+    '频控时提示口令校验过于频繁并说明重试窗口',
+    (await wrongPasswordModal.isVisible()) &&
+      rateText.includes('口令校验过于频繁') &&
+      rateText.includes('10 分钟'),
+    rateText.slice(0, 220),
+  );
+
+  // 认证服务不可用：不能提示成口令错，也不允许删除
+  failNextDelete = 'unavailable';
+  await wrongPasswordModal.locator('[data-delete-confirm]').click();
+  await page.waitForTimeout(500);
+  const unavailableText = (await wrongPasswordModal.innerText()).replace(/\s+/g, ' ');
+  check(
+    '认证服务不可用时提示不可用且不说成口令错',
+    (await wrongPasswordModal.isVisible()) &&
+      unavailableText.includes('认证服务不可用') &&
+      !unavailableText.includes('口令错误：'),
+    unavailableText.slice(0, 200),
+  );
+  await wrongPasswordModal.locator('.ant-modal-footer .ant-btn').first().click();
+  await waitNoVisibleModal();
 
   // 点选归属连线 → 属性框说明只读；没有任何拖拽手柄，也不能删除
   const ownershipHit = page.locator(
     '[data-edge-id="own:connect:101:source:201"].dbz-graph-edge-hit',
   );
-  const ownershipBox = await ownershipHit.boundingBox();
-  await page.mouse.click(
-    ownershipBox.x + ownershipBox.width / 2,
-    ownershipBox.y + ownershipBox.height / 2,
-  );
+  // 卡片上可能挂着 antd Tooltip（点击后靠 focus 保持），会盖住连线中段。
+  // 先失焦并给节点补一次 mouseout，让 Tooltip 收起
+  await page.evaluate(() => {
+    document.activeElement?.blur?.();
+    document.querySelectorAll('.dbz-graph-node').forEach((node) => {
+      node.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }));
+    });
+  });
+  await page.mouse.move(24, 24);
+  await page.waitForTimeout(500);
+  // 用 pointerdown 选中连线：和真实点击走同一个 handler，且不受浮层遮挡影响
+  await ownershipHit.dispatchEvent('pointerdown', { button: 0, bubbles: true });
+  await page.waitForSelector('.dbz-graph-edge-line.is-selected', { timeout: 5000 });
   await page.waitForSelector('.dbz-graph-inspector .dbz-inspector-panel');
   const edgeInspectorText = await page.locator('.dbz-graph-inspector').innerText();
   check(
-    '选中归属连线后属性框说明只读',
+    '选中归属连线后属性框说明端点固定、折点可拖',
     edgeInspectorText.includes('归属连线') &&
       edgeInspectorText.includes('不能拖动') &&
-      edgeInspectorText.includes('不能删除'),
+      edgeInspectorText.includes('不能删除') &&
+      edgeInspectorText.includes('折点'),
     edgeInspectorText.slice(0, 160),
   );
   check(
-    '连线没有任何拖拽手柄或锁标',
+    '连线没有端点拖拽手柄或锁标',
     (await page.locator('.dbz-graph-edge-handle').count()) === 0 &&
       (await page.locator('.dbz-graph-edge-lock').count()) === 0,
+  );
+  check(
+    '选中连线后才出现一个折点手柄',
+    (await page.locator('.dbz-graph-bend-handle').count()) === 1,
   );
   await page.keyboard.press('Delete');
   await page.waitForTimeout(300);
@@ -1273,17 +1744,77 @@ try {
       !posted.some((item) => item.method === 'DELETE'),
   );
 
-  // 在连线上拖动：只作展示，不产生任何写请求、也不改上游
-  const postedBeforeEdgeDrag = posted.length;
-  await page.mouse.move(ownershipBox.x + ownershipBox.width / 2, ownershipBox.y + ownershipBox.height / 2);
+  // D. 拖动折点：改走线并落库；端点仍不可拖
+  const postedBeforeBend = posted.length;
+  await page.evaluate(() => {
+    document.activeElement?.blur?.();
+    document.querySelectorAll('.dbz-graph-node').forEach((node) => {
+      node.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }));
+    });
+  });
+  await page.mouse.move(24, 24);
+  await page.waitForTimeout(400);
+  const bendBox = await page.locator('.dbz-graph-bend-handle').boundingBox();
+  const bendCenter = {
+    x: bendBox.x + bendBox.width / 2,
+    y: bendBox.y + bendBox.height / 2,
+  };
+  const bendHitIsHandle = await page.evaluate((point) => {
+    const hit = document.elementFromPoint(point.x, point.y);
+    return Boolean(hit?.closest?.('.dbz-graph-bend-handle'));
+  }, bendCenter);
+  if (bendHitIsHandle) {
+    await page.mouse.move(bendCenter.x, bendCenter.y);
+    await page.mouse.down();
+    await page.mouse.move(bendCenter.x, bendCenter.y + 44, { steps: 10 });
+    await page.mouse.up();
+  } else {
+    // 浮层还挂着时退回合成 pointer 事件，走的是同一个拖折点 handler
+    await page
+      .locator('.dbz-graph-bend-handle')
+      .dispatchEvent('pointerdown', { button: 0, clientY: bendCenter.y, bubbles: true });
+    await page.evaluate((point) => {
+      window.dispatchEvent(
+        new PointerEvent('pointermove', { clientX: point.x, clientY: point.y + 44, bubbles: true }),
+      );
+      window.dispatchEvent(
+        new PointerEvent('pointerup', { clientX: point.x, clientY: point.y + 44, bubbles: true }),
+      );
+    }, bendCenter);
+  }
+  await page.waitForTimeout(400);
+  const bendPut = posted.findLast(
+    (item) => item.method === 'PUT' && item.path === '/dbz/control-plane/edges',
+  );
+  check(
+    '拖动折点保存走线',
+    bendPut?.body?.edgeId === 'own:connect:101:source:201' &&
+      typeof bendPut?.body?.midY === 'number',
+    JSON.stringify(bendPut?.body),
+  );
+  check('拖动折点只产生折点写请求', posted.length - postedBeforeBend === 1, `${postedBeforeBend} -> ${posted.length}`);
+
+  const postedBeforeEndpointDrag = posted.length;
+  const ownershipStart = await ownershipHit.evaluate((element) => {
+    const bbox = element.getBBox();
+    const rect = element.getBoundingClientRect();
+    const point = element.getPointAtLength(0);
+    return {
+      x: rect.left + (point.x - bbox.x) * (rect.width / bbox.width),
+      y: rect.top + (point.y - bbox.y) * (rect.height / bbox.height),
+    };
+  });
+  await page.mouse.move(ownershipStart.x, ownershipStart.y + 2);
   await page.mouse.down();
-  await page.mouse.move(ownershipBox.x + 180, ownershipBox.y + 90, { steps: 12 });
+  await page.mouse.move(ownershipStart.x + 160, ownershipStart.y + 60, {
+    steps: 10,
+  });
   await page.mouse.up();
   await page.waitForTimeout(300);
   check(
-    '拖动连线不产生写请求，也不改上下游',
-    posted.length === postedBeforeEdgeDrag,
-    `${postedBeforeEdgeDrag} -> ${posted.length}`,
+    '拖动端点不产生写请求，也不改上下游',
+    posted.length === postedBeforeEndpointDrag,
+    `${postedBeforeEndpointDrag} -> ${posted.length}`,
   );
 
   // 拖动节点后自动保存布局；刷新后位置保持
@@ -1322,8 +1853,19 @@ try {
     `节点 left=${persistedLeft}，保存值=${layoutPut.body.x}`,
   );
 
-  // 顶栏「新增 Kafka 集群」：表单保存后落到画布并写入布局
-  await page.locator('.dbz-canvas-topbar button:has-text("新增 Kafka 集群")').click();
+  // 刷新后折点走线仍按库内值
+  const persistedPath = await page
+    .locator('[data-edge-id="own:connect:101:source:201"].dbz-graph-edge-hit')
+    .evaluate((element) => element.previousElementSibling?.getAttribute('d') ?? '');
+  const persistedMidY = Number((persistedPath.match(/L[^,]+,([^ ]+)/) ?? [])[1]);
+  check(
+    '刷新后连线折点从库内走线恢复',
+    Math.abs(persistedMidY - bendPut.body.midY) < 1,
+    `走线 midY=${persistedMidY}，保存值=${bendPut.body.midY}`,
+  );
+
+  // B. 组件面板点击「Kafka 集群」：建根节点 → 打开表单 → 保存布局
+  await page.locator('.dbz-component-item[data-component="broker"]').click();
   await page.waitForSelector('.ant-modal-wrap:visible');
   const createModal = visibleModal().last();
   // 新增表单没有回填值可等，等 afterOpenChange 跑完（resetFields + 默认值）再填
@@ -1337,7 +1879,7 @@ try {
     (item) => item.method === 'POST' && item.path === '/dbz/kafka-broker',
   );
   check(
-    '顶栏新增 Kafka 集群调用创建接口',
+    '组件面板点击 Kafka 集群调用创建接口',
     createdBrokerRequest?.body?.name === '冒烟新集群' &&
       createdBrokerRequest?.body?.bootstrapServers === '10.0.9.9:9092',
     JSON.stringify(createdBrokerRequest?.body),
@@ -1361,6 +1903,18 @@ try {
   check(
     '新增后顶栏节点数更新',
     (await page.locator('.dbz-canvas-topbar .ant-tag:has-text("12 个节点")').count()) === 1,
+  );
+
+  // 新建根节点的布局刷新后仍在
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForSelector('.dbz-graph-node[data-node-key="1:499"]');
+  const createdNodeLeft = await page
+    .locator('.dbz-graph-node[data-node-key="1:499"]')
+    .evaluate((element) => parseFloat(element.style.left));
+  check(
+    '新建根节点刷新后仍在且位置从布局恢复',
+    Math.abs(createdNodeLeft - createLayout.body.x) < 1,
+    `left=${createdNodeLeft}，保存值=${createLayout.body.x}`,
   );
 
   // 新增节点会写进 broker 夹具，后面的列表用例仍按原始 3 条断言，这里恢复夹具
@@ -1571,11 +2125,59 @@ try {
   await sourceResetModal.locator('.ant-modal-footer .ant-btn').first().click();
   await waitNoVisibleModal();
 
-  check(
-    '界面上不存在增量快照/重新同步入口',
-    !(await page.locator('.dbz-graph-viewport').innerText()).includes('增量快照') &&
-      !(await page.locator('.dbz-graph-viewport').innerText()).includes('重新同步'),
+  // F. 上游「重新同步」：只在源连接器出现，选表后写增量信号
+  const sourceResync = page.locator(
+    '.dbz-graph-node[data-node-key="3:201"] [data-node-action="resync"]',
   );
+  check('上游连接器有「重新同步」', (await sourceResync.count()) === 1);
+  check(
+    '下游连接器没有「重新同步」',
+    (await page.locator('.dbz-graph-node--sink [data-node-action="resync"]').count()) === 0,
+  );
+  await sourceResync.click();
+  await page.waitForSelector('.ant-modal-wrap:visible');
+  const resyncModal = visibleModal().last();
+  await page.waitForTimeout(600);
+  const resyncText = (await resyncModal.innerText()).replace(/\s+/g, ' ');
+  check(
+    '重新同步弹窗说明增量快照、只重读选中表、不重置位点',
+    resyncText.includes('重新同步') &&
+      resyncText.includes('增量快照') &&
+      resyncText.includes('只重读选中的表') &&
+      resyncText.includes('不会重置位点') &&
+      resyncText.includes('Kafka Connect 日志'),
+    resyncText.slice(0, 260),
+  );
+  check(
+    '重新同步默认全选该连接器管理的表',
+    resyncText.includes('共 2 项，已选 2 项'),
+    resyncText.slice(0, 200),
+  );
+  check(
+    '重新同步不出现信号通道切换',
+    (await resyncModal.locator('text=信号通道').count()) === 0,
+  );
+  await resyncModal.locator('.ant-modal-footer .ant-btn-primary').click();
+  await page.waitForTimeout(600);
+  const resyncRequest = posted.findLast(
+    (item) => item.method === 'POST' && item.path === '/dbz/source-connector/snapshot',
+  );
+  check(
+    '重新同步请求为源库通道 + 增量快照 + 选中表',
+    resyncRequest?.body?.id === '201' &&
+      resyncRequest?.body?.snapshotType === 'incremental' &&
+      resyncRequest?.body?.channel === 'source' &&
+      Array.isArray(resyncRequest?.body?.dataCollections) &&
+      resyncRequest?.body?.dataCollections.length === 2,
+    JSON.stringify(resyncRequest?.body),
+  );
+  check(
+    '重新同步成功后提示信号已写入、后续以 Connect 日志为准',
+    (await page
+      .locator('.ant-message-notice-content:has-text("信号已写入")')
+      .count()) >= 1,
+  );
+  await waitNoVisibleModal();
 
   const topologyOverflow = await page.evaluate(
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
@@ -1631,9 +2233,12 @@ try {
     (await page.locator('.ant-table-tbody tr.ant-table-row').count()) === 3,
     `实际 ${await page.locator('.ant-table-tbody tr.ant-table-row').count()}`,
   );
+  await page
+    .waitForSelector('.ant-select-selection-item:has-text("订单同步到数仓")', { timeout: 5000 })
+    .catch(() => {});
   check(
     '死信筛选器回填连接器名称',
-    (await page.locator('.ant-select-selection-item:has-text("下游 · 订单同步到数仓")').count()) >= 1,
+    (await page.locator('.ant-select-selection-item:has-text("订单同步到数仓")').count()) >= 1,
   );
   check(
     '死信状态与失败分类标签渲染',
@@ -1642,6 +2247,102 @@ try {
       (await page.locator('.ant-tag:has-text("确定性失败")').count()) >= 1 &&
       (await page.locator('.ant-tag:has-text("传输类失败")').count()) >= 1 &&
       (await page.locator('.ant-tag:has-text("字段不合规")').count()) >= 1,
+  );
+
+  // H. 死信只针对下游连接器：查询不再出现上游类型，界面也没有上游类型选项
+  check(
+    '死信查询固定为下游连接器',
+    getRequests
+      .filter((item) => item.path === '/dbz/dead-letter/page')
+      .every((item) => !item.query.includes('connectorType=1')),
+  );
+  check(
+    '死信界面没有上游类型选项',
+    !(await page.locator('.dbz-toolbar').innerText()).includes('上游') &&
+      (await page.locator('.ant-select-dropdown .ant-select-item-option:has-text("上游连接器")').count()) === 0,
+  );
+  const deadLetterHeader = await page.locator('.ant-table-thead').innerText();
+  check(
+    '死信列表展示 topic、partition、offset',
+    deadLetterHeader.includes('Topic') &&
+      deadLetterHeader.includes('分区') &&
+      deadLetterHeader.includes('Offset'),
+    deadLetterHeader.replace(/\s+/g, ' '),
+  );
+  const deadLetterBody = await page.locator('.ant-table-tbody').innerText();
+  check(
+    '死信行展示原始消息的分区与 offset',
+    deadLetterBody.includes('1001') &&
+      deadLetterBody.includes('1002') &&
+      deadLetterBody.includes('1003') &&
+      deadLetterBody.includes('dbz.orders'),
+  );
+
+  // 失败分类筛选：请求带上 failureCategory
+  const categorySelect = page
+    .locator('.dbz-toolbar .ant-select')
+    .filter({ hasText: '失败分类' })
+    .first();
+  const categoryResponse = page.waitForResponse(
+    (response) =>
+      response.url().includes('/dbz/dead-letter/page') &&
+      response.url().includes('failureCategory=1'),
+  );
+  await categorySelect.click();
+  await page
+    .locator('.ant-select-dropdown:visible .ant-select-item-option:has-text("确定性失败")')
+    .click();
+  await categoryResponse.catch(() => {});
+  const categoryRequest = getRequests
+    .filter((item) => item.path === '/dbz/dead-letter/page')
+    .at(-1);
+  check(
+    '按失败分类筛选',
+    categoryRequest?.query.includes('failureCategory=1') &&
+      categoryRequest?.query.includes('connectorType=2'),
+    categoryRequest?.query,
+  );
+
+  // 失败原因关键字筛选
+  const reasonResponse = page.waitForResponse(
+    (response) =>
+      response.url().includes('/dbz/dead-letter/page') &&
+      response.url().includes('reason='),
+  );
+  await page.locator('.dbz-toolbar input[placeholder="失败原因关键字"]').fill('下游连接失败');
+  await page.locator('.dbz-toolbar input[placeholder="失败原因关键字"]').press('Enter');
+  await reasonResponse.catch(() => {});
+  const reasonRequest = getRequests
+    .filter((item) => item.path === '/dbz/dead-letter/page')
+    .at(-1);
+  check(
+    '按失败原因关键字筛选',
+    reasonRequest?.query.includes('reason=') &&
+      decodeURIComponent(reasonRequest.query).includes('reason=下游连接失败'),
+    reasonRequest?.query,
+  );
+
+  // 导出 CSV：当前筛选参数、完整表头与数据行
+  const downloadPromise = page.waitForEvent('download');
+  await page.locator('button:has-text("导出 CSV")').click();
+  const download = await downloadPromise;
+  const csv = readFileSync(await download.path(), 'utf8');
+  check(
+    '导出 CSV 文件名与表头完整',
+    download.suggestedFilename().endsWith('.csv') &&
+      csv.includes('死信ID') &&
+      csv.includes('Topic') &&
+      csv.includes('Partition') &&
+      csv.includes('Offset') &&
+      csv.includes('处理说明'),
+    download.suggestedFilename(),
+  );
+  check(
+    '导出 CSV 按当前筛选范围请求',
+    getRequests
+      .filter((item) => item.path === '/dbz/dead-letter/page')
+      .at(-1)
+      ?.query.includes('failureCategory=1'),
   );
 
   const listText = await page.locator('.ant-table-tbody').innerText();
@@ -1658,25 +2359,37 @@ try {
   await page.waitForSelector('.ant-drawer-title:has-text("死信详情")');
   const deadLetterDetail = await page.locator('.ant-drawer-body').innerText();
   check(
-    '死信详情把失败原因与失败详情分开呈现',
-    deadLetterDetail.includes('失败原因') &&
-      deadLetterDetail.includes('失败详情') &&
+    '死信详情把失败原因与失败详情分开呈现，且失败详情在失败原因上方',
+    deadLetterDetail.indexOf('失败详情') < deadLetterDetail.indexOf('失败原因') &&
       deadLetterDetail.includes('字段校验不通过，请核对并修改报文后重投') &&
-      deadLetterDetail.includes('HTTP 200 result=-2') &&
       deadLetterDetail.includes('SO-20261107-1') &&
       deadLetterDetail.includes('99.5'),
     deadLetterDetail.slice(0, 200),
   );
   check(
-    '失败详情可展开且可复制',
-    (await page.locator('.ant-drawer-body .ant-typography-expand:has-text("展开完整详情")').count()) ===
-      1 &&
-      (await page.locator('.ant-drawer-body .ant-typography-copy').count()) === 1,
+    '失败详情以 hint 形式展示，可点开看全文、可复制',
+    (await page
+      .locator('.ant-drawer-body :text("查看失败详情全文（可复制）")')
+      .count()) === 1 &&
+      deadLetterDetail.includes('分区 / Offset') &&
+      deadLetterDetail.includes('0 / 1001'),
   );
-  await page.locator('.ant-drawer-body .ant-typography-expand:has-text("展开完整详情")').click();
-  await page.waitForTimeout(200);
+  await page.locator('.ant-drawer-body :text("查看失败详情全文（可复制）")').click();
+  await page.waitForSelector('.ant-popover:visible');
+  const failurePopover = page.locator('.ant-popover:visible').last();
+  const popoverText = await failurePopover.innerText();
   check(
-    '失败详情展开后可继续操作',
+    '失败详情弹层可看全文且带复制按钮',
+    popoverText.includes('HTTP 200 result=-2') &&
+      popoverText.includes('FieldValidator.validate') &&
+      (await failurePopover.locator('button:has-text("复制")').count()) === 1,
+    popoverText.slice(0, 160),
+  );
+  // 再次点同一链接关闭弹层：Escape 会把整个 Drawer 一起关掉，后面就没法继续操作了
+  await page.locator('.ant-drawer-body :text("查看失败详情全文（可复制）")').click();
+  await page.locator('.ant-popover:visible').last().waitFor({ state: 'hidden' });
+  check(
+    '失败详情查看后仍可继续操作',
     (await page.locator('.ant-drawer-body button:has-text("保存待投")').count()) === 1,
   );
   check(
@@ -1752,19 +2465,128 @@ try {
   await page.click('.ant-drawer-close');
   await page.waitForTimeout(300);
 
+  // H. 已人工处理终态：标记（必填说明）→ 与已废弃区分 → 撤销
+  await page
+    .locator('.ant-table-tbody tr.ant-table-row')
+    .first()
+    .locator('button:has-text("已处理")')
+    .click();
+  await page.waitForSelector('.ant-modal:has-text("已人工处理")');
+  const handledModal = visibleModal().last();
+  await handledModal.locator('textarea').fill('已在源库补录缺失字段，确认无需重投');
+  await handledModal.locator('.ant-modal-footer .ant-btn-primary').click();
+  // 等列表回写完成再断言终态，避免只等到请求发出、表格还没刷新
+  await page
+    .waitForFunction(
+      () =>
+        Array.from(document.querySelectorAll('.ant-table-tbody tr.ant-table-row')).some((row) =>
+          row.innerText.includes('已人工处理'),
+        ),
+      null,
+      { timeout: 5000 },
+    )
+    .catch(() => {});
+  const markHandledRequest = posted.find(
+    (item) => item.method === 'POST' && item.path === '/dbz/dead-letter/mark-handled',
+  );
+  check(
+    '标记已人工处理携带 id 与处理说明',
+    markHandledRequest?.body?.ids?.[0] === '901' &&
+      markHandledRequest?.body?.remark?.includes('已在源库补录缺失字段'),
+    JSON.stringify(markHandledRequest?.body ?? null),
+  );
+  check(
+    '标记后进入「已人工处理」终态且与已废弃区分',
+    (await page.locator('.ant-tag:has-text("已人工处理")').count()) === 1 &&
+      (await page.locator('.ant-tag:has-text("已人工处理")').count()) !==
+        (await page.locator('.ant-tag:has-text("已废弃")').count()),
+  );
+  check(
+    '标记后该行只能撤销处理，不再提供重投/废弃',
+    (await page
+      .locator('.ant-table-tbody tr.ant-table-row')
+      .first()
+      .locator('button:has-text("撤销处理")')
+      .count()) === 1 &&
+      (await page
+        .locator('.ant-table-tbody tr.ant-table-row')
+        .first()
+        .locator('button:has-text("废弃")')
+        .count()) === 0,
+  );
+
+  // 撤销人工处理：恢复待处理，清空处理人/说明
+  await page
+    .locator('.ant-table-tbody tr.ant-table-row')
+    .first()
+    .locator('button:has-text("撤销处理")')
+    .click();
+  const undoHandledConfirm = page.locator('.ant-modal-confirm', { hasText: '撤销 1 条' });
+  await undoHandledConfirm.waitFor();
+  await undoHandledConfirm.locator('.ant-btn-primary').click();
+  await page
+    .waitForFunction(
+      () =>
+        !Array.from(document.querySelectorAll('.ant-tag')).some((tag) =>
+          tag.textContent?.includes('已人工处理'),
+        ),
+      null,
+      { timeout: 5000 },
+    )
+    .catch(() => {});
+  check(
+    '撤销人工处理调用撤销接口',
+    posted.some(
+      (item) =>
+        item.method === 'POST' &&
+        item.path === '/dbz/dead-letter/unmark-handled' &&
+        item.body?.ids?.[0] === '901',
+    ),
+  );
+  check(
+    '撤销后恢复待处理',
+    (await page.locator('.ant-tag:has-text("已人工处理")').count()) === 0 &&
+      (await page
+        .locator('.ant-table-tbody tr.ant-table-row')
+        .first()
+        .locator('button:has-text("已处理")')
+        .count()) === 1,
+  );
+
   /* 903：改完仍失败 —— 原因回写到记录，原始报文不被待投覆盖 */
-  const row903 = page.locator('.ant-table-tbody tr.ant-table-row').nth(2);
+  const row903 = page
+    .locator('.ant-table-tbody tr.ant-table-row', { hasText: '1003' })
+    .first();
   await row903.locator('button:has-text("详情")').click();
   await page.waitForSelector('.ant-drawer-title:has-text("死信详情")');
+  // 抽屉会先显示上一条详情再换成新的，等目标记录真正渲染出来再读
+  await page
+    .waitForFunction(() => document.querySelector('.ant-drawer-body')?.innerText.includes('1003'), null, {
+      timeout: 5000,
+    })
+    .catch(() => {});
   const detail903 = await page.locator('.ant-drawer-body').innerText();
   check(
-    '历史记录回填后原因清晰、原始详情仍在',
+    '历史记录回填后原因清晰、原始明细仍在',
     detail903.includes('字段校验不通过，请核对并修改报文后重投') &&
-      detail903.includes('历史记录原始报错') &&
+      detail903.includes('原始报文（永不覆盖）') &&
       detail903.includes('"abc"') &&
+      detail903.includes('已保存的待投报文') &&
       detail903.includes('88'),
-    detail903.slice(0, 220),
+    detail903.slice(0, 260),
   );
+  // 失败详情入口在失败原因上方，点开才渲染全文（含历史报错）
+  await page.locator('.ant-drawer-body a:has-text("查看失败详情全文")').click();
+  await page.waitForSelector('.dbz-failure-detail-popover');
+  const failureDetailPopover = await page.locator('.dbz-failure-detail-popover').innerText();
+  check(
+    '失败详情可展开全文并保留历史报错',
+    failureDetailPopover.includes('历史记录原始报错') &&
+      failureDetailPopover.includes('FIELD_INVALID'),
+    failureDetailPopover.slice(0, 200),
+  );
+  // 再点链接关闭 Popover，不按 Escape，避免把抽屉一起关掉
+  await page.locator('.ant-drawer-body a:has-text("查看失败详情全文")').click();
   await page.locator('.ant-drawer-body button:has-text("改后重投")').click();
   const failRetryConfirm = page.locator('.ant-modal-confirm', { hasText: '用修改后的报文重投' });
   await failRetryConfirm.waitFor();
@@ -1857,498 +2679,99 @@ try {
   check('死信页面无横向溢出', deadLetterOverflow <= 1, `溢出 ${deadLetterOverflow}px`);
   await page.screenshot({ path: `${SHOTS}/01c-dead-letter.png`, fullPage: true });
 
-  /* 1b. Kafka 集群（broker）：列表、检测、SASL 字段联动 */
-  await page.click('.ant-menu-item:has-text("Kafka 集群")');
-  await page.waitForSelector('text=订单消息集群');
-  const brokerRows = await page.locator('tbody tr.ant-table-row').count();
-  check('Kafka 集群列表 3 行', brokerRows === 3, `实际 ${brokerRows}`);
-  check('broker 地址原样展示', (await page.locator('text=10.0.0.21:9092,10.0.0.22:9092').count()) > 0);
-  check('broker 状态标签渲染', (await page.locator('text=连接失败').count()) > 0);
-  // 悬停看详情：状态是结论，原因写在 runMsg 里
-  const brokerDetail = await hoverStatus(
-    '风控消息集群',
-    'SASL authentication failed',
-    'Kafka 集群',
-    '02b-broker-status.png',
-  );
-  check(
-    'broker 详情带地址与认证方式',
-    brokerDetail.includes('10.0.1.31:9092') && brokerDetail.includes('SCRAM-SHA-256'),
-    brokerDetail.slice(0, 120),
-  );
-  await layoutCheck(page, 'Kafka 集群');
-  await page.screenshot({ path: `${SHOTS}/02-kafka-broker.png`, fullPage: true });
-
-  // 检测：真去拉一次 topic 列表，连不通也是 200（reachable=false）
-  await page.locator('tbody tr.ant-table-row').first().locator('button:has-text("检测")').click();
-  await page.waitForTimeout(600);
-  const brokerCheck = posted.findLast(
-    (item) => item.method === 'POST' && item.path === '/dbz/kafka-broker/check',
-  );
-  check('检测发出 POST 且带记录ID', brokerCheck?.body?.id === '401', JSON.stringify(brokerCheck?.body));
-  const checkMessage = page.locator('.ant-message-notice-content:has-text("连接正常")').first();
-  let checkMessageText = '';
-  try {
-    await checkMessage.waitFor({ state: 'visible', timeout: 3000 });
-    checkMessageText = await checkMessage.innerText();
-  } catch {
-    // 保留空文案，交给下面的断言报错
-  }
-  check(
-    '检测成功给出提示（含耗时单位）',
-    checkMessageText.includes('12 个 topic') && checkMessageText.includes('耗时 34 ms'),
-    checkMessageText,
-  );
-
-  // 表单联动：明文协议不出现机制/账号/密码，选了 SASL 才出现
-  await page.click('button:has-text("新增集群")');
-  await page.waitForSelector('.ant-modal-wrap', { state: 'visible' });
-  await page.waitForTimeout(450);
-  check('明文协议下无认证字段', (await page.locator('#saslPassword').count()) === 0);
-  await page.locator('.ant-modal .ant-select-selector').first().click();
-  await page.click('.ant-select-item-option:has-text("SASL_PLAINTEXT")');
-  await page.waitForTimeout(300);
-  check('切到 SASL 后出现认证字段', (await page.locator('#saslPassword').count()) === 1);
-  // 机制不能停在「没有标签的 0」上：切到 SASL 时要给一个能连通的默认值
-  const mechanism = await page
-    .locator('.ant-modal .ant-select')
-    .nth(1)
-    .locator('.ant-select-selection-item')
-    .textContent();
-  check('切到 SASL 后机制有默认值', mechanism === 'SASL/PLAIN', String(mechanism));
-  await page.screenshot({ path: `${SHOTS}/03b-broker-form.png` });
-  await cancelFormModal({ expectDirty: true });
-
-  /* 2. 集群列表 */
-  await page.click('.ant-menu-item:has-text("Kafka Connect")');
-  await page.waitForSelector('text=生产集群-华东');
-  const clusterRows = await page.locator('tbody tr.ant-table-row').count();
-  check('集群列表 2 行', clusterRows === 2, `实际 ${clusterRows}`);
-  check('集群状态标签渲染', (await page.locator('text=连接失败').count()) > 0);
-  await hoverStatus('灰度集群', 'connection refused', 'Kafka Connect');
-
-  const headerBox = await page.locator('.dbz-header-title').boundingBox();
-  check(
-    '顶栏标题完整可见',
-    Boolean(headerBox) && headerBox.y >= 0 && headerBox.y + headerBox.height <= 60,
-    JSON.stringify(headerBox),
-  );
-  await layoutCheck(page, '集群');
-  await page.screenshot({ path: `${SHOTS}/02-kafka-connect.png`, fullPage: true });
-
-  /* 2b. 启用列本身就是开关：关掉要确认，只提交 id + enabled */
-  const enabledSwitch = page.locator('tbody tr.ant-table-row').first().getByRole('switch');
-  check('启用列渲染为开关', (await enabledSwitch.getAttribute('aria-checked')) === 'true');
-  await enabledSwitch.click();
-  await page.waitForSelector('.ant-modal-confirm');
-  await page.click('.ant-modal-confirm .ant-btn-primary');
-  await page.waitForTimeout(400);
-  const toggleCall = posted.find((item) => item.method === 'PUT' && item.path === '/dbz/kafka-connect');
-  check(
-    '禁用只提交 id 与 enabled',
-    toggleCall?.body?.id === '101' && toggleCall?.body?.enabled === false && Object.keys(toggleCall.body).length === 2,
-    JSON.stringify(toggleCall?.body),
-  );
-
-  /* 3. 新增：默认值、请求头、请求体、提交后关闭 */
-  await page.click('button:has-text("新增集群")');
-  await page.waitForSelector('.ant-modal-wrap', { state: 'visible' });
-  await page.waitForTimeout(450);
-  check(
-    '新增弹窗不再有启用开关',
-    (await page.locator('.ant-modal').getByRole('switch').count()) === 0,
-  );
-
-  await page.fill('#name', '冒烟测试集群');
-  await page.fill('#url', 'http://127.0.0.1:8083');
-  // Kafka 集群是必填项：这台 worker 上的连接器把变更投到哪个集群
-  await page.locator('.ant-modal .ant-select-selector').first().click();
-  await page.click('.ant-select-item-option:has-text("订单消息集群")');
-  await page.waitForTimeout(200);
-  await page.screenshot({ path: `${SHOTS}/03-modal.png` });
-  await page.click('.ant-modal-footer .ant-btn-primary');
-  await waitNoVisibleModal();
-  check('保存后弹窗关闭', (await page.locator('.ant-modal-wrap:visible').count()) === 0);
-
-  const createCall = posted.findLast((item) => item.method === 'POST' && item.path === '/dbz/kafka-connect');
-  check('新增集群发出 POST', Boolean(createCall));
-  check('写接口带 X-User-Id', createCall?.headers['x-user-id'] === '1', String(createCall?.headers['x-user-id']));
-  check(
-    '新增集群带上所属 Kafka 集群',
-    createCall?.body?.kafkaBrokerId === '401',
-    JSON.stringify(createCall?.body),
-  );
-  check(
-    '请求体为 camelCase 且已 trim',
-    createCall?.body?.name === '冒烟测试集群' && createCall?.body?.url === 'http://127.0.0.1:8083',
-    JSON.stringify(createCall?.body),
-  );
-  // 启用/禁用移到列表后，新增一律先建成启用
-  check('新增请求体默认启用', createCall?.body?.enabled === true, JSON.stringify(createCall?.body));
-
-  /* 3b. 编辑回填 */
-  await page.locator('tbody tr.ant-table-row').first().locator('.ant-btn-link').first().click();
-  await page.waitForSelector('.ant-modal-wrap', { state: 'visible' });
-  await page.waitForTimeout(450);
-  check('编辑表单回填名称', (await page.inputValue('#name')) === '生产集群-华东', await page.inputValue('#name'));
-  check(
-    '编辑弹窗不再有启用开关',
-    (await page.locator('.ant-modal').getByRole('switch').count()) === 0,
-  );
-  await page.screenshot({ path: `${SHOTS}/09-edit.png` });
-  // 只回填、没改：取消不应打扰用户
-  await cancelFormModal();
-
-  /* 4. 上游连接器 */
-  await page.click('.ant-menu-item:has-text("上游连接器")');
-  await page.waitForSelector('text=订单库增量');
-  check('上游列表渲染', (await page.locator('tbody tr.ant-table-row').count()) === 2);
-  check('上游「所属集群」翻译成名称', (await page.locator('text=生产集群-华东').count()) > 0);
-  const orderRow = page.locator('tbody tr.ant-table-row', { hasText: '订单库增量' });
-  check(
-    '空备注统一显示 --',
-    (await orderRow.locator('td').nth(5).innerText()).trim() === '--',
-    await orderRow.locator('td').nth(5).innerText(),
-  );
-  const userRow = page.locator('tbody tr.ant-table-row', { hasText: '用户库增量' });
-  check(
-    '19 位 ID 在列表里截断',
-    (await userRow.innerText()).includes('#192837…6789'),
-    await userRow.innerText(),
-  );
-  // 删除说明必须与 README / 服务端 before_del 一致：先注销、再删记录
-  await orderRow.getByRole('button', { name: '删除' }).click();
-  const sourceDeleteConfirm = page.locator('.ant-modal-confirm:visible');
-  await sourceDeleteConfirm.waitFor({ state: 'visible', timeout: 2000 });
-  check(
-    '上游删除说明与 README 一致',
-    (await sourceDeleteConfirm.innerText()).includes('先从集群注销'),
-    await sourceDeleteConfirm.innerText(),
-  );
-  // antd 会在两个汉字之间插入空格（「取 消」），按 role 名字匹配不到，取第一个按钮
-  await sourceDeleteConfirm.locator('.ant-modal-confirm-btns .ant-btn').first().click();
-  await waitNoVisibleModal();
-  await hoverStatus('用户库增量', 'Access denied for user', '上游连接器', '04b-source-status.png');
-  await layoutCheck(page, '上游');
-  await page.screenshot({ path: `${SHOTS}/04-source.png`, fullPage: true });
-
-  /* 4b. 配置编辑器：图形化与 JSON 是同一份数据，换库要真的换过来 */
-  await page.click('button:has-text("新增上游连接器")');
-  await page.waitForSelector('.ant-modal-wrap', { state: 'visible' });
-  await page.waitForTimeout(450);
-  check('默认进入图形化模式', (await visibleModal().locator('.ant-segmented-item-selected:has-text("图形化")').count()) === 1);
-  check('上游图形化按组列出配置项', (await visibleModal().locator('.dbz-config-group').count()) === 6);
-
-  await visibleModal().getByRole('button', { name: '套用 MySQL 模板' }).click();
-  await page.waitForTimeout(200);
-  check('套用模板后说明改了什么', (await visibleModal().locator('text=已套用 MySQL 模板').count()) === 1);
-  // 认得出方言后，只显示这家库的捕获范围（按 label 的 for 定位，避免命中帮助文字里的同名字段）
-  check(
-    'MySQL 方言下只显示 MySQL 的捕获范围',
-    (await visibleModal().locator('label[for="database.include.list"]').count()) === 1 &&
-      (await visibleModal().locator('label[for="schema.include.list"]').count()) === 0,
-  );
-  check('MySQL 方言下不显示复制插件', (await visibleModal().locator('label[for="plugin.name"]').count()) === 0);
-
-  // 先填一个 MySQL 专属键，再换 PostgreSQL：它必须跟着消失，否则就是无效参数
-  await page.fill('[id="database.include.list"]', 'orders');
-  await page.waitForTimeout(150);
-
-  await visibleModal().getByRole('button', { name: '套用 PostgreSQL 模板' }).click();
-  await page.waitForTimeout(250);
-  check(
-    '换库后方言字段跟着换',
-    (await visibleModal().locator('label[for="schema.include.list"]').count()) === 1 &&
-      (await visibleModal().locator('label[for="plugin.name"]').count()) === 1 &&
-      (await visibleModal().locator('label[for="database.include.list"]').count()) === 0,
-  );
-  await page.screenshot({ path: `${SHOTS}/04b-config-editor.png` });
-
-  // 枚举值光看名字猜不出行为（schema_only_recovery 尤其），下拉里每项都要带注释
-  // 点外层 .ant-select：值已经选中时，选中文本那层会挡住 input，直接点 input 会超时
-  await visibleModal().locator('.ant-select:has([id="snapshot.mode"])').click();
-  await page.waitForTimeout(300);
-  const modeOptions = page.locator('.ant-select-dropdown:visible .ant-select-item-option');
-  const recoveryText = await page
-    .locator('.ant-select-dropdown:visible .ant-select-item-option:has-text("schema_only_recovery")')
-    .innerText();
-  check('快照模式下拉 7 项齐全', (await modeOptions.count()) === 7, String(await modeOptions.count()));
-  check('快照模式每项都带注释', recoveryText.includes('修复'), recoveryText);
-  await page.screenshot({ path: `${SHOTS}/04b2-snapshot-mode.png` });
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(250);
-
-  await visibleModal().locator('.ant-segmented-item:has-text("JSON")').click();
-  await visibleModal().locator('.dbz-json-editor').waitFor();
-  const configJson = JSON.parse(await visibleModal().locator('.dbz-json-editor').inputValue());
-  check(
-    '换库后连接器类改成 PostgreSQL',
-    configJson['connector.class'] === 'io.debezium.connector.postgresql.PostgresConnector',
-    String(configJson['connector.class']),
-  );
-  check('换库后端口跟着换', configJson['database.port'] === 5432, String(configJson['database.port']));
-  check(
-    '换库后补上复制插件与模式',
-    configJson['plugin.name'] === 'pgoutput' && configJson['schema.include.list'] === 'public',
-    JSON.stringify({ plugin: configJson['plugin.name'], schema: configJson['schema.include.list'] }),
-  );
-  check(
-    '换库后清掉 MySQL 专属键',
-    !('database.include.list' in configJson),
-    JSON.stringify(Object.keys(configJson)),
-  );
-
-  // 必填参数没补齐就点保存：应该被 Form 拦下，而不是等集群部署失败
-  const sourcePostsBefore = posted.filter(
-    (item) => item.method === 'POST' && item.path === '/dbz/source-connector',
-  ).length;
-  await visibleModal().locator('.ant-modal-footer .ant-btn-primary').click();
-  await page.waitForTimeout(300);
-  const missingFieldErrors = await visibleModal().locator('.ant-form-item-explain-error').allInnerTexts();
-  check(
-    '缺少必填参数时保存被拦截',
-    missingFieldErrors.some((text) => text.includes('还缺必填项')),
-    missingFieldErrors.join(' | '),
-  );
-  check(
-    '必填校验失败不发保存请求',
-    posted.filter((item) => item.method === 'POST' && item.path === '/dbz/source-connector')
-      .length === sourcePostsBefore,
-  );
-
-  // 非法 JSON 也必须拦在提交前；恢复合法文本后才能切回图形化
-  const originalConfigJson = await visibleModal().locator('.dbz-json-editor').inputValue();
-  await visibleModal().locator('.dbz-json-editor').fill('{"connector.class": ');
-  await visibleModal().locator('.ant-modal-footer .ant-btn-primary').click();
-  await page.waitForTimeout(300);
-  const jsonErrors = await visibleModal().locator('.ant-form-item-explain-error').allInnerTexts();
-  check(
-    '非法 JSON 保存被拦截',
-    jsonErrors.some((text) => text.includes('不是合法的 JSON')),
-    jsonErrors.join(' | '),
-  );
-  await visibleModal().locator('.dbz-json-editor').fill(originalConfigJson);
-
-  await visibleModal().locator('.ant-segmented-item:has-text("图形化")').click();
-  await page.waitForTimeout(150);
-  await cancelFormModal({ expectDirty: true });
-  // 关掉的弹窗在退出动画期间还挂在 DOM 里，等它退干净再去点列表，否则后面按文本找元素会命中它
-  await page.waitForTimeout(400);
-
-  /* 4c. 重新同步：两条通道可选，切换会重新预检，提交带 channel */
-  await page.locator('tbody tr.ant-table-row').first().locator('button:has-text("重新同步")').click();
-  await visibleModal().locator('text=信号表').first().waitFor();
-  check('预检默认走源库信号表', (await visibleModal().locator('text=orders.debezium_signal').count()) > 0);
-  check(
-    '两条通道都能用时给出单选',
-    (await visibleModal().locator('.ant-radio-wrapper:has-text("源库信号表")').count()) === 1 &&
-      (await visibleModal().locator('.ant-radio-wrapper:has-text("Kafka 信号 topic")').count()) === 1,
-  );
-  await visibleModal().locator('.ant-radio-wrapper:has-text("Kafka 信号 topic")').click();
-  await page.waitForTimeout(500);
-  check('切到 Kafka 通道后展示落点', (await visibleModal().locator('text=dbz-signal').count()) > 0);
-  // 通道清单与本次选择无关：切过去之后两个选项得还在，否则切错了就退不回来。
-  // 注意别用 `.ant-radio-wrapper` 总数判断 —— 下面「快照类型」也是单选组
-  check(
-    '切到 Kafka 后仍能切回源库信号表',
-    (await visibleModal().locator('.ant-radio-wrapper:has-text("源库信号表")').count()) === 1 &&
-      (await visibleModal().locator('.ant-radio-wrapper-checked:has-text("Kafka 信号 topic")').count()) === 1,
-  );
-  await page.screenshot({ path: `${SHOTS}/04c-snapshot.png` });
-  await visibleModal().locator('.ant-modal-footer .ant-btn-primary').click();
-  await page.waitForTimeout(600);
-  const snapshotCall = posted.find(
-    (item) => item.method === 'POST' && item.path === '/dbz/source-connector/snapshot',
-  );
-  check(
-    '触发快照提交所选通道与表',
-    snapshotCall?.body?.channel === 'kafka' && snapshotCall?.body?.id === '201',
-    JSON.stringify(snapshotCall?.body),
-  );
-  // 提交成功后弹窗自己收起，等退出动画跑完再点下一行
-  await waitNoVisibleModal();
-  await page.waitForTimeout(400);
-
-  /* 4d. 预检失败：说清原因，并能原地重试（不用关掉弹窗重开） */
-  failNextPreview = true;
-  await page
-    .locator('tbody tr.ant-table-row')
-    .nth(1)
-    .locator('button:has-text("重新同步")')
-    .click();
-  await visibleModal().locator('text=预检失败').waitFor();
-  check(
-    '预检失败显示原因',
-    (await visibleModal().locator('text=Connection refused').count()) > 0,
-  );
-  check('预检失败给重试按钮', (await visibleModal().locator('button:has-text("重新预检")').count()) === 1);
-  check(
-    '预检失败时不能触发快照',
-    await visibleModal().locator('.ant-modal-footer .ant-btn-primary').isDisabled(),
-  );
-  await visibleModal().locator('button:has-text("重新预检")').click();
-  await visibleModal().locator('text=信号表').first().waitFor();
-  check('重试后预检成功', (await visibleModal().locator('text=orders.debezium_signal').count()) > 0);
-  check(
-    '重试成功后可以触发快照',
-    await visibleModal().locator('.ant-modal-footer .ant-btn-primary').isEnabled(),
-  );
-  await page.screenshot({ path: `${SHOTS}/04d-snapshot-retry.png` });
-  await visibleModal().last().locator('.ant-modal-footer .ant-btn').first().click();
-  await waitNoVisibleModal();
-  await page.waitForTimeout(400);
-  await page.screenshot({ path: `${SHOTS}/04e-snapshot-cancel.png` });
-
-  /* 5. 下游连接器 */
-  await page.click('.ant-menu-item:has-text("下游连接器")');
-  await page.waitForSelector('text=订单同步到数仓');
-  check('下游列表渲染', (await page.locator('tbody tr.ant-table-row').count()) === 1);
-  await hoverStatus('订单同步到数仓', 'connection.url is required', '下游连接器');
-  await layoutCheck(page, '下游');
-  await page.screenshot({ path: `${SHOTS}/05-sink.png`, fullPage: true });
-
-  /* 5b. 下游配置也走图形化：sink 的参数键与上游完全不同，分组要跟着换 */
-  await page.click('button:has-text("新增下游连接器")');
-  await page.waitForSelector('.ant-modal-wrap', { state: 'visible' });
-  await page.waitForTimeout(450);
-  check('下游默认图形化', (await visibleModal().locator('.ant-segmented-item-selected:has-text("图形化")').count()) === 1);
-  check('下游图形化按组列出配置项', (await visibleModal().locator('.dbz-config-group').count()) === 5);
-  check(
-    '下游不出现上游的源库键',
-    (await visibleModal().locator('label[for="database.include.list"]').count()) === 0 &&
-      (await visibleModal().locator('label[for="signal.enabled.channels"]').count()) === 0,
-  );
-  check('下游字段是 sink 的键', (await visibleModal().locator('label[for="connection.url"]').count()) === 1);
-
-  await visibleModal().getByRole('button', { name: '套用 JDBC Sink 模板', exact: true }).click();
-  await page.waitForTimeout(200);
-  await visibleModal().locator('.ant-segmented-item:has-text("JSON")').click();
-  await visibleModal().locator('.dbz-json-editor').waitFor();
-  const sinkJson = JSON.parse(await visibleModal().locator('.dbz-json-editor').inputValue());
-  check(
-    '下游模板写入 JDBC sink 与追加语义',
-    sinkJson['connector.class'] === 'io.debezium.connector.jdbc.JdbcSinkConnector' &&
-      sinkJson['insert.mode'] === 'insert',
-    JSON.stringify({ class: sinkJson['connector.class'], mode: sinkJson['insert.mode'] }),
-  );
-
-  // 两个下游模板互为切换：换成 upsert 要真的改过来，并提醒补主键字段
-  await visibleModal().locator('.ant-segmented-item:has-text("图形化")').click();
-  await page.waitForTimeout(150);
-  await visibleModal().getByRole('button', { name: '套用 JDBC Sink 模板（upsert）' }).click();
-  await page.waitForTimeout(200);
-  check(
-    '切到 upsert 后提醒补主键字段',
-    (await visibleModal().locator('text=但没填 primary.key.fields').count()) > 0,
-  );
-  await page.screenshot({ path: `${SHOTS}/05b-sink-editor.png` });
-  await visibleModal().locator('.ant-segmented-item:has-text("JSON")').click();
-  await visibleModal().locator('.dbz-json-editor').waitFor();
-  const sinkUpsert = JSON.parse(await visibleModal().locator('.dbz-json-editor').inputValue());
-  check(
-    '切到 upsert 模板后写入模式改过来',
-    sinkUpsert['insert.mode'] === 'upsert' && sinkUpsert['primary.key.mode'] === 'record_value',
-    JSON.stringify({ mode: sinkUpsert['insert.mode'], keyMode: sinkUpsert['primary.key.mode'] }),
-  );
-  await cancelFormModal({ expectDirty: true });
-
-  /* 6. 远端连接器：列表、未纳管连接器、任务展开与重启 */
-  await page.goto(`${base}/remote-connector?kafkaConnectId=101`, { waitUntil: 'networkidle' });
-  await page.waitForSelector('text=mysql-orders-source');
-  check('远端连接器列表渲染', (await page.locator('tbody tr.ant-table-row').count()) === 2);
-  check('未纳管连接器可见', (await page.locator('text=manual-test-connector').count()) > 0);
-  // 这一页的详情来自集群的 expand=status 响应，不需要额外请求
-  const remoteDetail = await hoverStatus(
-    'manual-test-connector',
-    'Failed to read from the WAL',
-    '远端连接器',
-    '06b-remote-status.png',
-  );
-  check(
-    '远端详情带 worker 与类名',
-    remoteDetail.includes('10.0.0.12:8083') && remoteDetail.includes('PostgresConnector'),
-    remoteDetail.slice(0, 160),
-  );
-  await page.screenshot({ path: `${SHOTS}/06-remote.png`, fullPage: true });
-
-  await page.locator('tbody tr.ant-table-row').first().locator('.ant-table-row-expand-icon').click();
-  await page.waitForSelector('text=10.0.0.11:8083');
-  check('任务行展开', (await page.locator('text=10.0.0.11:8083').count()) > 0);
-  await page.screenshot({ path: `${SHOTS}/07-tasks.png`, fullPage: true });
-
-  await page.locator('.ant-table-expanded-row .ant-btn-link').first().click();
-  await page.waitForSelector('.ant-popconfirm');
-  await page.click('.ant-popconfirm .ant-btn-primary');
-  await page.waitForTimeout(600);
-  const taskRestart = posted.find((item) => item.path === '/dbz/kafka-connector/task/restart');
-  check('重启任务发出 POST', Boolean(taskRestart), JSON.stringify(taskRestart?.body));
-
-  /* 6b. 删除：只发 DELETE，定位参数走查询串 */
-  await page.locator('tbody tr.ant-table-row').first().locator('button:has-text("删除")').click();
-  // 上一步的重启确认框还留在 DOM 里（隐藏），这里按标题挑出删除那个
-  const removePopconfirm = page.locator('.ant-popconfirm', { hasText: '从集群上删除' });
-  await removePopconfirm.waitFor();
-  await removePopconfirm.locator('.ant-btn-primary').click();
-  await page.waitForTimeout(600);
-  const removeCall = posted.find(
-    (item) => item.method === 'DELETE' && item.path === '/dbz/kafka-connector',
-  );
-  const removeQuery = new URLSearchParams(removeCall?.query ?? '');
-  check(
-    '删除远端连接器发出 DELETE 且带集群与连接器名',
-    removeQuery.get('kafkaConnectId') === '101' &&
-      removeQuery.get('connectorName') === 'mysql-orders-source',
-    String(removeCall?.query),
-  );
-
-  /* 6c. 停止：保留配置与位点，只发 PUT，连接器名走查询串 */
-  await page.locator('tbody tr.ant-table-row').first().locator('button:has-text("停止")').click();
-  const stopPopconfirm = page.locator('.ant-popconfirm', { hasText: '停止连接器' });
-  await stopPopconfirm.waitFor();
-  await stopPopconfirm.locator('.ant-btn-primary').click();
-  await page.waitForTimeout(600);
-  const stopCall = posted.find(
-    (item) => item.method === 'PUT' && item.path === '/dbz/kafka-connector/stop',
-  );
-  const stopQuery = new URLSearchParams(stopCall?.query ?? '');
-  check(
-    '停止连接器发出 PUT 且带集群与连接器名',
-    stopQuery.get('kafkaConnectId') === '101' &&
-      stopQuery.get('connectorName') === 'mysql-orders-source',
-    String(stopCall?.query),
-  );
-
-  /* 6d. 重置位点：先停再清，resume 由用户勾选 */
-  await page.locator('tbody tr.ant-table-row').first().locator('button:has-text("重置位点")').click();
-  await page.waitForSelector('.ant-modal:has-text("位点删了就没有了")');
-  await page.locator('.ant-modal .ant-checkbox-wrapper').click();
-  await page.waitForTimeout(150);
-  await page.screenshot({ path: `${SHOTS}/07b-reset-offsets.png` });
-  await page.click('.ant-modal-footer .ant-btn-primary');
-  await page.waitForTimeout(600);
-  const resetCall = posted.find(
-    (item) => item.method === 'DELETE' && item.path === '/dbz/kafka-connector/offsets',
-  );
-  const resetQuery = new URLSearchParams(resetCall?.query ?? '');
-  check(
-    '重置位点发出 DELETE 且 resume=true',
-    resetQuery.get('kafkaConnectId') === '101' &&
-      resetQuery.get('connectorName') === 'mysql-orders-source' &&
-      resetQuery.get('resume') === 'true',
-    String(resetCall?.query),
-  );
-
-  /* 7. 插件 */
-  await page.click('.ant-tabs-tab:has-text("插件")');
-  await page.waitForSelector('text=2.5.0.Final');
-  check('插件列表渲染', (await page.locator('text=2.5.0.Final').count()) === 2);
-  await page.screenshot({ path: `${SHOTS}/08-plugins.png`, fullPage: true });
-
-  /* 8. 未知路由回落总览 */
+  /* 1d. 旧 CRUD 页面已删除：未知路由也回落到控制面，不再 404 */
   await page.goto(`${base}/not-exist`, { waitUntil: 'networkidle' });
-  // Navigate 在渲染时同步发生，但给浏览器一次落地机会再断言 URL
-  await page.waitForFunction(() => window.location.pathname === '/', undefined, { timeout: 3000 }).catch(() => null);
-  check('未知路由回落总览', page.url().endsWith('/'), page.url());
+  await page.waitForSelector('.dbz-graph-node');
+  check('未知路由回落到控制面', page.url().includes('/control-plane'), page.url());
+
+  /* 1e. 登录：未登录跳转、SM3 登录、令牌失效回登录页、退出登录 */
+  await page.evaluate(() => {
+    localStorage.removeItem('dbz.auth.session');
+    // 标记已进入认证用例，后续刷新不再自动注入夹具会话
+    sessionStorage.setItem('dbz.smoke.auth-tested', '1');
+  });
+  await page.goto(`${base}/control-plane`, { waitUntil: 'networkidle' });
+  await page.waitForURL('**/login**', { timeout: 5000 });
+  check(
+    '未登录访问业务页面跳登录页',
+    page.url().includes('/login') &&
+      (await page.locator('[data-login-page] .dbz-brand-logo').count()) === 1,
+    page.url(),
+  );
+
+  // 登录失败：提示可读原因，且不写入会话
+  failNextLogin = 'wrong';
+  await page.locator('[data-login-account]').fill('smoke-user');
+  await page.locator('[data-login-password]').fill('wrong-password');
+  await page.locator('[data-login-submit]').click();
+  await page.waitForSelector('[data-login-error]', { timeout: 5000 });
+  const loginError = await page.locator('[data-login-error]').innerText();
+  check('登录失败提示账号或口令不正确', loginError.includes('账号或口令不正确'), loginError);
+  check(
+    '登录失败不写入会话',
+    (await page.evaluate(() => localStorage.getItem('dbz.auth.session'))) === null,
+  );
+  const wrongLoginRequest = loginRequests.at(-1);
+  check(
+    '登录请求提交 64 位 SM3 摘要，不含明文口令',
+    typeof wrongLoginRequest?.body?.loginPswd === 'string' &&
+      /^[0-9a-f]{64}$/.test(wrongLoginRequest.body.loginPswd) &&
+      !('password' in (wrongLoginRequest?.body ?? {})),
+    JSON.stringify(wrongLoginRequest?.body),
+  );
+
+  // 登录成功：保存令牌并回到业务页
+  await page.locator('[data-login-password]').fill('right-password');
+  await page.locator('[data-login-submit]').click();
+  await page.waitForURL('**/control-plane', { timeout: 5000 });
+  await page.waitForSelector('.dbz-graph-node', { timeout: 5000 });
+  const savedSession = await page.evaluate(() =>
+    JSON.parse(localStorage.getItem('dbz.auth.session') ?? 'null'),
+  );
+  check(
+    '登录成功保存令牌并回到业务页',
+    savedSession?.token === 'smoke-login-token' &&
+      savedSession?.userId === '7' &&
+      page.url().includes('/control-plane'),
+    JSON.stringify(savedSession),
+  );
+  check(
+    '后续业务请求携带登录令牌与真实用户 ID',
+    getRequests.some(
+      (item) =>
+        item.path.startsWith('/dbz/') &&
+        item.headers.authorization === 'Bearer smoke-login-token' &&
+        item.headers['x-user-id'] === '7',
+    ),
+  );
+
+  // 令牌失效（HTTP 401）：清会话回登录页
+  failNext401 = true;
+  ignore401Console = true;
+  await page.goto(`${base}/control-plane`, { waitUntil: 'domcontentloaded' });
+  await page.waitForURL('**/login**', { timeout: 5000 });
+  check(
+    '令牌失效返回 401 时清掉登录态并回登录页',
+    page.url().includes('/login') &&
+      (await page.evaluate(() => localStorage.getItem('dbz.auth.session'))) === null,
+    page.url(),
+  );
+  ignore401Console = false;
+
+  // 重新登录后走退出登录
+  await page.locator('[data-login-account]').fill('smoke-user');
+  await page.locator('[data-login-password]').fill('right-password');
+  await page.locator('[data-login-submit]').click();
+  await page.waitForURL('**/control-plane', { timeout: 5000 });
+  await page.locator('[data-header-user]').click();
+  await page.locator('.ant-dropdown-menu-item:has-text("退出登录")').click();
+  await page.waitForURL('**/login**', { timeout: 5000 });
+  check(
+    '退出登录清会话并回登录页',
+    page.url().includes('/login') &&
+      (await page.evaluate(() => localStorage.getItem('dbz.auth.session'))) === null,
+    page.url(),
+  );
 } finally {
   await browser.close();
   await server.close();

@@ -88,6 +88,74 @@ body {
   color: rgba(0, 0, 0, 0.45);
 }
 
+.dbz-header-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+.dbz-header-user {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  color: rgba(0, 0, 0, 0.65);
+  transition: color 0.2s;
+}
+
+.dbz-header-user:hover {
+  color: #1677ff;
+}
+
+/* 登录页：沿用 dbz 的白底卡片与蓝色主色 */
+.dbz-login {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 24px;
+  background: #f4f6fa;
+}
+
+.dbz-login-card {
+  width: 100%;
+  max-width: 400px;
+  padding: 22px 24px 20px;
+  background: #fff;
+  border: 1px solid #eef0f4;
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(15, 23, 42, 0.06);
+}
+
+.dbz-login-brand {
+  height: auto;
+  padding: 0 0 18px;
+  margin-bottom: 18px;
+  border-bottom: 1px solid #eef0f4;
+}
+
+.dbz-login-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-top: 18px;
+}
+
+.dbz-login-form label {
+  margin-top: 6px;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.65);
+}
+
+.dbz-login-foot {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px dashed #eef0f4;
+  font-size: 12px;
+  line-height: 1.6;
+  color: rgba(0, 0, 0, 0.45);
+}
+
 .dbz-content {
   padding: 20px 24px 32px;
   overflow-y: auto;
@@ -123,6 +191,16 @@ body {
   overflow: auto;
   white-space: pre-wrap;
   word-break: break-word;
+}
+
+/* 失败详情 hint：点开后显示全文与复制按钮 */
+.dbz-failure-detail-popover {
+  max-width: 560px;
+}
+
+.dbz-failure-detail-popover .dbz-json-view {
+  margin-top: 8px;
+  max-height: 320px;
 }
 
 /* 待投报文的编辑审计：编辑人 + 编辑时间 */
@@ -462,7 +540,7 @@ body {
     padding: 0 12px;
   }
 
-  .dbz-header > .ant-typography {
+  .dbz-header-note {
     display: none;
   }
 
@@ -628,6 +706,92 @@ body {
   min-width: 0;
 }
 
+/* 左侧组件面板：点击式新增，不做拖拽；禁用项只说明创建路径 */
+.dbz-component-panel {
+  flex: 0 0 172px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 10px;
+  overflow-y: auto;
+  background: #fbfcfd;
+  border-right: 1px solid #eef0f4;
+}
+
+.dbz-component-panel-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.65);
+}
+
+.dbz-component-panel-tip {
+  margin: 0 0 2px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.dbz-component-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px;
+  text-align: left;
+  background: #fff;
+  border: 1px solid #eef0f4;
+  border-radius: 8px;
+  cursor: pointer;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+
+.dbz-component-item:hover {
+  border-color: #1677ff;
+  box-shadow: 0 2px 8px rgba(22, 119, 255, 0.12);
+}
+
+.dbz-component-item.is-disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.dbz-component-item.is-disabled:hover {
+  border-color: #eef0f4;
+  box-shadow: none;
+}
+
+.dbz-component-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 24px;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  color: #fff;
+  font-size: 13px;
+}
+
+.dbz-component-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.dbz-component-name {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.75);
+}
+
+.dbz-component-desc {
+  font-size: 11px;
+  line-height: 1.4;
+  color: rgba(0, 0, 0, 0.45);
+}
+
 .dbz-graph-viewport {
   position: absolute;
   inset: 0;
@@ -737,12 +901,13 @@ body {
   filter: grayscale(0.4);
 }
 
-/* 四类卡片统一骨架：类型标识 → 名称 → 关键字段 → 状态 → 操作行 */
-.dbz-graph-node-type {
+/* 四类卡片统一骨架：开关 + 类型标识 → 名称 → 关键字段 → 状态 → 操作行 */
+.dbz-graph-node-head {
   display: flex;
   align-items: center;
   gap: 7px;
   min-width: 0;
+  min-height: 22px;
 }
 
 .dbz-graph-node-icon {
@@ -762,18 +927,19 @@ body {
   min-width: 0;
   overflow: hidden;
   font-size: 11px;
-  font-weight: 600;
+  font-weight: 500;
   line-height: 1.3;
   white-space: nowrap;
   text-overflow: ellipsis;
 }
 
+/* 信息层级：名称最重，副标题/字段次之，状态与操作再次 */
 .dbz-graph-node-name {
   min-width: 0;
   overflow: hidden;
-  font-size: 13.5px;
+  font-size: 14px;
   font-weight: 600;
-  line-height: 1.3;
+  line-height: 1.35;
   white-space: nowrap;
   text-overflow: ellipsis;
   color: rgba(0, 0, 0, 0.88);
@@ -838,24 +1004,45 @@ body {
   color: rgba(0, 0, 0, 0.45);
 }
 
-/* 卡片底部操作：启用开关 + 图标按钮，整行不换行、贴底对齐 */
+/* 卡片操作行：编辑最左 → 弹性留白 → 右侧动作 → 分隔线 → 删除最右 */
 .dbz-graph-node-actions {
   display: flex;
   align-items: center;
   flex-wrap: nowrap;
   gap: 2px;
   margin-top: auto;
-  padding-top: 4px;
+  padding-top: 6px;
   border-top: 1px solid #f0f2f7;
 }
 
+/* 左上角启用开关：不参与卡片拖动，也不和操作行混在一起 */
 .dbz-graph-switch {
   display: inline-flex;
   align-items: center;
   flex-shrink: 0;
-  padding-right: 3px;
-  margin-right: 2px;
-  border-right: 1px solid #f0f2f7;
+}
+
+.dbz-graph-actions-spacer {
+  flex: 1;
+  min-width: 4px;
+}
+
+/* 删除与其它动作之间留明显间距 + 分隔线，降低误点 */
+.dbz-graph-actions-divider {
+  flex: none;
+  width: 1px;
+  height: 16px;
+  margin: 0 10px;
+  background: #f0f2f7;
+}
+
+/* 删除按钮单独着色，悬停更醒目，与其它动作区分 */
+.dbz-graph-action .ant-btn-dangerous {
+  color: #cf1322;
+}
+
+.dbz-graph-action .ant-btn-dangerous:hover {
+  color: #ff4d4f;
 }
 
 .dbz-graph-action {
@@ -1122,9 +1309,124 @@ body {
     min-height: 720px;
   }
 
+  .dbz-component-panel {
+    flex: none;
+    flex-direction: row;
+    flex-wrap: wrap;
+    border-right: none;
+    border-bottom: 1px solid #eef0f4;
+  }
+
+  .dbz-component-panel-title,
+  .dbz-component-panel-tip {
+    flex-basis: 100%;
+  }
+
+  .dbz-component-item {
+    flex: 1 1 150px;
+  }
+
   .dbz-graph-inspector {
     width: 100%;
     border-left: none;
     border-top: 1px solid #eef0f4;
   }
+}
+
+/* ---------- 连线折点：选中后可拖，端点固定 ---------- */
+.dbz-graph-bend-handle {
+  pointer-events: all;
+  cursor: grab;
+}
+
+.dbz-graph-bend-handle:active {
+  cursor: grabbing;
+}
+
+.dbz-graph-bend-hit {
+  fill: transparent;
+  pointer-events: all;
+}
+
+.dbz-graph-bend-shape {
+  fill: #1677ff;
+  opacity: 0.55;
+}
+
+.dbz-graph-bend-handle:hover .dbz-graph-bend-shape {
+  opacity: 1;
+}
+
+/* ---------- 画布搜索：只高亮与定位，不隐藏其它节点 ---------- */
+.dbz-canvas-search {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.dbz-canvas-search .ant-input-affix-wrapper {
+  width: 240px;
+}
+
+.dbz-canvas-search-count {
+  min-width: 38px;
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+  font-variant-numeric: tabular-nums;
+}
+
+.dbz-graph-node.is-hit {
+  outline: 2px solid #fadb14;
+  outline-offset: 2px;
+}
+
+.dbz-graph-node.is-active-hit {
+  outline: 3px solid #faad14;
+  outline-offset: 3px;
+  animation: dbz-hit-pulse 1.2s ease-in-out 2;
+}
+
+@keyframes dbz-hit-pulse {
+  0%,
+  100% {
+    box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+  }
+  50% {
+    box-shadow: 0 0 0 6px rgba(250, 173, 20, 0.18);
+  }
+}
+
+/* ---------- 一致性检测结果 ---------- */
+.dbz-consistency-diffs p {
+  margin: 0;
+}
+
+.dbz-consistency-diffs ul {
+  margin: 8px 0 0;
+  padding-left: 18px;
+}
+
+.dbz-consistency-diffs li {
+  margin-bottom: 6px;
+  word-break: break-all;
+}
+
+/* ---------- 删除口令弹窗 ---------- */
+.dbz-delete-impact {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.dbz-delete-impact p {
+  margin: 0;
+}
+
+.dbz-delete-password {
+  display: flex;
+  flex-direction: column;
+}
+
+.dbz-delete-error .ant-alert-message {
+  word-break: break-all;
 }

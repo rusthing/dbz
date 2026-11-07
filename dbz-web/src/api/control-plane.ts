@@ -8,8 +8,11 @@
 import { apiDelete, apiGet, apiGetList, apiPost, apiPut } from './client';
 import type {
   ControlPlaneNodeType,
+  DbzControlPlaneEdgeBendUpsertInput,
+  DbzControlPlaneEdgeBendVo,
   DbzControlPlaneLayoutUpsertInput,
   DbzControlPlaneLayoutVo,
+  DbzControlPlaneNodeDeleteInput,
   Id,
 } from './types';
 
@@ -55,7 +58,29 @@ export const controlPlaneApi = {
   /** 保存一个节点的位置（拖动结束后调用） */
   saveLayout: (input: DbzControlPlaneLayoutUpsertInput): Promise<void> => apiPut(BASE, input),
 
-  /** 节点被删除后清掉它的位置 */
+  /** 节点被删除后清掉它的位置（统一删除接口已顺带清理，保留给手动整理场景） */
   deleteLayout: (nodeType: ControlPlaneNodeType, nodeId: Id): Promise<void> =>
     apiDelete(BASE, { nodeType, nodeId }),
+
+  /** 读取全部连线折点；没有拖过的连线不返回 */
+  listEdgeBends: (): Promise<DbzControlPlaneEdgeBendVo[]> =>
+    apiGetList('/dbz/control-plane/edges'),
+
+  /** 保存一条连线的折点（拖动结束后调用） */
+  saveEdgeBend: (input: DbzControlPlaneEdgeBendUpsertInput): Promise<void> =>
+    apiPut('/dbz/control-plane/edges', input),
+
+  /** 恢复一条连线的默认居中走线 */
+  resetEdgeBend: (edgeId: string): Promise<void> =>
+    apiDelete('/dbz/control-plane/edges', { edgeId }),
+
+  /**
+   * 校验当前登录用户口令后删除节点
+   *
+   * 前端先对明文做 SM3，后端再带 `Authorization` 转发 adm-rs 校验；通过后才删除
+   * 并写审计。失败提示前缀区分「口令错误」「口令校验过于频繁」「登录状态已失效」
+   * 与「认证服务不可用」。
+   */
+  deleteNode: (input: DbzControlPlaneNodeDeleteInput): Promise<void> =>
+    apiPost('/dbz/control-plane/node-delete', input),
 };

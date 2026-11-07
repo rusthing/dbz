@@ -47,6 +47,13 @@ interface SnapshotModalProps {
   /** 目标上游连接器；关闭时为 null */
   record?: DbzSourceConnectorVo | null;
   onClose: () => void;
+  /**
+   * 固定信号通道（控制面「重新同步」固定走源库信号表，复用连接器里的数据库连接）；
+   * 不传时保持原有「通道可切换」的快照弹窗行为。
+   */
+  fixedChannel?: SignalChannel;
+  /** 固定快照类型（控制面「重新同步」固定 incremental，不允许改成 blocking） */
+  fixedSnapshotType?: SnapshotType;
 }
 
 /** 通道的展示信息 */
@@ -55,14 +62,22 @@ const CHANNEL_LABEL: Record<string, { label: string; desc: string }> = {
   kafka: { label: 'Kafka 信号 topic', desc: '往信号 topic 投一条消息，不碰业务库' },
 };
 
-export default function SnapshotModal({ open, record, onClose }: SnapshotModalProps) {
+export default function SnapshotModal({
+  open,
+  record,
+  onClose,
+  fixedChannel,
+  fixedSnapshotType,
+}: SnapshotModalProps) {
   const { message } = AntdApp.useApp();
   const [preview, setPreview] = useState<DbzSourceConnectorSnapshotVo | null>(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string[]>([]);
-  const [snapshotType, setSnapshotType] = useState<SnapshotType>('incremental');
-  const [channel, setChannel] = useState<SignalChannel | undefined>(undefined);
+  const [snapshotType, setSnapshotType] = useState<SnapshotType>(
+    fixedSnapshotType ?? 'incremental',
+  );
+  const [channel, setChannel] = useState<SignalChannel | undefined>(fixedChannel);
   const [submitting, setSubmitting] = useState(false);
 
   /** 拉一次预检；表清单默认全选，因为最常见的诉求就是「整库再同步一次」 */
@@ -76,7 +91,10 @@ export default function SnapshotModal({ open, record, onClose }: SnapshotModalPr
     setSelected([]);
     setChannel(nextChannel);
     try {
-      const vo = await sourceConnectorApi.snapshotPreview(record.id, nextChannel);
+      const vo = await sourceConnectorApi.snapshotPreview(
+        record.id,
+        nextChannel ?? fixedChannel,
+      );
       setPreview(vo);
       setSelected(vo.dataCollections);
       setChannel(vo.channel as SignalChannel);
@@ -98,10 +116,11 @@ export default function SnapshotModal({ open, record, onClose }: SnapshotModalPr
       setPreview(null);
       setLoadError(null);
       setSelected([]);
-      setChannel(undefined);
+      setChannel(fixedChannel);
       return;
     }
-    void loadPreview(undefined);
+    setSnapshotType(fixedSnapshotType ?? 'incremental');
+    void loadPreview(fixedChannel);
   };
 
   const handleSubmit = async () => {
@@ -123,8 +142,8 @@ export default function SnapshotModal({ open, record, onClose }: SnapshotModalPr
       });
       message.success(
         channel === 'kafka'
-          ? '快照信号已投递到 Kafka 信号 topic，Debezium 读到后开始快照'
-          : '快照信号已写入源库信号表，Debezium 读到后开始快照',
+          ? '快照信号已投递到 Kafka 信号 topic；是否真的开始快照以 Kafka Connect 日志为准'
+          : '快照信号已写入源库信号表；是否真的开始快照以 Kafka Connect 日志为准',
       );
       onClose();
     } catch (reason) {
@@ -134,8 +153,9 @@ export default function SnapshotModal({ open, record, onClose }: SnapshotModalPr
     }
   };
 
-  /** 两条通道都能用时才给选项 */
-  const switchable = (preview?.channels.length ?? 0) > 1;
+  /** 两条通道都能用、且没有固定通道时才给选项 */
+  const switchable = !fixedChannel && (preview?.channels.length ?? 0) > 1;
+  const isResync = fixedChannel === 'source' && fixedSnapshotType === 'incremental';
   const isKafka = preview?.channel === 'kafka';
 
   return (
@@ -215,6 +235,15 @@ export default function SnapshotModal({ open, record, onClose }: SnapshotModalPr
             description="Debezium 读到信号后对选中的表再跑一次快照，数据以 op=r 追加到原 topic。下游必须按主键幂等（覆盖写）；追加型消费者会看到重复数据。"
           />
 
+          {isResync && (
+            <Alert
+              type="warning"
+              showIcon
+              message="增量快照：只重读选中的表，不会重置位点"
+              description="复用该连接器配置里的数据库连接，向源库信号表写入 execute-snapshot（incremental）；位点不动、连接器不停止。执行成功后能确认信号已写入，是否真的开始快照只能以 Kafka Connect 日志为准。"
+            />
+          )}
+
           <Descriptions
             size="small"
             column={2}
@@ -268,7 +297,8 @@ export default function SnapshotModal({ open, record, onClose }: SnapshotModalPr
             </Typography.Text>
           </div>
 
-          <div>
+          {/* 控制面的「重新同步」固定增量快照，不再让用户切换到 blocking */}
+          <div hidden={Boolean(fixedSnapshotType)}>
             <Typography.Text strong>快照类型</Typography.Text>
             <Radio.Group
               style={{ display: 'block', marginTop: 8 }}

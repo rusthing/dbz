@@ -1,6 +1,9 @@
+mod dbz_control_plane_delete_svc;
+mod dbz_control_plane_edge_layout_svc;
 mod dbz_control_plane_layout_svc;
 mod dbz_control_plane_status_svc;
 mod dbz_dead_letter_svc;
+mod dbz_delete_verify_svc;
 mod dbz_kafka_broker_svc;
 mod dbz_kafka_connect_svc;
 mod dbz_sink_connector_svc;
@@ -8,9 +11,12 @@ mod dbz_source_connector_snapshot_svc;
 mod dbz_source_connector_svc;
 mod kafka_connector_svc;
 
+pub use dbz_control_plane_delete_svc::*;
+pub use dbz_control_plane_edge_layout_svc::*;
 pub use dbz_control_plane_layout_svc::*;
 pub use dbz_control_plane_status_svc::*;
 pub use dbz_dead_letter_svc::*;
+pub use dbz_delete_verify_svc::*;
 pub use dbz_kafka_broker_svc::*;
 pub use dbz_kafka_connect_svc::*;
 pub use dbz_sink_connector_svc::*;

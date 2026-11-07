@@ -15,5 +15,7 @@ use robotech::macros::router;
     ("/dbz/dead-letter/retry", post(retry)),
     ("/dbz/dead-letter/edit-payload", post(edit_payload)),
     ("/dbz/dead-letter/discard", post(discard)),
+    ("/dbz/dead-letter/mark-handled", post(mark_handled)),
+    ("/dbz/dead-letter/unmark-handled", post(unmark_handled)),
 ])]
 struct DbzDeadLetterRouter;

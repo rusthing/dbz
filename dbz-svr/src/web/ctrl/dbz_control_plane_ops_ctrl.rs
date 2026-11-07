@@ -1,0 +1,104 @@
+//! # 控制面操作控制器
+//!
+//! - `GET    /dbz/control-plane/edges`：读取全部连线折点
+//! - `PUT    /dbz/control-plane/edges`：保存一条连线的折点
+//! - `DELETE /dbz/control-plane/edges`：恢复某条连线的默认走线
+//! - `POST   /dbz/control-plane/node-delete`：校验当前用户口令后删除节点
+//!
+//! 删除接口必须带 `Authorization`（口令校验身份）与 `X-User-Id`（审计操作人）；
+//! 口令摘要放在请求体里，服务端不落库、只转发给 adm-rs。
+
+use crate::dto::{
+    DbzControlPlaneEdgeBendDeleteDto, DbzControlPlaneEdgeBendUpsertDto,
+    DbzControlPlaneNodeDeleteDto,
+};
+use crate::svc::{DbzControlPlaneDeleteSvc, DbzControlPlaneEdgeLayoutSvc};
+use crate::vo::DbzControlPlaneEdgeBendVo;
+use axum::debug_handler;
+use axum::extract::Query;
+use axum::http::HeaderMap;
+use axum::response::Json;
+use robotech::api::Ro;
+use robotech::macros::log_call;
+use robotech::web::ctrl_utils::get_current_user_id;
+use robotech::web::CtrlError;
+
+/// 转发给 adm-rs 的认证头（网关注入的原始值）
+fn authorization_of(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|value| value.to_str().ok())
+}
+
+/// # 读取全部连线折点
+#[utoipa::path(
+    get,
+    path = "/dbz/control-plane/edges",
+    responses((status = OK, body = Ro<Vec<DbzControlPlaneEdgeBendVo>>))
+)]
+#[debug_handler]
+#[log_call]
+pub async fn list_edges() -> Result<Json<Ro<Vec<DbzControlPlaneEdgeBendVo>>>, CtrlError> {
+    let ro = DbzControlPlaneEdgeLayoutSvc::list().await?;
+    Ok(Json(ro))
+}
+
+/// # 保存一条连线的折点
+#[utoipa::path(
+    put,
+    path = "/dbz/control-plane/edges",
+    request_body = DbzControlPlaneEdgeBendUpsertDto,
+    responses((status = OK, description = "已保存"))
+)]
+#[debug_handler]
+#[log_call]
+pub async fn upsert_edge(
+    headers: HeaderMap,
+    Json(dto): Json<DbzControlPlaneEdgeBendUpsertDto>,
+) -> Result<Json<Ro<()>>, CtrlError> {
+    let ro = DbzControlPlaneEdgeLayoutSvc::upsert(dto, get_current_user_id(&headers)?).await?;
+    Ok(Json(ro))
+}
+
+/// # 删除一条连线的折点
+#[utoipa::path(
+    delete,
+    path = "/dbz/control-plane/edges",
+    params(DbzControlPlaneEdgeBendDeleteDto),
+    responses((status = OK, description = "已恢复默认走线"))
+)]
+#[debug_handler]
+#[log_call]
+pub async fn remove_edge(
+    headers: HeaderMap,
+    Query(dto): Query<DbzControlPlaneEdgeBendDeleteDto>,
+) -> Result<Json<Ro<()>>, CtrlError> {
+    let _ = get_current_user_id(&headers)?;
+    let ro = DbzControlPlaneEdgeLayoutSvc::delete(dto).await?;
+    Ok(Json(ro))
+}
+
+/// # 校验口令后删除节点
+///
+/// 校验失败按提示前缀区分「口令错误」「口令校验过于频繁」「登录状态已失效」
+/// 与「认证服务不可用」；除口令通过外都不允许删除，也不会留下半删状态。
+#[utoipa::path(
+    post,
+    path = "/dbz/control-plane/node-delete",
+    request_body = DbzControlPlaneNodeDeleteDto,
+    responses((status = OK, description = "已删除"))
+)]
+#[debug_handler]
+#[log_call]
+pub async fn delete_node(
+    headers: HeaderMap,
+    Json(dto): Json<DbzControlPlaneNodeDeleteDto>,
+) -> Result<Json<Ro<()>>, CtrlError> {
+    let ro = DbzControlPlaneDeleteSvc::delete_node(
+        dto,
+        get_current_user_id(&headers)?,
+        authorization_of(&headers),
+    )
+    .await?;
+    Ok(Json(ro))
+}

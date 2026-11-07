@@ -23,6 +23,10 @@ pub struct DbzDeadLetterVo {
     pub topic: String,
     /// 记录主键
     pub record_key: String,
+    /// 原始消息所在分区；脚本未上报时为空
+    pub partition: Option<i32>,
+    /// 原始消息的 offset；脚本未上报时为空
+    pub offset: Option<i64>,
     /// 原始报文
     #[schema(value_type = Object)]
     pub payload: serde_json::Value,

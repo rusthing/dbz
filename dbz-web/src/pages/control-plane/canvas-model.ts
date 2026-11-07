@@ -40,6 +40,8 @@ export type CanvasNodeKind = 'broker' | 'connect' | 'source' | 'sink';
 export type CanvasNodeAction =
   | 'restart'
   | 'reset-offsets'
+  /** 上游连接器：向信号表写 execute-snapshot，重读选中表且不重置位点 */
+  | 'resync'
   | 'edit'
   | 'delete'
   | 'check'
@@ -122,6 +124,22 @@ export const NODE_TYPE_OF: Record<CanvasNodeKind, ControlPlaneNodeType> = {
 
 export function nodeKeyOf(kind: CanvasNodeKind, id: Id): string {
   return `${NODE_TYPE_OF[kind]}:${id}`;
+}
+
+/**
+ * # 画布搜索的匹配文本
+ *
+ * 只按用户能认出来的三样东西匹配：节点名称、topic（含 topics / topics.regex）、
+ * Connect 上的 connectorName。统一转小写，调用方负责 trim。
+ */
+export function nodeSearchText(node: CanvasNode): string {
+  const name = node.name.toLowerCase();
+  if (node.kind === 'source' || node.kind === 'sink') {
+    const record = node.record as ManagedConnectorRecord;
+    const topic = topicInfoOf(node.kind, record)?.value ?? '';
+    return `${name} ${record.connectorName.toLowerCase()} ${topic.toLowerCase()}`;
+  }
+  return name;
 }
 
 /** 默认网格：集群/Connect 居上，连接器在下排 */

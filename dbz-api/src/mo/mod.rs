@@ -2,8 +2,10 @@
 
 pub mod prelude;
 
+pub mod dbz_control_plane_edge_layout;
 pub mod dbz_control_plane_layout;
 pub mod dbz_dead_letter;
+pub mod dbz_delete_audit;
 pub mod dbz_dead_letter_retry;
 pub mod dbz_kafka_broker;
 pub mod dbz_kafka_connect;

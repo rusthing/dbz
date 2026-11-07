@@ -17,8 +17,11 @@
  */
 
 import {
+  DownOutlined,
   PlusOutlined,
   ReloadOutlined,
+  SearchOutlined,
+  UpOutlined,
 } from '@ant-design/icons';
 import {
   Alert,
@@ -27,6 +30,7 @@ import {
   Checkbox,
   Descriptions,
   Empty,
+  Input,
   InputNumber,
   Modal,
   Space,
@@ -39,6 +43,8 @@ import {
 } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { notifySessionExpired } from '../../auth/session';
+import { sm3 } from '../../lib/sm3';
 import {
   controlPlaneApi,
   type DbzResetConnectorOffsetsVo,
@@ -71,6 +77,7 @@ import {
   defaultPosition,
   flattenNodes,
   nodeKeyOf,
+  nodeSearchText,
   type CanvasNode,
   type CanvasNodeAction,
   type CanvasNodeKind,
@@ -92,6 +99,7 @@ import {
 import KafkaBrokerForm from '../kafka-broker/KafkaBrokerForm';
 import KafkaConnectForm from '../kafka-connect/KafkaConnectForm';
 import SinkConnectorForm from '../sink-connector/SinkConnectorForm';
+import SnapshotModal from '../source-connector/SnapshotModal';
 import SourceConnectorForm from '../source-connector/SourceConnectorForm';
 
 /** 实时状态查询的最长等待时间：单台 Connect 卡住不能拖死整个视图 */
@@ -110,6 +118,8 @@ interface ControlPlaneData {
   deadLetter: Map<string, number>;
   /** 画布上已保存的节点位置 */
   layout: { nodeType: number; nodeId: Id; x: number; y: number }[];
+  /** 已保存的连线折点：edgeId → 中间水平段 Y */
+  edgeBends: Record<string, number>;
   /** 本次实时采集时间 */
   loadedAt: number;
 }
@@ -123,6 +133,7 @@ const EMPTY_DATA: ControlPlaneData = {
   health: new Map(),
   deadLetter: new Map(),
   layout: [],
+  edgeBends: {},
   loadedAt: 0,
 };
 
@@ -202,6 +213,81 @@ function sourceSnapshotHint(record: DbzSourceConnectorVo): string {
   return `当前 snapshot.mode=${mode}：清空位点后会重新做一次全量快照，整库整表重读，下游会被重灌一遍。耗时与源库压力取决于数据量，请在低峰期执行。`;
 }
 
+/**
+ * # 一致性检测要比对的关键配置项
+ *
+ * 只比两侧都存在（或只有一侧存在）的键，不要求整套 Debezium 配置逐字段相同：
+ * 版本不同会多出无关键，逐字段比会把正常差异误报成失败。这里覆盖用户真正会
+ * 关心的连接信息、topic 范围与快照模式。
+ */
+const CONSISTENCY_CONFIG_KEYS = [
+  'connector.class',
+  'tasks.max',
+  'database.hostname',
+  'database.port',
+  'database.user',
+  'database.dbname',
+  'database.url',
+  'topic.prefix',
+  'database.server.name',
+  'table.include.list',
+  'table.exclude.list',
+  'topics',
+  'topics.regex',
+  'snapshot.mode',
+];
+
+/** 配置值归一化成可比较的字符串：数组/对象按 JSON，标量按字符串 */
+function normalizeConfigValue(value: unknown): string {
+  if (value === null || value === undefined) {
+    return '';
+  }
+  if (typeof value === 'string') {
+    return value.trim();
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+/** 解析库内 `connectorConfig`；非法 JSON 返回 null，由调用方给出明确原因 */
+function parseConnectorConfig(raw: string): Record<string, unknown> | null {
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed as Record<string, unknown>;
+  } catch {
+    return null;
+  }
+}
+
+/** 比对库内配置与 Connect 实际配置，返回人类可读的差异列表 */
+function configDiffOf(
+  stored: Record<string, unknown>,
+  actual: Record<string, unknown>,
+): string[] {
+  const diffs: string[] = [];
+  const keys = new Set([...CONSISTENCY_CONFIG_KEYS, ...Object.keys(actual)]);
+  for (const key of keys) {
+    if (!CONSISTENCY_CONFIG_KEYS.includes(key)) {
+      continue;
+    }
+    const left = normalizeConfigValue(stored[key]);
+    const right = normalizeConfigValue(actual[key]);
+    if (left !== right) {
+      diffs.push(`${key}：库内「${left || '未配置'}」，Connect 实际「${right || '未配置'}」`);
+    }
+  }
+  return diffs;
+}
+
 /** 重置位点的步骤文案 */
 function resetStepLabel(step?: string | null): string {
   switch (step) {
@@ -275,16 +361,19 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 
 /** 一次加载：四张表 + 每台 Connect 的实时连接器 + 死信计数 + 画布位置 */
 async function loadControlPlane(): Promise<ControlPlaneData> {
-  const [brokers, connects, sources, sinks, deadLetterCounts, layout] = await Promise.all([
-    kafkaBrokerApi.list(),
-    kafkaConnectApi.list(),
-    sourceConnectorApi.list(),
-    sinkConnectorApi.list(),
-    // 死信计数只影响角标，接口失败时降级为空，不拖垮整页
-    deadLetterApi.pendingCount().catch(() => [] as DbzDeadLetterCountVo[]),
-    // 布局接口失败时按默认网格摆放，不阻塞节点数据
-    controlPlaneApi.listLayout().catch(() => []),
-  ]);
+  const [brokers, connects, sources, sinks, deadLetterCounts, layout, edgeBends] =
+    await Promise.all([
+      kafkaBrokerApi.list(),
+      kafkaConnectApi.list(),
+      sourceConnectorApi.list(),
+      sinkConnectorApi.list(),
+      // 死信计数只影响角标，接口失败时降级为空，不拖垮整页
+      deadLetterApi.pendingCount().catch(() => [] as DbzDeadLetterCountVo[]),
+      // 布局接口失败时按默认网格摆放，不阻塞节点数据
+      controlPlaneApi.listLayout().catch(() => []),
+      // 折点接口失败时按默认居中走线，不影响节点
+      controlPlaneApi.listEdgeBends().catch(() => []),
+    ]);
 
   const live = new Map<Id, LiveResult>();
   const health = new Map<Id, ConnectHealth>();
@@ -328,7 +417,18 @@ async function loadControlPlane(): Promise<ControlPlaneData> {
     deadLetterCounts.map((item) => [deadLetterKey(item.connectorType, item.connectorId), item.count]),
   );
 
-  return { brokers, connects, sources, sinks, live, health, deadLetter, layout, loadedAt: Date.now() };
+  return {
+    brokers,
+    connects,
+    sources,
+    sinks,
+    live,
+    health,
+    deadLetter,
+    layout,
+    edgeBends: Object.fromEntries(edgeBends.map((item) => [item.edgeId, item.midY])),
+    loadedAt: Date.now(),
+  };
 }
 
 /**
@@ -456,29 +556,17 @@ function childPositionOf(
   return { x: baseX, y: baseY };
 }
 
-/** 节点明细页 */
-function nodeDetailPageOf(kind: CanvasNodeKind): string {
-  switch (kind) {
-    case 'broker':
-      return '/kafka-broker';
-    case 'connect':
-      return '/kafka-connect';
-    case 'source':
-      return '/source-connector';
-    case 'sink':
-      return '/sink-connector';
-  }
-}
-
 export default function ControlPlanePage() {
   const { message, modal } = AntdApp.useApp();
   const navigate = useNavigate();
   const state: AsyncState<ControlPlaneData> = useAsync(loadControlPlane, [], EMPTY_DATA);
 
   const [positions, setPositions] = useState<Record<string, Point>>({});
+  /** 连线折点：本地即时更新，松手才落库 */
+  const [edgeBends, setEdgeBends] = useState<Record<string, number>>({});
   const [selectedNodeKey, setSelectedNodeKey] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
-  const [checkingBrokerId, setCheckingBrokerId] = useState<Id | null>(null);
+  const [checkingKey, setCheckingKey] = useState<string | null>(null);
   const [restartingKey, setRestartingKey] = useState<string | null>(null);
   const [busyNodeKey, setBusyNodeKey] = useState<string | null>(null);
   const [togglingNodeKey, setTogglingNodeKey] = useState<string | null>(null);
@@ -507,6 +595,20 @@ export default function ControlPlanePage() {
     existingIds: Set<Id>;
   } | null>(null);
   const [editTarget, setEditTarget] = useState<CanvasNode | null>(null);
+
+  /** 上游「重新同步」：复用快照弹窗，默认增量、可多选表 */
+  const [resyncTarget, setResyncTarget] = useState<DbzSourceConnectorVo | null>(null);
+
+  /** 删除：当前登录用户口令弹窗；校验通过前不动任何数据 */
+  const [deleteTarget, setDeleteTarget] = useState<CanvasNode | null>(null);
+  const [deletePassword, setDeletePassword] = useState('');
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteRunning, setDeleteRunning] = useState(false);
+
+  /** 画布搜索：只定位与高亮，不隐藏节点 */
+  const [searchText, setSearchText] = useState('');
+  const [searchCursor, setSearchCursor] = useState(0);
+  const [searchFocusToken, setSearchFocusToken] = useState(0);
 
   /** 轻量刷新：只合并状态与死信计数，保留实时明细、布局与选中态 */
   const refreshLight = useCallback(async () => {
@@ -604,6 +706,26 @@ export default function ControlPlanePage() {
     }
     setPositions(next);
   }, [state.data.layout]);
+
+  /** 服务端保存的连线折点；拖动中的本地值以最新一次为准 */
+  useEffect(() => {
+    setEdgeBends(state.data.edgeBends);
+  }, [state.data.edgeBends]);
+
+  /** 搜索命中：按名称 / topic / connectorName 匹配，只高亮与定位，不隐藏其它节点 */
+  const searchHits = useMemo(() => {
+    const query = searchText.trim().toLowerCase();
+    if (!query) {
+      return [];
+    }
+    return nodes
+      .filter((node) => nodeSearchText(node).includes(query))
+      .map((node) => node.key);
+  }, [nodes, searchText]);
+
+  const activeHitKey = searchHits.length
+    ? searchHits[Math.min(searchCursor, searchHits.length - 1)]
+    : null;
 
   /** 有持久化位置就用，没有就按同类节点的序号摆 */
   const resolvedPositions = useMemo(() => {
@@ -708,6 +830,62 @@ export default function ControlPlanePage() {
       });
   };
 
+  /** 拖动连线折点：过程只改本地，松手才落库，刷新后仍保持 */
+  const handleEdgeBend = (edgeId: string, midY: number, commit: boolean) => {
+    setEdgeBends((previous) => ({ ...previous, [edgeId]: midY }));
+    if (!commit) {
+      return;
+    }
+    void controlPlaneApi.saveEdgeBend({ edgeId, midY }).catch((reason: unknown) => {
+      message.error(`折点保存失败：${errorMessage(reason)}`);
+    });
+  };
+
+  /** 恢复默认居中走线：只删折点，连线本身保留 */
+  const resetEdgeBend = (edgeId: string) => {
+    setEdgeBends((previous) => {
+      const next = { ...previous };
+      delete next[edgeId];
+      return next;
+    });
+    void controlPlaneApi.resetEdgeBend(edgeId).catch((reason: unknown) => {
+      message.error(`恢复默认走线失败：${errorMessage(reason)}`);
+    });
+  };
+
+  /** 搜索输入：立即定位第一个命中，清空时回到无命中状态 */
+  const handleSearchChange = (value: string) => {
+    setSearchText(value);
+    setSearchCursor(0);
+    setSearchFocusToken((token) => token + 1);
+    const query = value.trim().toLowerCase();
+    if (!query) {
+      return;
+    }
+    const first = nodes.find((node) => nodeSearchText(node).includes(query));
+    if (first) {
+      setSelectedNodeKey(first.key);
+      setSelectedEdgeId(null);
+    }
+  };
+
+  /** 上一个/下一个命中：循环切换并同步选中，画布负责居中 */
+  const stepSearch = (delta: number) => {
+    if (!searchHits.length) {
+      return;
+    }
+    const next = (searchCursor + delta + searchHits.length) % searchHits.length;
+    setSearchCursor(next);
+    setSearchFocusToken((token) => token + 1);
+    setSelectedNodeKey(searchHits[next]);
+    setSelectedEdgeId(null);
+  };
+
+  const clearSearch = () => {
+    setSearchText('');
+    setSearchCursor(0);
+  };
+
   /**
    * 打开新增表单：父级固定，子类型按父级收敛。
    * 只有顶层 Kafka 集群没有父级（顶栏的「新增 Kafka 集群」）。
@@ -752,25 +930,114 @@ export default function ControlPlanePage() {
     state.reload();
   };
 
+  /** 集群检测：只测 Kafka 连通性与 topic 数 */
   const checkBroker = async (broker: DbzKafkaBrokerVo) => {
-    setCheckingBrokerId(broker.id);
+    const result = await kafkaBrokerApi.check(broker.id);
+    if (result.reachable) {
+      message.success(
+        `集群检测通过：topic ${result.topicCount} 个，耗时 ${Math.round(result.elapsedMs)} ms`,
+      );
+    } else {
+      modal.warning({
+        title: `Kafka 集群「${broker.name}」检测未通过`,
+        content: result.message || '无法连接到 Kafka 集群，请检查地址、认证与网络。',
+      });
+    }
+    state.reload();
+  };
+
+  /** Connect 健康检测：可达性 / 版本 / worker */
+  const checkConnect = async (node: CanvasNode) => {
+    const cluster = node.record as DbzKafkaConnectVo;
+    const health = await kafkaConnectApi.health(cluster.id);
+    if (health.reachable) {
+      message.success(
+        `健康检测通过：v${health.version ?? '?'}，${health.workerCount} 个 worker，${health.connectorCount} 个连接器，耗时 ${Math.round(health.elapsedMs)} ms`,
+      );
+    } else {
+      modal.warning({
+        title: `Kafka Connect「${cluster.name}」健康检测未通过`,
+        content: health.message || 'Connect 不可达，请检查地址、网络与服务状态。',
+      });
+    }
+    state.reload();
+  };
+
+  /**
+   * 连接器一致性检测：库内配置 vs Connect 实际配置 + 启停状态
+   *
+   * 比 `connector.class`、连接信息、topic 范围等关键项；状态只比「启停是否一致」，
+   * 不拿库内回写的 run_status 与远端逐状态比对，避免把刷新时序当成不一致。
+   */
+  const checkConnectorConsistency = async (node: CanvasNode) => {
+    const record = node.record as ManagedConnectorRecord;
+    const stored = parseConnectorConfig(record.connectorConfig);
+    if (!stored) {
+      modal.warning({
+        title: `一致性检测未通过：${record.name}`,
+        content: '库内 connectorConfig 不是合法的 JSON 对象，无法与 Connect 实际配置比对。请先在编辑表单里修正配置。',
+      });
+      return;
+    }
+
+    // 配置与实时列表并行取：任一失败都能给出具体原因
+    const [actual, liveList] = await Promise.all([
+      kafkaConnectorApi.config(record.kafkaConnectId, record.connectorName),
+      kafkaConnectorApi.list(record.kafkaConnectId),
+    ]);
+
+    const diffs = configDiffOf(stored, actual.config);
+    const live = liveList.find((item) => item.name === record.connectorName);
+    if (!live) {
+      diffs.unshift('Connect 上不存在该连接器，但库内仍在纳管');
+    } else if (record.enabled && live.state !== 0) {
+      const stateLabel =
+        kafkaConnectorStatusDic.find((dic) => dic.value === live.state)?.label ?? `状态 ${live.state}`;
+      diffs.unshift(`库内为启用，Connect 实际为「${stateLabel}」`);
+    } else if (!record.enabled && live.state === 0) {
+      diffs.unshift('库内为停用，但 Connect 上连接器仍在运行');
+    }
+
+    if (diffs.length === 0) {
+      message.success(
+        `一致性检测通过：${record.name} 的库内配置与 Connect 实际一致（连接器类、关键配置、启停状态）`,
+      );
+    } else {
+      modal.warning({
+        title: `一致性检测未通过：${record.name}`,
+        width: 640,
+        content: (
+          <div className="dbz-consistency-diffs">
+            <p>库内记录与 Connect 实际有 {diffs.length} 处不一致：</p>
+            <ul>
+              {diffs.map((diff) => (
+                <li key={diff}>{diff}</li>
+              ))}
+            </ul>
+          </div>
+        ),
+      });
+    }
+  };
+
+  /** 四类卡片共用的「检测」入口 */
+  const checkNode = async (node: CanvasNode) => {
+    setCheckingKey(node.key);
     try {
-      const result = await kafkaBrokerApi.check(broker.id);
-      if (result.reachable) {
-        message.success(
-          `检测通过：topic ${result.topicCount} 个，耗时 ${Math.round(result.elapsedMs)} ms`,
-        );
+      if (node.kind === 'broker') {
+        await checkBroker(node.record as DbzKafkaBrokerVo);
+      } else if (node.kind === 'connect') {
+        await checkConnect(node);
       } else {
-        modal.warning({
-          title: `Kafka 集群「${broker.name}」检测未通过`,
-          content: result.message || '无法连接到 Kafka 集群。',
-        });
+        await checkConnectorConsistency(node);
       }
-      state.reload();
     } catch (reason) {
-      message.error(errorMessage(reason));
+      modal.error({
+        title: `检测失败：${node.name}`,
+        content: errorMessage(reason),
+      });
     } finally {
-      setCheckingBrokerId(null);
+      setCheckingKey(null);
     }
   };
 
@@ -825,58 +1092,75 @@ export default function ControlPlanePage() {
   /** 删除节点前提示会移除的归属关系 */
   const deleteImpactOf = (node: CanvasNode) => affectedEdgesOf(node, edges);
 
-  const confirmDeleteNode = (node: CanvasNode) => {
-    const ownerships = deleteImpactOf(node);
-    const dependentChildren = ownerships.some((edge) => edge.from === node.key);
+  /** 打开删除口令弹窗：先确认影响，再要求输入当前登录用户口令 */
+  const openDeleteNode = (node: CanvasNode) => {
+    setDeleteTarget(node);
+    setDeletePassword('');
+    setDeleteError(null);
+  };
 
-    modal.confirm({
-      title: `删除${kindLabel(node.kind)}「${node.name}」`,
-      width: 520,
-      okText: '删除节点',
-      okButtonProps: { danger: true },
-      cancelText: '取消',
-      content: (
-        <div className="dbz-delete-impact">
-          {ownerships.length > 0 ? (
-            <p>
-              删除后会移除 {ownerships.length} 条归属关系
-              {dependentChildren ? '；服务端检测到仍有子记录时可能拒绝删除，请先处理依赖。' : '。'}
-            </p>
-          ) : (
-            <p>这个节点没有关联的归属关系。</p>
-          )}
-          <Alert
-            type="warning"
-            showIcon
-            message="删除不可恢复"
-            description="连接器会同时从 Kafka Connect 注销；需要保留下游连接器，请先改挂到其他 Connect。"
-          />
-        </div>
-      ),
-      onOk: async () => {
-        setBusyNodeKey(node.key);
-        try {
-          if (node.kind === 'broker') {
-            await kafkaBrokerApi.remove(node.id);
-          } else if (node.kind === 'connect') {
-            await kafkaConnectApi.remove(node.id);
-          } else if (node.kind === 'source') {
-            await sourceConnectorApi.remove(node.id);
-          } else {
-            await sinkConnectorApi.remove(node.id);
-          }
-          await controlPlaneApi.deleteLayout(node.nodeType, node.id).catch(() => undefined);
-          setSelectedNodeKey(null);
-          setSelectedEdgeId(null);
-          message.success(`已删除「${node.name}」`);
-          state.reload();
-        } catch (reason) {
-          message.error(errorMessage(reason));
-        } finally {
-          setBusyNodeKey(null);
-        }
-      },
-    });
+  const closeDeleteNode = () => {
+    if (deleteRunning) {
+      return;
+    }
+    setDeleteTarget(null);
+    setDeletePassword('');
+    setDeleteError(null);
+  };
+
+  /**
+   * # 执行删除
+   *
+   * 后端先带上当前用户身份转发 adm-rs 校验口令，通过后才删除并写审计；失败时
+   * 一行数据都不动。前端按提示前缀区分「口令错误」与「认证服务不可用」，
+   * 后者不允许删除，也不能提示成口令错。
+   */
+  const executeDeleteNode = async () => {
+    if (!deleteTarget) {
+      return;
+    }
+    const password = deletePassword.trim();
+    if (!password) {
+      setDeleteError('口令错误：请输入当前登录用户的口令');
+      return;
+    }
+    setDeleteRunning(true);
+    setBusyNodeKey(deleteTarget.key);
+    setDeleteError(null);
+    try {
+      // 口令明文不出浏览器：先做一次 SM3，后端只转发摘要给 adm-rs
+      await controlPlaneApi.deleteNode({
+        nodeType: deleteTarget.kind,
+        nodeId: deleteTarget.id,
+        loginPswd: sm3(password),
+      });
+      message.success(`已删除「${deleteTarget.name}」，删除人与时间已写入审计`);
+      setDeleteTarget(null);
+      setDeletePassword('');
+      setSelectedNodeKey(null);
+      setSelectedEdgeId(null);
+      state.reload();
+    } catch (reason) {
+      const text = errorMessage(reason);
+      if (text.includes('登录状态已失效')) {
+        // 令牌失效：清会话并回登录页，删除未执行
+        notifySessionExpired();
+        setDeleteError(`登录状态已失效，删除未执行：${text}`);
+      } else if (text.includes('口令校验过于频繁')) {
+        // adm 频控响应不返回剩余秒数，只能提示默认窗口，避免编造倒计时
+        setDeleteError(
+          `口令校验过于频繁，删除未执行：${text}。认证服务默认 10 分钟内最多允许 5 次错误，请等待窗口结束后重试。`,
+        );
+      } else if (text.includes('认证服务不可用')) {
+        // 认证服务不可用与口令错误是两回事：前者重试也没用，不能说成口令错
+        setDeleteError(`认证服务不可用，删除未执行：${text}`);
+      } else {
+        setDeleteError(text);
+      }
+    } finally {
+      setDeleteRunning(false);
+      setBusyNodeKey(null);
+    }
   };
 
   /** 卡片上的重启：会连同任务一起重启 */
@@ -953,14 +1237,18 @@ export default function ControlPlanePage() {
       case 'reset-offsets':
         openResetOffsets(node);
         break;
+      case 'resync':
+        // 只给上游连接器：复用快照弹窗，写入增量 execute-snapshot 信号
+        setResyncTarget(node.record as DbzSourceConnectorVo);
+        break;
       case 'edit':
         setEditTarget(node);
         break;
       case 'delete':
-        confirmDeleteNode(node);
+        openDeleteNode(node);
         break;
       case 'check':
-        void checkBroker(node.record as DbzKafkaBrokerVo);
+        void checkNode(node);
         break;
       case 'dead-letter':
         // 复用死信页深链：按连接器类型 + id 预筛选
@@ -992,10 +1280,13 @@ export default function ControlPlanePage() {
           <Alert
             type="info"
             showIcon
-            message="归属线只作展示"
-            description="连线由下游记录的上游字段决定：下游连接器的上游在 sink 表单里选择；其它节点由「+」新增时的父节点固定。连线不能拖动，也不能删除。"
+            message="端点由归属关系固定"
+            description="连线由下游记录的上游字段决定：下游连接器的上游在 sink 表单里选择；其它节点由「+」新增时的父节点固定。两端不能拖动，也不能删除；选中后可拖中间折点避让卡片，松手即保存。"
           />
           <div className="dbz-inspector-actions">
+            {edgeBends[selectedEdge.id] !== undefined && (
+              <Button onClick={() => resetEdgeBend(selectedEdge.id)}>恢复默认走线</Button>
+            )}
             <Button onClick={() => setSelectedEdgeId(null)}>取消选中</Button>
           </div>
           {toNode && (
@@ -1257,22 +1548,8 @@ export default function ControlPlanePage() {
                   {
                     key: 'dead',
                     label: '待处理死信',
-                    children:
-                      node.dead > 0 ? (
-                        <Tag
-                          color="error"
-                          className="dbz-clickable"
-                          onClick={() =>
-                            navigate(
-                              `/dead-letter?connectorType=${deadLetterTypeOf(node.kind as ConnectorKind)}&connectorId=${node.id}`,
-                            )
-                          }
-                        >
-                          死信 {node.dead}
-                        </Tag>
-                      ) : (
-                        '0'
-                      ),
+                    // 属性面板自成一体：这里只做展示，入口在卡片上的死信标签
+                    children: node.dead > 0 ? `死信 ${node.dead}` : '0',
                   },
                 ]}
               />
@@ -1383,26 +1660,9 @@ export default function ControlPlanePage() {
           );
         })()}
 
-        <div className="dbz-inspector-footer">
-          <Button size="small" type="link" onClick={() => navigate(nodeDetailPageOf(node.kind))}>
-            打开明细页
-          </Button>
-          {(node.kind === 'source' || node.kind === 'sink') && node.dead > 0 && (
-            <Button
-              size="small"
-              type="link"
-              onClick={() =>
-                navigate(
-                  `/dead-letter?connectorType=${deadLetterTypeOf(node.kind as ConnectorKind)}&connectorId=${node.id}`,
-                )
-              }
-            >
-              处理死信
-            </Button>
-          )}
-        </div>
         <div className="dbz-inspector-tip">
-          <p>归属线只作展示：新增下级走「+」，sink 上游在表单里选择。</p>
+          <p>属性面板只读展示；配置与操作都在卡片上，不跳转到其它页面。</p>
+          <p>归属线端点固定，选中后可拖中间折点；连线不能删除。</p>
         </div>
       </div>
     );
@@ -1418,6 +1678,47 @@ export default function ControlPlanePage() {
           </span>
         </div>
         <Space size={12} wrap>
+          <span className="dbz-canvas-search">
+            <Input
+              allowClear
+              size="small"
+              prefix={<SearchOutlined />}
+              placeholder="搜索名称 / topic / connectorName"
+              value={searchText}
+              onChange={(event) => handleSearchChange(event.target.value)}
+              onPressEnter={() => stepSearch(1)}
+              aria-label="搜索画布节点"
+              data-canvas-search
+            />
+            <Button
+              size="small"
+              type="text"
+              icon={<UpOutlined />}
+              disabled={!searchHits.length}
+              onClick={() => stepSearch(-1)}
+              aria-label="上一个搜索结果"
+              data-search-prev
+            />
+            <Button
+              size="small"
+              type="text"
+              icon={<DownOutlined />}
+              disabled={!searchHits.length}
+              onClick={() => stepSearch(1)}
+              aria-label="下一个搜索结果"
+              data-search-next
+            />
+            {searchText.trim() && (
+              <Button size="small" type="link" onClick={clearSearch} data-search-clear>
+                清空
+              </Button>
+            )}
+            <span className="dbz-canvas-search-count" data-search-count>
+              {searchText.trim()
+                ? `${searchHits.length ? Math.min(searchCursor, searchHits.length - 1) + 1 : 0}/${searchHits.length}`
+                : ''}
+            </span>
+          </span>
           <Tag>{nodes.length} 个节点</Tag>
           {deadLetterTotal > 0 && (
             <Tag color="error" className="dbz-clickable" onClick={() => navigate('/dead-letter')}>
@@ -1480,9 +1781,11 @@ export default function ControlPlanePage() {
           nodes={nodes}
           edges={edges}
           positions={resolvedPositions}
+          edgeBends={edgeBends}
           selectedNodeKey={selectedNodeKey}
           selectedEdgeId={selectedEdgeId}
           onNodeMove={handleNodeMove}
+          onEdgeBend={handleEdgeBend}
           onSelectNode={(key) => {
             setSelectedNodeKey(key);
             setSelectedEdgeId(null);
@@ -1492,12 +1795,16 @@ export default function ControlPlanePage() {
             setSelectedNodeKey(null);
           }}
           onAddChild={handleAddChild}
+          onAddRoot={() => startCreate('broker', null)}
           onNodeAction={handleNodeAction}
           onToggleNode={(node, enabled) => void applyToggle(node, enabled)}
           busyNodeKey={busyNodeKey}
           togglingNodeKey={togglingNodeKey}
-          checkingBrokerId={checkingBrokerId}
+          checkingKey={checkingKey}
           restartingKey={restartingKey}
+          searchHits={searchHits}
+          activeHitKey={activeHitKey}
+          focusToken={searchFocusToken}
           renderInspector={renderInspector}
         />
       )}
@@ -1639,6 +1946,86 @@ export default function ControlPlanePage() {
         )}
       </Modal>
 
+      {/* 上游「重新同步」：固定源库信号表 + 增量快照，可多选要重读的表 */}
+      <SnapshotModal
+        open={resyncTarget !== null}
+        record={resyncTarget}
+        fixedChannel="source"
+        fixedSnapshotType="incremental"
+        onClose={() => setResyncTarget(null)}
+      />
+
+      {/* 删除二次确认：口令校验通过前不删任何数据 */}
+      <Modal
+        open={deleteTarget !== null}
+        title={
+          deleteTarget
+            ? `删除${kindLabel(deleteTarget.kind)}「${deleteTarget.name}」`
+            : '删除节点'
+        }
+        width={560}
+        okText="校验口令并删除"
+        okButtonProps={{ danger: true, 'data-delete-confirm': 'true' }}
+        cancelText="取消"
+        confirmLoading={deleteRunning}
+        maskClosable={!deleteRunning}
+        onCancel={closeDeleteNode}
+        onOk={() => void executeDeleteNode()}
+        destroyOnHidden
+      >
+        {deleteTarget && (
+          <div className="dbz-delete-impact" data-delete-dialog>
+            {(() => {
+              const ownerships = deleteImpactOf(deleteTarget);
+              const dependentChildren = ownerships.some(
+                (edge) => edge.from === deleteTarget.key,
+              );
+              return ownerships.length > 0 ? (
+                <p>
+                  删除后会移除 {ownerships.length} 条归属关系
+                  {dependentChildren
+                    ? '；服务端检测到仍有子记录时可能拒绝删除，请先处理依赖。'
+                    : '。'}
+                </p>
+              ) : (
+                <p>这个节点没有关联的归属关系。</p>
+              );
+            })()}
+            <Alert
+              type="warning"
+              showIcon
+              message="删除不可恢复"
+              description="连接器会同时从 Kafka Connect 注销；需要保留下游连接器，请先改挂到其他 Connect。"
+            />
+            <div className="dbz-delete-password">
+              <Typography.Text strong>当前登录用户口令</Typography.Text>
+              <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 6 }}>
+                口令在浏览器内先做 SM3 摘要，后端带登录令牌转给认证服务校验；不会累加登录失败次数，也不会锁号。
+              </Typography.Text>
+              <Input.Password
+                autoFocus
+                value={deletePassword}
+                placeholder="请输入当前登录用户的口令"
+                data-delete-password
+                onChange={(event) => {
+                  setDeletePassword(event.target.value);
+                  setDeleteError(null);
+                }}
+                onPressEnter={() => void executeDeleteNode()}
+              />
+            </div>
+            {deleteError && (
+              <Alert
+                type="error"
+                showIcon
+                message={deleteError}
+                data-delete-error
+                className="dbz-delete-error"
+              />
+            )}
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

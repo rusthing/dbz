@@ -18,8 +18,9 @@ function normalizeBase(raw?: string): string {
 /**
  * # Vite 配置
  *
- * 开发态把 `/dbz/**` 反代到 dbz-svr，避免跨域；生产态由网关或 nginx 承担同样的转发，
- * 因此前端代码里始终使用 `/dbz/...` 这样的同源相对路径。
+ * 开发态把 `/dbz/**` 反代到 dbz-svr、`/admrs-svr/**` 反代到 adm-svr，避免跨域；
+ * 生产态由网关承担同样的转发（并剥掉 `/admrs-svr` 前缀），因此前端代码里始终使用
+ * 同源相对路径。
  *
  * `base` 由 `VITE_PUBLIC_BASE` 决定：部署在域名根路径时留空即可；挂到 `/dbz-web/`
  * 这类子路径时必须一起改，否则 `assets/*.js` 会去根路径找而 404。
@@ -27,6 +28,7 @@ function normalizeBase(raw?: string): string {
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   const proxyTarget = env.VITE_PROXY_TARGET || 'http://127.0.0.1:9006';
+  const admProxyTarget = env.VITE_ADM_PROXY_TARGET || 'http://127.0.0.1:9007';
   // 统一保证是「/xxx/」形式：Vite 要求 base 以 / 开头、以 / 结尾
   const base = normalizeBase(env.VITE_PUBLIC_BASE);
 
@@ -39,6 +41,12 @@ export default defineConfig(({ mode }) => {
         '/dbz': {
           target: proxyTarget,
           changeOrigin: true,
+        },
+        // 与生产网关一致：转发前剥掉 `/admrs-svr`，adm-svr 真实路径是 `/adm/auth/...`
+        '/admrs-svr': {
+          target: admProxyTarget,
+          changeOrigin: true,
+          rewrite: (path) => path.replace(/^\/admrs-svr/, ''),
         },
       },
     },

@@ -410,6 +410,28 @@ export interface DbzControlPlaneLayoutUpsertInput {
   y: number;
 }
 
+/** # 画布连线折点（`DbzControlPlaneEdgeBendVo`） */
+export interface DbzControlPlaneEdgeBendVo {
+  edgeId: string;
+  /** 正交走线中间水平段的世界坐标 Y */
+  midY: number;
+  updateMs: string;
+}
+
+/** # 保存连线折点（`DbzControlPlaneEdgeBendUpsertDto`） */
+export interface DbzControlPlaneEdgeBendUpsertInput {
+  edgeId: string;
+  midY: number;
+}
+
+/** # 删除画布节点（`DbzControlPlaneNodeDeleteDto`） */
+export interface DbzControlPlaneNodeDeleteInput {
+  nodeType: 'broker' | 'connect' | 'source' | 'sink';
+  nodeId: Id;
+  /** 当前登录用户口令的 SM3 摘要（64 位小写十六进制），后端转发给 adm-rs 二次确认 */
+  loginPswd: string;
+}
+
 /** # 死信连接器类型（`DeadLetterConnectorType`） */
 export type DeadLetterConnectorType = 1 | 2;
 
@@ -434,6 +456,10 @@ export interface DbzDeadLetterVo {
   connectorId: Id;
   topic: string;
   recordKey: string;
+  /** 原始消息所在分区；脚本未上报时为空 */
+  partition?: number | null;
+  /** 原始消息的 offset；脚本未上报时为空 */
+  offset?: number | null;
   /** 原始报文（JSONB），字段随来源表变化 */
   payload: unknown;
   failureCategory: DeadLetterFailureCategory;
@@ -502,4 +528,15 @@ export interface DbzDeadLetterEditPayloadInput {
 export interface DbzDeadLetterDiscardInput {
   ids: Id[];
   remark?: string;
+}
+
+/** # 标记「已人工处理」请求体 */
+export interface DbzDeadLetterMarkHandledInput {
+  ids: Id[];
+  remark?: string;
+}
+
+/** # 撤销「已人工处理」请求体 */
+export interface DbzDeadLetterUnmarkHandledInput {
+  ids: Id[];
 }

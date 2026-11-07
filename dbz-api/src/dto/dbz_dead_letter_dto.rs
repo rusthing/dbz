@@ -28,6 +28,10 @@ pub struct DbzDeadLetterReportDto {
     /// 记录主键；无主键时传空串
     #[serde(default)]
     pub record_key: String,
+    /// 原始消息所在分区；脚本能拿到就传，列表据此展示来源
+    pub partition: Option<i32>,
+    /// 原始消息的 offset；脚本能拿到就传
+    pub offset: Option<i64>,
     /// 原始报文（JSON）
     pub payload: serde_json::Value,
     /// 失败分类：确定性失败 / 传输类失败
@@ -56,6 +60,12 @@ pub struct DbzDeadLetterQueryDto {
     pub status: Option<DeadLetterStatus>,
     /// topic 精确匹配
     pub topic: Option<String>,
+    /// 失败分类（不传表示不限）
+    pub failure_category: Option<DeadLetterFailureCategory>,
+    /// 失败子类（不传表示不限）
+    pub failure_subtype: Option<DeadLetterFailureSubtype>,
+    /// 失败原因关键字（对后端生成的 `reason` 做包含匹配）
+    pub reason: Option<String>,
     /// 末次失败时间下界（毫秒，含）
     pub start_ms: Option<i64>,
     /// 末次失败时间上界（毫秒，含）
@@ -117,4 +127,27 @@ pub struct DbzDeadLetterDiscardDto {
     pub ids: Vec<U64>,
     /// 废弃原因
     pub remark: Option<String>,
+}
+
+/// # 批量标记「已人工处理」
+///
+/// 表示这条记录已经在别处修好，不再需要重投；处理说明写入备注，处理人与时间
+/// 由服务端记录。与「已废弃」的区别是：前者是「问题已解决」，后者是「不再处理」。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DbzDeadLetterMarkHandledDto {
+    /// 死信记录 ID
+    /// @len 1..
+    pub ids: Vec<U64>,
+    /// 处理说明（怎么处理的、在哪修的）
+    pub remark: Option<String>,
+}
+
+/// # 批量撤销「已人工处理」
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(rename_all = "camelCase")]
+pub struct DbzDeadLetterUnmarkHandledDto {
+    /// 死信记录 ID
+    /// @len 1..
+    pub ids: Vec<U64>,
 }

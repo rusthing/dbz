@@ -46,6 +46,9 @@ pub struct DbzConfig {
     /// 死信与重试队列配置
     #[serde(default)]
     pub dead_letter: DeadLetterConfig,
+    /// 删除二次确认配置
+    #[serde(default)]
+    pub delete_verify: DeleteVerifyConfig,
 }
 
 impl Default for DbzConfig {
@@ -54,6 +57,7 @@ impl Default for DbzConfig {
             group_name: dbz_job_group_name_default(),
             health_check: HealthCheckConfig::default(),
             dead_letter: DeadLetterConfig::default(),
+            delete_verify: DeleteVerifyConfig::default(),
         }
     }
 }
@@ -142,6 +146,55 @@ fn dead_letter_batch_size_default() -> u64 {
 
 fn dead_letter_request_timeout_ms_default() -> u64 {
     15_000
+}
+
+/// # 删除二次确认配置
+///
+/// 对应 `[dbz.delete-verify]`。删除画布节点前，服务端带上当前登录用户身份调用
+/// adm-rs 的 `POST /adm/auth/verify-password` 校验口令；该接口只做口令核对，
+/// 不累加登录失败次数、不锁号。
+///
+/// adm-rs 接口就绪前可用 `enabled = false` 临时关闭；关闭后删除**直接放行**，
+/// 这是部署期的过渡开关，不要在生产长期关闭。未配置 `adm-base-url` 时视为
+/// 认证服务不可用，删除会被拒绝（不会出现「没校验也删了」的情况）。
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct DeleteVerifyConfig {
+    /// 是否启用删除口令二次确认
+    #[serde(default = "delete_verify_enabled_default")]
+    pub enabled: bool,
+    /// adm-rs 服务地址，如 `http://127.0.0.1:8080`
+    #[serde(default)]
+    pub adm_base_url: String,
+    /// 校验接口路径
+    #[serde(default = "delete_verify_path_default")]
+    pub path: String,
+    /// 校验请求超时（毫秒）；超时按「认证服务不可用」处理，删除被拒绝
+    #[serde(default = "delete_verify_timeout_ms_default")]
+    pub timeout_ms: u64,
+}
+
+impl Default for DeleteVerifyConfig {
+    fn default() -> Self {
+        Self {
+            enabled: delete_verify_enabled_default(),
+            adm_base_url: String::new(),
+            path: delete_verify_path_default(),
+            timeout_ms: delete_verify_timeout_ms_default(),
+        }
+    }
+}
+
+fn delete_verify_enabled_default() -> bool {
+    true
+}
+
+fn delete_verify_path_default() -> String {
+    "/adm/auth/verify-password".to_string()
+}
+
+fn delete_verify_timeout_ms_default() -> u64 {
+    5_000
 }
 
 /// # 检查配置

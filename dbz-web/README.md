@@ -84,9 +84,9 @@ http://xxx:xxx/dbz-svr/dbz/…   → dbz-svr:9006 的 /dbz/…
 | --- | --- | --- |
 | `VITE_PUBLIC_BASE` | `/dbz-web` | 一次管三处：Vite `base`（资源走 `/dbz-web/assets/*`）、favicon（`%BASE_URL%`）、`BrowserRouter` 的 `basename`（路由变 `/dbz-web/kafka-connect`） |
 | `VITE_API_BASE` | `/dbz-svr` | 接口前缀，拼在 `/dbz/...` 前面 |
-| `VITE_USER_ID` | `1` | 写接口的 `X-User-Id` 占位 |
+| `VITE_AUTH_BASE` | `/admrs-svr` | adm-rs 认证接口前缀，登录 / 登出走 `/admrs-svr/adm/auth/...` |
 
-三个都是**编译期**变量，改完必须重新 `build`。另外 `pnpm preview` 只起静态服务、不带反代，
+这些都是**编译期**变量，改完必须重新 `build`。另外 `pnpm preview` 只起静态服务、不带反代，
 用它预览生产包时接口会 404，属正常现象，要连后端得走真网关。
 
 ### 网关配置（nginx）
@@ -256,8 +256,10 @@ scripts/smoke.mjs        # 冒烟测试
 
 ### 写接口的请求头
 
-`#[ctrl]` 生成的 `add` / `modify` / `save` 从 `X-User-Id` 读取当前用户写入审计字段，缺失直接报参数错误。
-前端在 `client.ts` 里统一补上（值取 `VITE_USER_ID`，默认 `1`）；接入统一登录后改成从登录态读取即可。
+所有业务请求都带 `Authorization: Bearer <token>`（登录 adm-rs 后拿到）；`#[ctrl]` 生成的
+`add` / `modify` / `save` 仍从 `X-User-Id` 读取当前用户写审计字段，因此 `client.ts` 同时补上
+登录结果里的真实 `userId`。登录态存在 `localStorage` 的 `dbz.auth.session`，HTTP 401 或业务码
+`ADM00005` 会清会话并回登录页。
 
 ### 字典
 

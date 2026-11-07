@@ -9,6 +9,7 @@ import ReactDOM from 'react-dom/client';
 import { BrowserRouter } from 'react-router-dom';
 import 'dayjs/locale/zh-cn';
 import App from './App';
+import { AuthProvider } from './auth/AuthContext';
 import './styles/global.css';
 
 const container = document.getElementById('root');
@@ -49,7 +50,9 @@ ReactDOM.createRoot(container).render(
     >
       <AntdApp>
         <BrowserRouter basename={BASENAME}>
-          <App />
+          <AuthProvider>
+            <App />
+          </AuthProvider>
         </BrowserRouter>
       </AntdApp>
     </ConfigProvider>

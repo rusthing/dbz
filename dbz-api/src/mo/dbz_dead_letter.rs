@@ -25,6 +25,10 @@ pub struct Model {
     pub topic: String,
     /// 记录主键（无主键的记录用空串）
     pub record_key: String,
+    /// 原始消息所在分区（脚本上报时可选）
+    pub partition: Option<i32>,
+    /// 原始消息的 offset（脚本上报时可选）
+    pub offset: Option<i64>,
     /// 原始报文（JSONB）
     #[sea_orm(column_type = "JsonBinary")]
     pub payload: Json,

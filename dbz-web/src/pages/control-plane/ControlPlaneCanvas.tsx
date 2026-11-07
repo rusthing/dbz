@@ -16,12 +16,12 @@ import {
   DeleteOutlined,
   EditOutlined,
   ExportOutlined,
-  FileExclamationOutlined,
   HistoryOutlined,
   ImportOutlined,
   MinusOutlined,
   PlusOutlined,
   ReloadOutlined,
+  SyncOutlined,
   ThunderboltOutlined,
 } from '@ant-design/icons';
 import { Button, Switch, Tag, Tooltip } from 'antd';
@@ -80,6 +80,9 @@ interface EdgeGeometry {
   path: string;
   start: Point;
   end: Point;
+  /** 正交走线的中间水平段 Y；拖动折点即改这个值 */
+  midY: number;
+  handle: Point;
   color: string;
   marker: string;
 }
@@ -88,23 +91,35 @@ interface ControlPlaneCanvasProps {
   nodes: CanvasNode[];
   edges: CanvasEdge[];
   positions: Record<string, Point>;
+  /** 已持久化的连线折点：edgeId → 中间水平段 Y */
+  edgeBends: Record<string, number>;
   selectedNodeKey: string | null;
   selectedEdgeId: string | null;
   /** 拖动过程中持续回调，`commit=false`；松手时 `commit=true` 由页面落库 */
   onNodeMove: (key: string, x: number, y: number, commit: boolean) => void;
+  /** 拖动折点：commit=false 只更新本地，松手才落库 */
+  onEdgeBend: (edgeId: string, midY: number, commit: boolean) => void;
   onSelectNode: (key: string | null) => void;
   onSelectEdge: (id: string | null) => void;
   /** 点击节点底部「+」：父级固定，页面按子类型打开新增表单 */
   onAddChild: (node: CanvasNode) => void;
-  /** 卡片上的重启/编辑/删除/检测/查看死信 */
+  /** 组件面板点击「Kafka 集群」：在空白处建根节点 */
+  onAddRoot: () => void;
+  /** 卡片上的重启/编辑/删除/检测/重新同步 */
   onNodeAction: (node: CanvasNode, action: CanvasNodeAction) => void;
   /** 卡片上的启用开关：选中即启用，关闭即停用 */
   onToggleNode: (node: CanvasNode, enabled: boolean) => void;
   /** 各操作的 loading 状态 */
   busyNodeKey: string | null;
   togglingNodeKey: string | null;
-  checkingBrokerId: Id | null;
+  checkingKey: string | null;
   restartingKey: string | null;
+  /** 命中的节点 key（结果顺序），用于高亮与自动定位；空数组表示没有搜索 */
+  searchHits: string[];
+  /** 当前定位到第几个命中 */
+  activeHitKey: string | null;
+  /** 每次点「上一个/下一个」自增，保证同一个命中也会重新居中 */
+  focusToken: number;
   /** 右侧检查器内容 */
   renderInspector: () => ReactNode;
 }
@@ -121,12 +136,22 @@ function nodeDisabledOf(node: CanvasNode): boolean {
   return !(node.record as { enabled: boolean }).enabled;
 }
 
+/** 连线折点的取值范围：留出画布内边距，拖出卡片重叠区也不会跑到世界外 */
+const BEND_MIN_Y = 16;
+const BEND_MAX_Y = WORLD_HEIGHT - 16;
+
+/** 正交走线的默认中间水平段 Y：两端上下居中的位置 */
+function defaultMidY(start: Point, end: Point): number {
+  return (start.y + end.y) / 2;
+}
+
 /** 连线几何：归属关系统一走竖向折线；同源多条线在底部错开，避免重叠 */
 function geometryOf(
   edge: CanvasEdge,
   nodeMap: Map<string, CanvasNode>,
   positions: Record<string, Point>,
   offset: number,
+  bend?: number,
 ): EdgeGeometry | null {
   const from = nodeMap.get(edge.from);
   const to = nodeMap.get(edge.to);
@@ -145,11 +170,18 @@ function geometryOf(
   );
   const start = { x: startX, y: fromPos.y + fromSize.h };
   const end = { x: toPos.x + toSize.w / 2, y: toPos.y };
-  const midY = (start.y + end.y) / 2;
+  // 端点由归属关系固定，只有中间水平段在竖直方向可拖；拖过的值优先
+  const midY = clamp(
+    typeof bend === 'number' && Number.isFinite(bend) ? bend : defaultMidY(start, end),
+    BEND_MIN_Y,
+    BEND_MAX_Y,
+  );
   return {
     edge,
     start,
     end,
+    midY,
+    handle: { x: (start.x + end.x) / 2, y: midY },
     path: `M${start.x},${start.y} L${start.x},${midY} L${end.x},${midY} L${end.x},${end.y}`,
     color: '#b7c2d1',
     marker: 'dbz-arrow-edge',
@@ -273,44 +305,28 @@ function NodeIcon({ kind }: { kind: CanvasNodeKind }) {
 interface NodeActionsProps {
   node: CanvasNode;
   busyNodeKey: string | null;
-  togglingNodeKey: string | null;
-  checkingBrokerId: Id | null;
+  checkingKey: string | null;
   restartingKey: string | null;
   onSelect: (key: string) => void;
   onAction: (node: CanvasNode, action: CanvasNodeAction) => void;
-  onToggle: (node: CanvasNode, enabled: boolean) => void;
 }
 
-/** 卡片底部的操作行：启用开关 + 图标操作，图标文案放 Tooltip，整行不换行 */
+/** 卡片操作行：编辑在最左，右侧依次重启/重置/重新同步/检测，删除隔一道分隔线放最右 */
 function NodeActions({
   node,
   busyNodeKey,
-  togglingNodeKey,
-  checkingBrokerId,
+  checkingKey,
   restartingKey,
   onSelect,
   onAction,
-  onToggle,
 }: NodeActionsProps) {
-  const enabled = (node.record as { enabled: boolean }).enabled;
-  const toggling = togglingNodeKey === node.key;
-  const items: {
+  const rightItems: {
     action: CanvasNodeAction;
     title: string;
     icon: ReactNode;
-    danger?: boolean;
     disabled?: boolean;
     loading?: boolean;
   }[] = [];
-
-  if (node.kind === 'broker') {
-    items.push({
-      action: 'check',
-      title: '集群检测',
-      icon: <ThunderboltOutlined />,
-      loading: checkingBrokerId === node.id,
-    });
-  }
 
   if (node.kind === 'source' || node.kind === 'sink') {
     const record = node.record as ManagedConnectorRecord;
@@ -329,37 +345,68 @@ function NodeActions({
       title = '集群上没有该连接器，无法重启';
       disabled = true;
     }
-    items.push({
+    rightItems.push({
       action: 'restart',
       title,
       icon: <ReloadOutlined />,
       disabled,
       loading: restartingKey === `${record.kafkaConnectId}:${record.connectorName}`,
     });
-    items.push({
+    rightItems.push({
       action: 'reset-offsets',
       title: '重置位点（停止 → 清空位点 → 可选恢复）',
       icon: <HistoryOutlined />,
     });
   }
 
-  // 下游连接器额外提供死信入口，复用死信页按「类型 + id」筛选的深链
-  if (node.kind === 'sink') {
-    items.push({
-      action: 'dead-letter',
-      title: node.dead > 0 ? `查看死信（${node.dead} 条待处理）` : '查看死信',
-      icon: <FileExclamationOutlined />,
+  // 重新同步只给上游连接器：向下游发增量快照没有「重读源表」这回事
+  if (node.kind === 'source') {
+    rightItems.push({
+      action: 'resync',
+      title: '重新同步：选表后写 execute-snapshot（增量），不重置位点、不停止连接器',
+      icon: <SyncOutlined />,
     });
   }
 
-  items.push({ action: 'edit', title: '编辑配置', icon: <EditOutlined /> });
-  items.push({
-    action: 'delete',
-    title: '删除',
-    icon: <DeleteOutlined />,
-    danger: true,
-    loading: busyNodeKey === node.key,
+  rightItems.push({
+    action: 'check',
+    title:
+      node.kind === 'broker'
+        ? '集群检测：检测 Kafka 连通性'
+        : node.kind === 'connect'
+          ? '健康检测：可达性 / 版本 / worker'
+          : '一致性检测：库内配置与 Connect 实际状态是否一致',
+    icon: <ThunderboltOutlined />,
+    loading: checkingKey === node.key,
   });
+
+  const renderAction = (item: {
+    action: CanvasNodeAction;
+    title: string;
+    icon: ReactNode;
+    danger?: boolean;
+    disabled?: boolean;
+    loading?: boolean;
+  }) => (
+    <Tooltip key={item.action} title={item.title}>
+      <span className="dbz-graph-action">
+        <Button
+          size="small"
+          type="text"
+          danger={item.danger}
+          icon={item.icon}
+          disabled={item.disabled}
+          loading={item.loading}
+          aria-label={item.title}
+          data-node-action={item.action}
+          onClick={() => {
+            onSelect(node.key);
+            onAction(node, item.action);
+          }}
+        />
+      </span>
+    </Tooltip>
+  );
 
   return (
     <div
@@ -367,7 +414,38 @@ function NodeActions({
       data-no-drag
       onPointerDown={(event) => event.stopPropagation()}
     >
-      {/* 启用开关：选中即启用、关闭即停用；请求中 loading 且禁止重复点击 */}
+      {/* 编辑靠最左；开关已经移到卡片左上角，这里不再重复 */}
+      {renderAction({ action: 'edit', title: '编辑配置', icon: <EditOutlined /> })}
+      <span className="dbz-graph-actions-spacer" />
+      {rightItems.map(renderAction)}
+      <span className="dbz-graph-actions-divider" aria-hidden />
+      {renderAction({
+        action: 'delete',
+        title: '删除',
+        icon: <DeleteOutlined />,
+        danger: true,
+        loading: busyNodeKey === node.key,
+      })}
+    </div>
+  );
+}
+
+/** 卡片头部：启用开关在左上角，后面跟类型标识；开关不参与卡片拖动 */
+function NodeHead({
+  node,
+  togglingNodeKey,
+  onSelect,
+  onToggle,
+}: {
+  node: CanvasNode;
+  togglingNodeKey: string | null;
+  onSelect: (key: string) => void;
+  onToggle: (node: CanvasNode, enabled: boolean) => void;
+}) {
+  const enabled = (node.record as { enabled: boolean }).enabled;
+  const toggling = togglingNodeKey === node.key;
+  return (
+    <div className="dbz-graph-node-head">
       <Tooltip title={enabled ? '已启用，关闭即停用' : '已停用，打开即启用'}>
         <span className="dbz-graph-switch" data-no-drag>
           <Switch
@@ -385,26 +463,18 @@ function NodeActions({
           />
         </span>
       </Tooltip>
-      {items.map((item) => (
-        <Tooltip key={item.action} title={item.title}>
-          <span className="dbz-graph-action">
-            <Button
-              size="small"
-              type="text"
-              danger={item.danger}
-              icon={item.icon}
-              disabled={item.disabled}
-              loading={item.loading}
-              aria-label={item.title}
-              data-node-action={item.action}
-              onClick={() => {
-                onSelect(node.key);
-                onAction(node, item.action);
-              }}
-            />
-          </span>
-        </Tooltip>
-      ))}
+      <span
+        className="dbz-graph-node-icon"
+        style={{ backgroundColor: NODE_KIND_COLOR[node.kind] }}
+      >
+        <NodeIcon kind={node.kind} />
+      </span>
+      <span
+        className="dbz-graph-node-type-label"
+        style={{ color: NODE_KIND_COLOR[node.kind] }}
+      >
+        {NODE_KIND_LABEL[node.kind]}
+      </span>
     </div>
   );
 }
@@ -413,18 +483,24 @@ export default function ControlPlaneCanvas({
   nodes,
   edges,
   positions,
+  edgeBends,
   selectedNodeKey,
   selectedEdgeId,
   onNodeMove,
+  onEdgeBend,
   onSelectNode,
   onSelectEdge,
   onAddChild,
+  onAddRoot,
   onNodeAction,
   onToggleNode,
   busyNodeKey,
   togglingNodeKey,
-  checkingBrokerId,
+  checkingKey,
   restartingKey,
+  searchHits,
+  activeHitKey,
+  focusToken,
   renderInspector,
 }: ControlPlaneCanvasProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -457,10 +533,40 @@ export default function ControlPlaneCanvas({
   const geometries = useMemo(
     () =>
       edges
-        .map((edge) => geometryOf(edge, nodeMap, positions, edgeOffsets.get(edge.id) ?? 0))
+        .map((edge) =>
+          geometryOf(
+            edge,
+            nodeMap,
+            positions,
+            edgeOffsets.get(edge.id) ?? 0,
+            edgeBends[edge.id],
+          ),
+        )
         .filter((item): item is EdgeGeometry => Boolean(item)),
-    [edges, nodeMap, positions, edgeOffsets],
+    [edges, nodeMap, positions, edgeOffsets, edgeBends],
   );
+
+  /** 搜索高亮：命中节点只高亮，不隐藏其它节点，整体拓扑始终保留 */
+  const hitSet = useMemo(() => new Set(searchHits), [searchHits]);
+
+  /** 定位到当前命中：把节点中心移到视口中心，缩放保持用户当前值 */
+  useEffect(() => {
+    if (!activeHitKey || !viewportSize.w || !viewportSize.h) {
+      return;
+    }
+    const node = nodeMap.get(activeHitKey);
+    if (!node) {
+      return;
+    }
+    const pos = positions[activeHitKey] ?? defaultPosition(node.kind, 0);
+    const size = NODE_SIZE[node.kind];
+    setView((previous) => ({
+      ...previous,
+      x: viewportSize.w / 2 - (pos.x + size.w / 2) * previous.scale,
+      y: viewportSize.h / 2 - (pos.y + size.h / 2) * previous.scale,
+    }));
+    // focusToken 让同一个命中在反复点「下一个」时也能重新居中
+  }, [activeHitKey, focusToken, nodeMap, positions, viewportSize]);
 
   /** 画布尺寸跟着容器变化，缩略图与适应画布要用 */
   useEffect(() => {
@@ -549,6 +655,7 @@ export default function ControlPlaneCanvas({
     if (
       target.closest('.dbz-graph-node') ||
       target.closest('.dbz-graph-edge-hit') ||
+      target.closest('.dbz-graph-bend-handle') ||
       target.closest('.dbz-graph-controls') ||
       target.closest('.dbz-graph-minimap')
     ) {
@@ -611,6 +718,45 @@ export default function ControlPlaneCanvas({
     window.addEventListener('pointerup', up);
   };
 
+  /**
+   * # 拖动连线折点
+   *
+   * 只改正交走线中间水平段的 Y：两端仍锚在卡片边上，上游端不可拖、下游端锁定，
+   * 连线本身也不提供删除。拖动过程只更新本地（`commit=false`），松手才落库。
+   */
+  const handleBendPointerDown = (
+    event: ReactPointerEvent<SVGElement>,
+    geometry: EdgeGeometry,
+  ) => {
+    if (event.button !== 0) {
+      return;
+    }
+    event.stopPropagation();
+    onSelectEdge(geometry.edge.id);
+    const startClientY = event.clientY;
+    const originY = geometry.midY;
+    const scale = view.scale;
+    let moved = false;
+
+    const move = (moveEvent: PointerEvent) => {
+      const nextY = originY + (moveEvent.clientY - startClientY) / scale;
+      if (Math.abs(moveEvent.clientY - startClientY) > 2) {
+        moved = true;
+      }
+      onEdgeBend(geometry.edge.id, clamp(nextY, BEND_MIN_Y, BEND_MAX_Y), false);
+    };
+    const up = (upEvent: PointerEvent) => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      if (moved) {
+        const nextY = originY + (upEvent.clientY - startClientY) / scale;
+        onEdgeBend(geometry.edge.id, clamp(nextY, BEND_MIN_Y, BEND_MAX_Y), true);
+      }
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
+
   /** 缩略图范围 */
   const bounds = useMemo(() => {
     if (!nodes.length) {
@@ -645,6 +791,56 @@ export default function ControlPlaneCanvas({
 
   return (
     <div className="dbz-canvas-shell">
+      <aside className="dbz-component-panel" aria-label="组件面板">
+        <div className="dbz-component-panel-title">组件</div>
+        <p className="dbz-component-panel-tip">
+          点击「Kafka 集群」在画布空白处新建根节点；其余组件只能从父节点的「+」创建。
+        </p>
+        <button
+          type="button"
+          className="dbz-component-item"
+          data-component="broker"
+          onClick={onAddRoot}
+        >
+          <span
+            className="dbz-component-icon"
+            style={{ backgroundColor: NODE_KIND_COLOR.broker }}
+          >
+            <DatabaseOutlined />
+          </span>
+          <span className="dbz-component-text">
+            <span className="dbz-component-name">{NODE_KIND_LABEL.broker}</span>
+            <span className="dbz-component-desc">点击新建根节点</span>
+          </span>
+        </button>
+        {(
+          [
+            ['connect', CloudServerOutlined],
+            ['source', ImportOutlined],
+            ['sink', ExportOutlined],
+          ] as const
+        ).map(([kind, Icon]) => (
+          <div
+            key={kind}
+            className="dbz-component-item is-disabled"
+            data-component={kind}
+            aria-disabled
+            title={`${NODE_KIND_LABEL[kind]}只能通过父节点的「+」创建`}
+          >
+            <span
+              className="dbz-component-icon"
+              style={{ backgroundColor: NODE_KIND_COLOR[kind] }}
+            >
+              <Icon />
+            </span>
+            <span className="dbz-component-text">
+              <span className="dbz-component-name">{NODE_KIND_LABEL[kind]}</span>
+              <span className="dbz-component-desc">从父节点的「+」创建</span>
+            </span>
+          </div>
+        ))}
+      </aside>
+
       <div className="dbz-canvas-main">
         <div
           className="dbz-graph-viewport"
@@ -670,26 +866,45 @@ export default function ControlPlaneCanvas({
                   <path d="M0,0 L10,5 L0,10 z" fill="#b7c2d1" />
                 </marker>
               </defs>
-              {geometries.map(({ edge, path, color, marker }) => (
-                <g key={edge.id}>
+              {geometries.map((geometry) => (
+                <g key={geometry.edge.id}>
                   <path
-                    className={`dbz-graph-edge-line${selectedEdgeId === edge.id ? ' is-selected' : ''}`}
-                    d={path}
-                    stroke={color}
-                    markerEnd={`url(#${marker})`}
+                    className={`dbz-graph-edge-line${selectedEdgeId === geometry.edge.id ? ' is-selected' : ''}`}
+                    d={geometry.path}
+                    stroke={geometry.color}
+                    markerEnd={`url(#${geometry.marker})`}
                   />
-                  {/* 连线只作展示：可点选查看归属说明，但不提供拖拽或删除 */}
+                  {/* 端点由归属关系固定；选中后可拖中间水平段避让卡片，连线不能删除 */}
                   <path
                     className="dbz-graph-edge-hit"
-                    data-edge-id={edge.id}
-                    d={path}
+                    data-edge-id={geometry.edge.id}
+                    d={geometry.path}
                     onPointerDown={(event) => {
                       event.stopPropagation();
-                      onSelectEdge(edge.id);
+                      onSelectEdge(geometry.edge.id);
                     }}
                   >
-                    <title>归属关系只作展示，不能拖动或删除</title>
+                    <title>端点固定，选中后可拖动中间折点避让卡片；不能删除</title>
                   </path>
+                  {selectedEdgeId === geometry.edge.id && (
+                    <g
+                      className="dbz-graph-bend-handle"
+                      data-edge-bend={geometry.edge.id}
+                      transform={`translate(${geometry.handle.x}, ${geometry.handle.y})`}
+                      onPointerDown={(event) => handleBendPointerDown(event, geometry)}
+                    >
+                      <circle r={10} className="dbz-graph-bend-hit" />
+                      <rect
+                        x={-14}
+                        y={-4}
+                        width={28}
+                        height={8}
+                        rx={4}
+                        className="dbz-graph-bend-shape"
+                      />
+                      <title>拖动这个折点调整走线，避开卡片重叠</title>
+                    </g>
+                  )}
                 </g>
               ))}
             </svg>
@@ -704,26 +919,20 @@ export default function ControlPlaneCanvas({
                   key={node.key}
                   className={`dbz-graph-node dbz-graph-node--${node.kind}${
                     nodeDisabledOf(node) ? ' is-disabled' : ''
-                  }${selected ? ' is-selected' : ''}`}
+                  }${selected ? ' is-selected' : ''}${
+                    hitSet.has(node.key) ? ' is-hit' : ''
+                  }${activeHitKey === node.key ? ' is-active-hit' : ''}`}
                   data-node-key={node.key}
                   data-node-type={node.kind}
                   style={{ left: pos.x, top: pos.y, width: size.w, height: size.h }}
                   onPointerDown={(event) => handleNodePointerDown(event, node)}
                 >
-                  <div className="dbz-graph-node-type">
-                    <span
-                      className="dbz-graph-node-icon"
-                      style={{ backgroundColor: NODE_KIND_COLOR[node.kind] }}
-                    >
-                      <NodeIcon kind={node.kind} />
-                    </span>
-                    <span
-                      className="dbz-graph-node-type-label"
-                      style={{ color: NODE_KIND_COLOR[node.kind] }}
-                    >
-                      {NODE_KIND_LABEL[node.kind]}
-                    </span>
-                  </div>
+                  <NodeHead
+                    node={node}
+                    togglingNodeKey={togglingNodeKey}
+                    onSelect={onSelectNode}
+                    onToggle={onToggleNode}
+                  />
 
                   <div className="dbz-graph-node-name" title={node.name}>
                     {node.name}
@@ -752,12 +961,10 @@ export default function ControlPlaneCanvas({
                   <NodeActions
                     node={node}
                     busyNodeKey={busyNodeKey}
-                    togglingNodeKey={togglingNodeKey}
-                    checkingBrokerId={checkingBrokerId}
+                    checkingKey={checkingKey}
                     restartingKey={restartingKey}
                     onSelect={onSelectNode}
                     onAction={onNodeAction}
-                    onToggle={onToggleNode}
                   />
 
                   {/* 有下级的节点底部给一个「+」，新增只从这里走；sink 没有下级 */}
@@ -849,7 +1056,7 @@ export default function ControlPlaneCanvas({
           </div>
 
           <div className="dbz-graph-legend">
-            <span><i className="dbz-legend-line" />归属线（只读）</span>
+            <span><i className="dbz-legend-line" />归属线（端点固定，选中后可拖折点）</span>
           </div>
         </div>
       </div>

@@ -4,12 +4,18 @@
  * 把服务端的 `Ro<T>` 信封统一拆开：业务成功时直接返回 `extra`，任何失败都抛 {@link ApiError}。
  * 这样调用方只需要处理「拿到数据」和「捕获异常」两种情况。
  *
- * ## 为什么写接口要带 `X-User-Id`
+ * ## 登录态
  *
- * `#[ctrl]` 生成的 add / modify / save 会从请求头取当前用户ID 写入审计字段，
- * 缺失时直接返回参数错误。前端统一在 {@link request} 里补上，页面无需关心。
+ * 所有业务请求都带 `Authorization: Bearer <token>`，身份由服务端按令牌识别；
+ * `X-User-Id` 仍保留一位真实用户ID（来自登录结果），因为 `#[ctrl]` 生成的
+ * add / modify / save 与删除审计直接读这个头写 `creater_id` / `updater_id`。
+ * 两者都从 {@link readSession} 取，页面无需关心。
+ *
+ * 令牌失效（HTTP 401 或业务码 `ADM00005`）时广播会话失效，由 AuthProvider
+ * 清登录态并跳登录页，不会让用户卡在「看着像登录、点什么都报错」的界面。
  */
 
+import { notifySessionExpired, readSession } from '../auth/session';
 import type { PageRx, Ro } from './types';
 
 /** 与 `RoResult::Success` 对应的结果码 */
@@ -17,9 +23,6 @@ const RO_SUCCESS = 1;
 
 /** 接口前缀，生产态留空表示同源 */
 const API_BASE = (import.meta.env.VITE_API_BASE ?? '').replace(/\/+$/, '');
-
-/** 当前用户ID，接入统一登录后应改为从登录态读取 */
-const USER_ID = import.meta.env.VITE_USER_ID ?? '1';
 
 /** # 查询参数 */
 export type QueryParams = Record<string, string | number | boolean | null | undefined>;
@@ -76,16 +79,21 @@ async function request<T>(
   options: { params?: QueryParams; body?: unknown } = {},
 ): Promise<Ro<T>> {
   const url = `${API_BASE}${path}${buildQuery(options.params)}`;
+  const session = readSession();
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    'Content-Type': 'application/json',
+  };
+  if (session) {
+    headers.Authorization = `Bearer ${session.token}`;
+    headers['X-User-Id'] = session.userId;
+  }
 
   let response: Response;
   try {
     response = await fetch(url, {
       method,
-      headers: {
-        Accept: 'application/json',
-        'Content-Type': 'application/json',
-        'X-User-Id': USER_ID,
-      },
+      headers,
       body: options.body === undefined ? undefined : JSON.stringify(options.body),
     });
   } catch (error) {
@@ -105,8 +113,12 @@ async function request<T>(
   const ro = payload as Ro<T> | undefined;
 
   if (!response.ok) {
+    if (response.status === 401) {
+      notifySessionExpired();
+    }
     throw new ApiError(ro?.msg || `HTTP ${response.status} ${response.statusText}`, {
       status: response.status,
+      result: ro?.result,
       code: ro?.code,
       detail: ro?.detail,
     });
@@ -115,6 +127,10 @@ async function request<T>(
     throw new ApiError('响应格式不符合 Ro 约定', { status: response.status });
   }
   if (ro.result !== RO_SUCCESS) {
+    // 少数认证链路在 HTTP 200 里用 ADM00005 表达令牌失效，语义与 401 一致
+    if (ro.code === 'ADM00005') {
+      notifySessionExpired();
+    }
     throw new ApiError(ro.msg || '请求失败', {
       result: ro.result,
       code: ro.code,

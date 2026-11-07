@@ -19,6 +19,8 @@ import {
   Drawer,
   Empty,
   Input,
+  Modal,
+  Popover,
   Row,
   Select,
   Space,
@@ -30,8 +32,11 @@ import {
 import type { ColumnsType } from 'antd/es/table';
 import {
   CheckCircleOutlined,
+  CheckOutlined,
+  CopyOutlined,
   DeleteOutlined,
   EditOutlined,
+  ExportOutlined,
   RedoOutlined,
   ReloadOutlined,
   SaveOutlined,
@@ -43,18 +48,18 @@ import { useCallback, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { deadLetterApi } from '../../api/dead-letter';
 import { sinkConnectorApi } from '../../api/sink-connector';
-import { sourceConnectorApi } from '../../api/source-connector';
+import type { QueryParams } from '../../api/client';
 import type {
   DbzDeadLetterRetryResultVo,
   DbzDeadLetterVo,
   DeadLetterConnectorType,
   DeadLetterFailureCategory,
+  DeadLetterFailureSubtype,
   DeadLetterStatus,
   Id,
 } from '../../api/types';
 import StatusTag from '../../components/StatusTag';
 import {
-  deadLetterConnectorTypeDic,
   deadLetterFailureCategoryDic,
   deadLetterFailureSubtypeDic,
   deadLetterStatusDic,
@@ -66,13 +71,19 @@ import { errorMessage, formatMs, orDash, shortId } from '../../utils/format';
 
 /** 待处理状态：角标与默认筛选都用它 */
 const STATUS_PENDING: DeadLetterStatus = 0;
+/** 已人工处理：终态，可撤销，但不再重投或废弃 */
+const STATUS_MANUAL_HANDLED: DeadLetterStatus = 3;
+/** 死信只针对下游连接器 */
+const CONNECTOR_TYPE_SINK: DeadLetterConnectorType = 2;
 
-/** 筛选草稿 */
+/** 筛选草稿（方向固定为下游，不再提供上游选项） */
 interface FilterDraft {
-  connectorType?: DeadLetterConnectorType;
   connectorId?: Id;
   status?: DeadLetterStatus;
   topic?: string;
+  failureCategory?: DeadLetterFailureCategory;
+  failureSubtype?: DeadLetterFailureSubtype;
+  reason?: string;
   range?: [Dayjs, Dayjs] | null;
 }
 
@@ -80,26 +91,42 @@ interface FilterDraft {
 interface ConnectorOption {
   value: Id;
   label: string;
-  connectorType: DeadLetterConnectorType;
   connectorId: Id;
 }
 
-/** 解析地址栏里的初始筛选 */
+/** 解析地址栏里的初始筛选；旧的 `connectorType=1` 深链一律按下游处理 */
 function initialDraft(params: URLSearchParams): FilterDraft {
-  const type = Number(params.get('connectorType'));
-  const connectorType =
-    type === 1 || type === 2 ? (type as DeadLetterConnectorType) : undefined;
   const connectorId = params.get('connectorId') ?? undefined;
   const status = params.get('status');
   const parsedStatus = status === null ? undefined : Number(status);
   return {
-    connectorType,
     connectorId,
     status:
       parsedStatus === 0 || parsedStatus === 1 || parsedStatus === 2 || parsedStatus === 3
         ? (parsedStatus as DeadLetterStatus)
         : undefined,
   };
+}
+
+/** 把筛选草稿转成接口参数，导出与查询共用 */
+function filterParams(draft: FilterDraft): QueryParams {
+  return {
+    connectorType: CONNECTOR_TYPE_SINK,
+    connectorId: draft.connectorId,
+    status: draft.status,
+    topic: draft.topic?.trim() || undefined,
+    failureCategory: draft.failureCategory,
+    failureSubtype: draft.failureSubtype,
+    reason: draft.reason?.trim() || undefined,
+    startMs: draft.range?.[0] ? draft.range[0].valueOf() : undefined,
+    endMs: draft.range?.[1] ? draft.range[1].valueOf() : undefined,
+  };
+}
+
+/** CSV 单元格转义 */
+function csvCell(value: unknown): string {
+  const text = value === null || value === undefined ? '' : String(value);
+  return `"${text.replace(/"/g, '""')}"`;
 }
 
 /** 把报文对象格式化成编辑框文本 */
@@ -131,6 +158,11 @@ export default function DeadLetterPage() {
   const [savingPayload, setSavingPayload] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Id[]>([]);
   const [acting, setActing] = useState(false);
+  const [applied, setApplied] = useState<FilterDraft>(() => initialDraft(searchParams));
+  const [exporting, setExporting] = useState(false);
+  const [handledOpen, setHandledOpen] = useState(false);
+  const [handledTargets, setHandledTargets] = useState<DbzDeadLetterVo[]>([]);
+  const [handledRemark, setHandledRemark] = useState('');
 
   /** 打开详情时把「待投报文（优先）或原始报文」放进编辑框 */
   const openDetail = useCallback((record: DbzDeadLetterVo) => {
@@ -139,37 +171,24 @@ export default function DeadLetterPage() {
     setPayloadError(undefined);
   }, []);
 
-  /** 上游/下游连接器都取一次，id → 名称与筛选下拉共用 */
+  /** 死信只属于下游连接器，只取下游列表作为名称与筛选下拉 */
   const connectors = useAsync<ConnectorOption[]>(async () => {
-    const [sources, sinks] = await Promise.all([
-      sourceConnectorApi.list(),
-      sinkConnectorApi.list(),
-    ]);
-    const sourceOptions: ConnectorOption[] = sources.map((item) => ({
+    const sinks = await sinkConnectorApi.list();
+    return sinks.map((item) => ({
       value: item.id,
-      label: `上游 · ${item.name}`,
-      connectorType: 1,
+      label: item.name,
       connectorId: item.id,
     }));
-    const sinkOptions: ConnectorOption[] = sinks.map((item) => ({
-      value: item.id,
-      label: `下游 · ${item.name}`,
-      connectorType: 2,
-      connectorId: item.id,
-    }));
-    return [...sourceOptions, ...sinkOptions];
   }, [], []);
 
   const { data, loading, error, pageNum, pageSize, search, reload, setPageNum, setPageSize } =
     usePagedQuery<DbzDeadLetterVo>((params) => deadLetterApi.page(params));
 
-  /** 名称查找：连接器 id 在不同表里可能重复，必须带方向 */
+  /** 名称查找：死信只有下游，id 直接对应下游连接器 */
   const nameOf = useCallback(
-    (connectorType: DeadLetterConnectorType, connectorId: Id): string => {
-      const option = connectors.data.find(
-        (item) => item.connectorType === connectorType && item.connectorId === connectorId,
-      );
-      return option?.label ?? `${connectorType === 1 ? '上游' : '下游'} #${shortId(connectorId)}`;
+    (connectorId: Id): string => {
+      const option = connectors.data.find((item) => item.connectorId === connectorId);
+      return option?.label ?? `下游 #${shortId(connectorId)}`;
     },
     [connectors.data],
   );
@@ -177,25 +196,15 @@ export default function DeadLetterPage() {
   const applyFilters = useCallback(
     (next: FilterDraft) => {
       setSelectedIds([]);
-      search({
-        connectorType: next.connectorType,
-        connectorId: next.connectorId,
-        status: next.status,
-        topic: next.topic?.trim() || undefined,
-        startMs: next.range?.[0] ? next.range[0].valueOf() : undefined,
-        endMs: next.range?.[1] ? next.range[1].valueOf() : undefined,
-      });
+      setApplied(next);
+      search(filterParams(next));
     },
     [search],
   );
 
-  /** 按方向过滤下拉项：没选方向时两边的连接器都能选 */
   const connectorOptions = useMemo(
-    () =>
-      connectors.data
-        .filter((item) => !draft.connectorType || item.connectorType === draft.connectorType)
-        .map((item) => ({ value: item.value, label: item.label })),
-    [connectors.data, draft.connectorType],
+    () => connectors.data.map((item) => ({ value: item.value, label: item.label })),
+    [connectors.data],
   );
 
   /** 重投：不传 payload 按原始报文；传 payload 表示用修改后的待投报文（仅单条） */
@@ -348,6 +357,155 @@ export default function DeadLetterPage() {
     });
   };
 
+  /** 打开「标记已人工处理」弹窗；处理说明必填，便于之后追溯 */
+  const openMarkHandled = (records: DbzDeadLetterVo[]) => {
+    if (records.length === 0) {
+      return;
+    }
+    setHandledTargets(records);
+    setHandledRemark('');
+    setHandledOpen(true);
+  };
+
+  const submitMarkHandled = async () => {
+    if (!handledRemark.trim()) {
+      message.warning('请填写处理说明（在哪修的、怎么处理的）');
+      return;
+    }
+    setActing(true);
+    try {
+      await deadLetterApi.markHandled({
+        ids: handledTargets.map((item) => item.id),
+        remark: handledRemark.trim(),
+      });
+      message.success(
+        `已标记 ${handledTargets.length} 条为「已人工处理」；与「已废弃」的区别是问题已解决`,
+      );
+      setHandledOpen(false);
+      setSelectedIds([]);
+      setDetail(null);
+      reload();
+    } catch (reason) {
+      message.error(errorMessage(reason));
+    } finally {
+      setActing(false);
+    }
+  };
+
+  /** 撤销人工处理：恢复为待处理，并清空处理人与说明 */
+  const undoHandled = (records: DbzDeadLetterVo[]) => {
+    if (records.length === 0) {
+      return;
+    }
+    modal.confirm({
+      title: `撤销 ${records.length} 条「已人工处理」？`,
+      content: '撤销后恢复为「待处理」，处理人与处理说明会被清空，可重新重投或标记。',
+      okText: '撤销',
+      cancelText: '取消',
+      onOk: async () => {
+        setActing(true);
+        try {
+          await deadLetterApi.unmarkHandled({ ids: records.map((item) => item.id) });
+          message.success(`已撤销 ${records.length} 条的人工处理结论`);
+          setSelectedIds([]);
+          setDetail(null);
+          reload();
+        } catch (reason) {
+          message.error(errorMessage(reason));
+        } finally {
+          setActing(false);
+        }
+      },
+    });
+  };
+
+  /** 导出当前筛选结果为 CSV：按页循环取全量，不导出未筛选的其它记录 */
+  const exportCsv = async () => {
+    setExporting(true);
+    try {
+      const list: DbzDeadLetterVo[] = [];
+      let page = 1;
+      for (;;) {
+        const result = await deadLetterApi.page({
+          ...filterParams(applied),
+          _page: page,
+          _size: 200,
+        });
+        list.push(...result.list);
+        if (result.list.length === 0 || list.length >= result.total) {
+          break;
+        }
+        page += 1;
+      }
+
+      const header = [
+        '死信ID',
+        '状态',
+        '下游连接器',
+        '连接器ID',
+        'Topic',
+        'Partition',
+        'Offset',
+        '记录主键',
+        '失败分类',
+        '失败子类',
+        '失败原因',
+        '失败详情',
+        '失败次数',
+        '首次失败',
+        '末次失败',
+        '最近重投',
+        '处理人',
+        '处理时间',
+        '处理说明',
+        '创建时间',
+      ];
+      const rows = list.map((item) => [
+        item.id,
+        deadLetterStatusDic.find((entry) => entry.value === item.status)?.label ?? item.status,
+        nameOf(item.connectorId),
+        item.connectorId,
+        item.topic,
+        item.partition ?? '',
+        item.offset ?? '',
+        item.recordKey,
+        deadLetterFailureCategoryDic.find((entry) => entry.value === item.failureCategory)?.label ??
+          item.failureCategory,
+        deadLetterFailureSubtypeDic.find((entry) => entry.value === item.failureSubtype)?.label ??
+          item.failureSubtype,
+        item.reason,
+        item.failureDetail,
+        item.retryCount,
+        formatMs(item.firstSeenMs),
+        formatMs(item.lastSeenMs),
+        item.lastRetryMs ? `${item.lastRetrySuccess ? '成功' : '失败'} ${formatMs(item.lastRetryMs)}` : '',
+        item.handledBy ?? '',
+        item.handledMs ? formatMs(item.handledMs) : '',
+        item.remark ?? '',
+        formatMs(item.createMs),
+      ]);
+      const csv = [header, ...rows].map((row) => row.map(csvCell).join(',')).join('\r\n');
+
+      const blob = new Blob([`\ufeff${csv}`], { type: 'text/csv;charset=utf-8' });
+      const link = document.createElement('a');
+      link.href = URL.createObjectURL(blob);
+      link.download = `dead-letter-${Date.now()}.csv`;
+      link.click();
+      URL.revokeObjectURL(link.href);
+      message.success(`已导出 ${list.length} 条（当前筛选范围）`);
+    } catch (reason) {
+      message.error(errorMessage(reason));
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  /** 人工处理是终态：不再重投、不再废弃，只能撤销 */
+  const canRetry = (record: DbzDeadLetterVo) =>
+    record.status === STATUS_PENDING || record.status === 2;
+  const isManualHandled = (record: DbzDeadLetterVo) =>
+    record.status === STATUS_MANUAL_HANDLED;
+
   const columns: ColumnsType<DbzDeadLetterVo> = [
     {
       title: '状态',
@@ -362,8 +520,8 @@ export default function DeadLetterPage() {
       ellipsis: true,
       render: (_, record) => (
         <Space direction="vertical" size={0}>
-          <span className="dbz-ellipsis" title={nameOf(record.connectorType, record.connectorId)}>
-            {nameOf(record.connectorType, record.connectorId)}
+          <span className="dbz-ellipsis" title={nameOf(record.connectorId)}>
+            {nameOf(record.connectorId)}
           </span>
           <span className="dbz-mono dbz-id">#{shortId(record.connectorId)}</span>
         </Space>
@@ -393,6 +551,22 @@ export default function DeadLetterPage() {
         <Tooltip title={topic}>
           <span className="dbz-mono">{orDash(topic)}</span>
         </Tooltip>
+      ),
+    },
+    {
+      title: '分区',
+      dataIndex: 'partition',
+      width: 72,
+      className: 'dbz-num',
+      render: (value: number | null | undefined) => (value === null || value === undefined ? '—' : value),
+    },
+    {
+      title: 'Offset',
+      dataIndex: 'offset',
+      width: 110,
+      className: 'dbz-num',
+      render: (value: string | null | undefined) => (
+        <span className="dbz-mono">{value === null || value === undefined ? '—' : value}</span>
       ),
     },
     {
@@ -455,7 +629,7 @@ export default function DeadLetterPage() {
           <Button type="link" size="small" onClick={() => openDetail(record)}>
             详情
           </Button>
-          {record.status !== 1 && record.status !== 2 && (
+          {canRetry(record) && (
             <Button
               type="link"
               size="small"
@@ -466,8 +640,29 @@ export default function DeadLetterPage() {
             </Button>
           )}
           {record.status === STATUS_PENDING && (
-            <Button type="link" size="small" danger onClick={() => discardRecords([record])}>
-              废弃
+            <>
+              <Button
+                type="link"
+                size="small"
+                icon={<CheckOutlined />}
+                onClick={() => openMarkHandled([record])}
+              >
+                已处理
+              </Button>
+              <Button type="link" size="small" danger onClick={() => discardRecords([record])}>
+                废弃
+              </Button>
+            </>
+          )}
+          {isManualHandled(record) && (
+            <Button
+              type="link"
+              size="small"
+              icon={<UndoOutlined />}
+              loading={acting}
+              onClick={() => undoHandled([record])}
+            >
+              撤销处理
             </Button>
           )}
         </Space>
@@ -476,22 +671,13 @@ export default function DeadLetterPage() {
   ];
 
   const selectedRecords = data.list.filter((item) => selectedIds.includes(item.id));
+  const retryTargets = selectedRecords.filter(canRetry);
+  const pendingTargets = selectedRecords.filter((item) => item.status === STATUS_PENDING);
+  const manualTargets = selectedRecords.filter(isManualHandled);
 
   return (
     <Card variant="borderless">
       <div className="dbz-toolbar">
-        <Select
-          allowClear
-          placeholder="方向"
-          style={{ width: 100 }}
-          options={dicOptions(deadLetterConnectorTypeDic)}
-          value={draft.connectorType}
-          onChange={(value: DeadLetterConnectorType | undefined) => {
-            const next = { ...draft, connectorType: value, connectorId: undefined };
-            setDraft(next);
-            applyFilters(next);
-          }}
-        />
         <Select
           allowClear
           showSearch
@@ -509,12 +695,7 @@ export default function DeadLetterPage() {
           }
           value={draft.connectorId}
           onChange={(value: Id | undefined) => {
-            const option = connectors.data.find((item) => item.value === value);
-            const next: FilterDraft = {
-              ...draft,
-              connectorId: value,
-              connectorType: option?.connectorType ?? draft.connectorType,
-            };
+            const next: FilterDraft = { ...draft, connectorId: value };
             setDraft(next);
             applyFilters(next);
           }}
@@ -530,6 +711,38 @@ export default function DeadLetterPage() {
             setDraft(next);
             applyFilters(next);
           }}
+        />
+        <Select
+          allowClear
+          placeholder="失败分类"
+          style={{ width: 130 }}
+          options={dicOptions(deadLetterFailureCategoryDic)}
+          value={draft.failureCategory}
+          onChange={(value: DeadLetterFailureCategory | undefined) => {
+            const next = { ...draft, failureCategory: value };
+            setDraft(next);
+            applyFilters(next);
+          }}
+        />
+        <Select
+          allowClear
+          placeholder="失败子类"
+          style={{ width: 130 }}
+          options={dicOptions(deadLetterFailureSubtypeDic)}
+          value={draft.failureSubtype}
+          onChange={(value: DeadLetterFailureSubtype | undefined) => {
+            const next = { ...draft, failureSubtype: value };
+            setDraft(next);
+            applyFilters(next);
+          }}
+        />
+        <Input.Search
+          allowClear
+          placeholder="失败原因关键字"
+          style={{ width: 170 }}
+          value={draft.reason ?? ''}
+          onChange={(event) => setDraft((prev) => ({ ...prev, reason: event.target.value }))}
+          onSearch={() => applyFilters(draft)}
         />
         <Input.Search
           allowClear
@@ -562,21 +775,40 @@ export default function DeadLetterPage() {
         <span className="dbz-toolbar-spacer" />
 
         <Button
-          icon={<RedoOutlined />}
-          disabled={selectedRecords.length === 0}
+          icon={<CheckOutlined />}
+          disabled={pendingTargets.length === 0}
           loading={acting}
-          onClick={() => confirmRetry(selectedRecords)}
+          onClick={() => openMarkHandled(pendingTargets)}
+        >
+          标记已处理
+        </Button>
+        <Button
+          icon={<RedoOutlined />}
+          disabled={retryTargets.length === 0}
+          loading={acting}
+          onClick={() => confirmRetry(retryTargets)}
         >
           重投选中
         </Button>
         <Button
           danger
           icon={<DeleteOutlined />}
-          disabled={selectedRecords.length === 0}
+          disabled={pendingTargets.length === 0}
           loading={acting}
-          onClick={() => discardRecords(selectedRecords)}
+          onClick={() => discardRecords(pendingTargets)}
         >
           废弃选中
+        </Button>
+        <Button
+          icon={<UndoOutlined />}
+          disabled={manualTargets.length === 0}
+          loading={acting}
+          onClick={() => undoHandled(manualTargets)}
+        >
+          撤销处理
+        </Button>
+        <Button icon={<ExportOutlined />} loading={exporting} onClick={exportCsv}>
+          导出 CSV
         </Button>
         <Button icon={<ReloadOutlined />} onClick={reload}>
           刷新
@@ -618,7 +850,7 @@ export default function DeadLetterPage() {
           getCheckboxProps: (record) => ({ disabled: record.status === 1 || record.status === 2 }),
         }}
         locale={{ emptyText: loading ? '加载中…' : '暂无死信记录' }}
-        scroll={{ x: 1400 }}
+        scroll={{ x: 1900 }}
         pagination={{
           current: pageNum,
           pageSize,
@@ -635,6 +867,29 @@ export default function DeadLetterPage() {
         }}
       />
 
+      <Modal
+        open={handledOpen}
+        title={`标记 ${handledTargets.length} 条为「已人工处理」`}
+        okText="确认标记"
+        cancelText="取消"
+        confirmLoading={acting}
+        onOk={submitMarkHandled}
+        onCancel={() => setHandledOpen(false)}
+        destroyOnHidden
+      >
+        <Typography.Paragraph type="secondary" style={{ marginTop: 8 }}>
+          表示问题已在别处修好，不再需要重投；与「已废弃」不同，后者表示不再处理。处理人与时间由服务端记录，之后可撤销。
+        </Typography.Paragraph>
+        <Input.TextArea
+          rows={4}
+          maxLength={500}
+          showCount
+          placeholder="请填写处理说明，例如：在目标库补录后已人工处理"
+          value={handledRemark}
+          onChange={(event) => setHandledRemark(event.target.value)}
+        />
+      </Modal>
+
       <Drawer
         open={Boolean(detail)}
         title={detail ? `死信详情 · #${shortId(detail.id)}` : '死信详情'}
@@ -643,7 +898,7 @@ export default function DeadLetterPage() {
         extra={
           detail && (
             <Space>
-              {detail.status !== 1 && detail.status !== 2 && (
+              {canRetry(detail) && (
                 <Button
                   icon={<RedoOutlined />}
                   loading={acting}
@@ -653,8 +908,26 @@ export default function DeadLetterPage() {
                 </Button>
               )}
               {detail.status === STATUS_PENDING && (
+                <Button
+                  icon={<CheckOutlined />}
+                  loading={acting}
+                  onClick={() => openMarkHandled([detail])}
+                >
+                  标记已处理
+                </Button>
+              )}
+              {detail.status === STATUS_PENDING && (
                 <Button danger icon={<DeleteOutlined />} loading={acting} onClick={() => discardRecords([detail])}>
                   废弃
+                </Button>
+              )}
+              {isManualHandled(detail) && (
+                <Button
+                  icon={<UndoOutlined />}
+                  loading={acting}
+                  onClick={() => undoHandled([detail])}
+                >
+                  撤销处理
                 </Button>
               )}
             </Space>
@@ -681,14 +954,8 @@ export default function DeadLetterPage() {
             <div className="dbz-status-row">
               <span className="dbz-status-row-label">连接器</span>
               <span className="dbz-status-row-value">
-                {nameOf(detail.connectorType, detail.connectorId)}
+                {nameOf(detail.connectorId)}
                 <span className="dbz-mono dbz-id"> #{shortId(detail.connectorId)}</span>
-              </span>
-            </div>
-            <div className="dbz-status-row">
-              <span className="dbz-status-row-label">方向</span>
-              <span className="dbz-status-row-value">
-                <StatusTag dic={deadLetterConnectorTypeDic} value={detail.connectorType} />
               </span>
             </div>
             <div className="dbz-status-row">
@@ -703,6 +970,12 @@ export default function DeadLetterPage() {
             <div className="dbz-status-row">
               <span className="dbz-status-row-label">Topic</span>
               <span className="dbz-status-row-value dbz-mono">{orDash(detail.topic)}</span>
+            </div>
+            <div className="dbz-status-row">
+              <span className="dbz-status-row-label">分区 / Offset</span>
+              <span className="dbz-status-row-value dbz-mono">
+                {detail.partition ?? '—'} / {detail.offset ?? '—'}
+              </span>
             </div>
             <div className="dbz-status-row">
               <span className="dbz-status-row-label">记录主键</span>
@@ -726,36 +999,55 @@ export default function DeadLetterPage() {
                 <span className="dbz-status-row-value">{formatMs(detail.handledMs)}</span>
               </div>
             )}
+            {detail.handledBy && (
+              <div className="dbz-status-row">
+                <span className="dbz-status-row-label">处理人</span>
+                <span className="dbz-status-row-value">#{shortId(detail.handledBy)}</span>
+              </div>
+            )}
             {detail.remark && (
               <div className="dbz-status-row">
-                <span className="dbz-status-row-label">备注</span>
+                <span className="dbz-status-row-label">处理说明</span>
                 <span className="dbz-status-row-value">{detail.remark}</span>
               </div>
+            )}
+
+            <Typography.Title level={5} style={{ marginTop: 16 }}>
+              失败详情
+            </Typography.Title>
+            {detail.failureDetail ? (
+              <Popover
+                trigger="click"
+                placement="topLeft"
+                title="失败详情（全文）"
+                content={
+                  <div className="dbz-failure-detail-popover">
+                    <Button
+                      size="small"
+                      icon={<CopyOutlined />}
+                      onClick={() => {
+                        navigator.clipboard
+                          ?.writeText(detail.failureDetail)
+                          .then(() => message.success('失败详情已复制'))
+                          .catch(() => message.error('复制失败，请手动选择文本'));
+                      }}
+                    >
+                      复制
+                    </Button>
+                    <pre className="dbz-json-view">{detail.failureDetail}</pre>
+                  </div>
+                }
+              >
+                <Typography.Link>查看失败详情全文（可复制）</Typography.Link>
+              </Popover>
+            ) : (
+              <Typography.Text type="secondary">没有失败详情</Typography.Text>
             )}
 
             <Typography.Title level={5} style={{ marginTop: 16 }}>
               失败原因
             </Typography.Title>
             <Typography.Text strong>{orDash(detail.reason)}</Typography.Text>
-
-            <Typography.Title level={5} style={{ marginTop: 16 }}>
-              失败详情
-            </Typography.Title>
-            {detail.failureDetail ? (
-              <Typography.Paragraph
-                className="dbz-status-reason"
-                style={{ marginBottom: 0, whiteSpace: 'pre-wrap' }}
-                copyable={{
-                  text: detail.failureDetail,
-                  tooltips: ['复制失败详情', '已复制'],
-                }}
-                ellipsis={{ rows: 6, expandable: true, symbol: '展开完整详情' }}
-              >
-                {detail.failureDetail}
-              </Typography.Paragraph>
-            ) : (
-              <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="没有失败详情" />
-            )}
 
             <Row gutter={16} style={{ marginTop: 16 }}>
               <Col span={detail.canEditPayload ? 12 : 24}>
@@ -835,7 +1127,7 @@ export default function DeadLetterPage() {
                     type="primary"
                     icon={<RedoOutlined />}
                     loading={acting}
-                    disabled={detail.status === 1 || detail.status === 2}
+                    disabled={detail.status !== STATUS_PENDING}
                     onClick={confirmRetryEdited}
                   >
                     改后重投
@@ -862,13 +1154,19 @@ export default function DeadLetterPage() {
               />
             )}
 
-            {(detail.status === 1 || detail.status === 2) && (
-              <Tag
-                color={detail.status === 1 ? 'success' : 'default'}
-                icon={<CheckCircleOutlined />}
-                style={{ marginTop: 12 }}
-              >
-                {detail.status === 1 ? '已重投，无需再处理' : '已废弃，仅保留追溯'}
+            {detail.status === 1 && (
+              <Tag color="success" icon={<CheckCircleOutlined />} style={{ marginTop: 12 }}>
+                已重投，无需再处理
+              </Tag>
+            )}
+            {detail.status === 2 && (
+              <Tag color="default" icon={<CheckCircleOutlined />} style={{ marginTop: 12 }}>
+                已废弃，仅保留追溯
+              </Tag>
+            )}
+            {detail.status === STATUS_MANUAL_HANDLED && (
+              <Tag color="processing" icon={<CheckOutlined />} style={{ marginTop: 12 }}>
+                已人工处理：问题已在别处解决，可撤销
               </Tag>
             )}
           </div>
