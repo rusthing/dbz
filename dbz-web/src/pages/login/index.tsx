@@ -8,9 +8,7 @@
 import { Alert, Button, Input, Typography } from 'antd';
 import { useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ApiError } from '../../api/client';
 import { useAuth } from '../../auth/AuthContext';
-import { LOGIN_CODE_TEXT } from '../../auth/api';
 
 /** 只接受站内绝对路径，拒绝 `//host`、反斜杠与控制字符 */
 function safeReturnUrl(raw: string | null): string {
@@ -52,11 +50,8 @@ export default function LoginPage() {
       await login(account, password);
       navigate(returnUrl, { replace: true });
     } catch (reason) {
-      if (reason instanceof ApiError) {
-        setError(reason.code ? (LOGIN_CODE_TEXT[reason.code] ?? reason.message) : reason.message);
-      } else {
-        setError(reason instanceof Error ? reason.message : '登录失败');
-      }
+      // auth core 已把业务编码翻译成可读文本，这里直接展示。
+      setError(reason instanceof Error ? reason.message : '登录失败');
     } finally {
       setSubmitting(false);
     }

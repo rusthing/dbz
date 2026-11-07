@@ -10,15 +10,13 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Navigate, useLocation, useNavigate } from 'react-router-dom';
-import { loginApi, logoutApi } from './api';
+import { loginWithPassword, logoutRemote, startSessionWatch } from '../lib/auth-core';
 import {
   SESSION_EXPIRED_EVENT,
   clearSession,
   readSession,
-  saveSession,
   type AuthSession,
 } from './session';
-import { sm3 } from '../lib/sm3';
 
 interface AuthContextValue {
   session: AuthSession | null;
@@ -47,30 +45,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onExpired);
   }, [navigate, location.pathname, location.search]);
 
+  /** 空闲时按分钟检查一次本地令牌是否过期，到期统一回登录页。 */
+  useEffect(() => startSessionWatch(), []);
+
   const login = useCallback(async (account: string, password: string) => {
-    const result = await loginApi({ account: account.trim(), loginPswd: sm3(password) });
-    const next: AuthSession = {
-      token: result.token,
-      tokenType: result.tokenType,
-      expireMs: result.expireMs,
-      userId: result.userId,
-      name: result.name,
-      nickName: result.nickName,
-      loginPswdDefault: result.loginPswdDefault,
-      loginLogId: result.loginLogId,
-    };
-    saveSession(next);
+    // auth-core 内部完成 SM3 摘要、登录调用与会话写入。
+    const next = await loginWithPassword(account, password);
     setSession(next);
   }, []);
 
   const logout = useCallback(async () => {
-    try {
-      await logoutApi();
-    } catch {
-      /* 令牌已失效时登出接口可能返回业务错误；本地会话仍需清掉 */
-    }
-    clearSession();
-    setSession(null);
+    // 退出接口尽力而为：adm 不可用时也必须清掉本地会话。
+    await logoutRemote().catch(() => undefined);
+    // 免登录模式下仍保持系统账号会话；required 模式 readSession() 返回 null。
+    setSession(readSession());
   }, []);
 
   const value = useMemo<AuthContextValue>(

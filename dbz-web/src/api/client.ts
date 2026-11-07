@@ -15,7 +15,7 @@
  * 清登录态并跳登录页，不会让用户卡在「看着像登录、点什么都报错」的界面。
  */
 
-import { notifySessionExpired, readSession } from '../auth/session';
+import { authHeaders, handleUnauthorized } from '../lib/auth-core';
 import type { PageRx, Ro } from './types';
 
 /** 与 `RoResult::Success` 对应的结果码 */
@@ -79,15 +79,11 @@ async function request<T>(
   options: { params?: QueryParams; body?: unknown } = {},
 ): Promise<Ro<T>> {
   const url = `${API_BASE}${path}${buildQuery(options.params)}`;
-  const session = readSession();
   const headers: Record<string, string> = {
     Accept: 'application/json',
     'Content-Type': 'application/json',
+    ...authHeaders(),
   };
-  if (session) {
-    headers.Authorization = `Bearer ${session.token}`;
-    headers['X-User-Id'] = session.userId;
-  }
 
   let response: Response;
   try {
@@ -114,7 +110,8 @@ async function request<T>(
 
   if (!response.ok) {
     if (response.status === 401) {
-      notifySessionExpired();
+      // 令牌失效：清本地会话并通知 AuthProvider 回登录页。
+      handleUnauthorized();
     }
     throw new ApiError(ro?.msg || `HTTP ${response.status} ${response.statusText}`, {
       status: response.status,
@@ -129,7 +126,7 @@ async function request<T>(
   if (ro.result !== RO_SUCCESS) {
     // 少数认证链路在 HTTP 200 里用 ADM00005 表达令牌失效，语义与 401 一致
     if (ro.code === 'ADM00005') {
-      notifySessionExpired();
+      handleUnauthorized();
     }
     throw new ApiError(ro.msg || '请求失败', {
       result: ro.result,

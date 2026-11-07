@@ -12,6 +12,8 @@ interface ImportMetaEnv {
   readonly VITE_ADM_PROXY_TARGET?: string;
   /** adm-rs 认证接口前缀，如 `/admrs-svr` */
   readonly VITE_AUTH_BASE?: string;
+  /** 认证模式：`required`（缺省）或 `disabled`（仅开发环境免登录） */
+  readonly VITE_AUTH_MODE?: "required" | "disabled";
 }
 
 interface ImportMeta {

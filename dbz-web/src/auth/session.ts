@@ -1,90 +1,40 @@
 /**
- * # 登录态存储
- *
- * 令牌与用户信息放在 localStorage 的 `dbz.auth.session`，与 adm-web 的
- * `adm.auth.session` 结构一致（只换了 key，避免两个产品共用同一份会话时
- * 互相踩踏）。服务端下发 `expireMs`（毫秒时间戳，字符串形态避免丢精度），
- * 本地读取时先判过期；过期即清会话并广播事件，由 AuthProvider 统一跳登录页。
+ * 会话存储统一交给 `lib/auth-core.ts`（六端共用的认证内核）。
+ * 本文件只保留对外导出名，并负责把 dbz-web 的旧会话 key 迁移到统一 key。
  */
+import {
+  SESSION_EXPIRED_EVENT,
+  SESSION_KEY,
+  clearSession,
+  isExpired,
+  notifySessionExpired,
+  readSession,
+  saveSession,
+  type AuthSession,
+} from "../lib/auth-core";
 
-/** 会话失效广播（HTTP 401 / `ADM00005` / 本地令牌过期） */
-export const SESSION_EXPIRED_EVENT = 'dbz:session-expired';
-
-export const SESSION_KEY = 'dbz.auth.session';
-
-/** # 登录会话 */
-export interface AuthSession {
-  token: string;
-  tokenType: string;
-  /** 令牌到期时间戳（毫秒，服务端以字符串下发） */
-  expireMs: string;
-  userId: string;
-  /** 登录名 */
-  name: string;
-  nickName?: string;
-  loginPswdDefault: boolean;
-  loginLogId: string;
-}
+/** dbz-web 旧版本使用的会话 key，只在迁移时读一次 */
+const LEGACY_SESSION_KEY = "dbz.auth.session";
 
 /**
- * 广播会话失效。
- *
- * `api/client.ts` 是纯请求层，不该直接认识 React / Router；用 DOM 事件把
- * 「令牌已作废」传给 AuthProvider，由它统一清状态并跳登录。
+ * 一次性迁移：旧 key 有值而统一 key 无值时复制过去，然后删掉旧 key。
+ * 统一 key 已有值时以新值为准，避免旧会话覆盖本轮登录后的状态。
  */
-export function notifySessionExpired(): void {
-  if (typeof window !== 'undefined') {
-    window.dispatchEvent(new CustomEvent(SESSION_EXPIRED_EVENT));
-  }
-}
-
-function readJson<T>(key: string): T | null {
+function migrateLegacySession(): void {
+  if (typeof window === "undefined") return;
   try {
-    const raw = localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : null;
+    const legacy = localStorage.getItem(LEGACY_SESSION_KEY);
+    if (!legacy) return;
+    if (!localStorage.getItem(SESSION_KEY)) {
+      localStorage.setItem(SESSION_KEY, legacy);
+    }
+    localStorage.removeItem(LEGACY_SESSION_KEY);
   } catch {
-    return null;
+    /* localStorage 不可用时忽略 */
   }
 }
 
-function writeJson(key: string, value: unknown): void {
-  try {
-    localStorage.setItem(key, JSON.stringify(value));
-  } catch {
-    /* localStorage 被禁用时不影响本次会话（刷新后会要求重新登录） */
-  }
-}
+migrateLegacySession();
 
-function remove(key: string): void {
-  try {
-    localStorage.removeItem(key);
-  } catch {
-    /* ignore */
-  }
-}
-
-export function isExpired(session: AuthSession | null): boolean {
-  if (!session) return true;
-  const expire = Number(session.expireMs);
-  return !Number.isFinite(expire) || expire <= Date.now();
-}
-
-export function readSession(): AuthSession | null {
-  const session = readJson<AuthSession>(SESSION_KEY);
-  if (!session?.token) return null;
-  if (isExpired(session)) {
-    clearSession();
-    // 本地已经判定过期，但 React 里的 session 状态还是旧的；广播一次让界面同步登出。
-    notifySessionExpired();
-    return null;
-  }
-  return session;
-}
-
-export function saveSession(session: AuthSession): void {
-  writeJson(SESSION_KEY, session);
-}
-
-export function clearSession(): void {
-  remove(SESSION_KEY);
-}
+export { SESSION_EXPIRED_EVENT, clearSession, isExpired, notifySessionExpired, readSession, saveSession };
+export type { AuthSession };
