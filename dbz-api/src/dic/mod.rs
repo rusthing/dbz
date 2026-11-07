@@ -1,4 +1,5 @@
 mod connector_run_status;
+mod control_plane_node_type;
 mod dead_letter_connector_type;
 mod dead_letter_failure_category;
 mod dead_letter_status;
@@ -9,6 +10,7 @@ mod kafka_sasl_mechanism;
 mod kafka_security_protocol;
 
 pub use connector_run_status::*;
+pub use control_plane_node_type::*;
 pub use dead_letter_connector_type::*;
 pub use dead_letter_failure_category::*;
 pub use dead_letter_status::*;

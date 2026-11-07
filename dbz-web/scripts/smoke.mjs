@@ -329,6 +329,18 @@ async function layoutCheck(target, label) {
 const visibleModal = () => page.locator('.ant-modal-wrap:visible');
 
 /**
+ * # 选中画布节点
+ *
+ * 直接派发 pointerdown/pointerup：节点可能被图例、缩略图等浮层压住，
+ * 这里只验证选中逻辑，不再为像素级遮挡单开一条用例。
+ */
+async function selectNode(key) {
+  const node = page.locator(`.dbz-graph-node[data-node-key="${key}"]`);
+  await node.dispatchEvent('pointerdown', { pointerId: 1, button: 0, buttons: 1 });
+  await node.dispatchEvent('pointerup', { pointerId: 1, button: 0 });
+}
+
+/**
  * # 点「取消」关表单弹窗
  *
  * 改过字段的表单会先弹「放弃未保存的修改？」（脏状态确认）；只浏览过的编辑表单
@@ -424,6 +436,9 @@ const page = await context.newPage();
 const pageErrors = [];
 const consoleErrors = [];
 const posted = [];
+/** 控制面画布布局：PUT 落库、GET 读取，用来验证「刷新后位置保持」 */
+const layoutStore = [];
+let nextBrokerId = 499;
 /** 置 true 让下一次预检失败一次，用完自动复位：用来验证「预检失败能原地重试」 */
 let failNextPreview = false;
 
@@ -464,6 +479,53 @@ await page.route('**/dbz/**', async (route) => {
     // 死信废弃只改状态，返回空信封即可
     if (path === '/dbz/dead-letter/discard') {
       return route.fulfill({ json: { result: 1, msg: '成功', timestamp: Date.now() } });
+    }
+    // 画布布局：按 (nodeType, nodeId) 覆盖写，模拟服务端的 upsert
+    if (path === '/dbz/control-plane/layout' && request.method() === 'PUT') {
+      const body = request.postDataJSON();
+      const index = layoutStore.findIndex(
+        (item) => item.nodeType === body.nodeType && item.nodeId === body.nodeId,
+      );
+      const row = { ...body, updateMs: String(Date.now()) };
+      if (index >= 0) {
+        layoutStore[index] = row;
+      } else {
+        layoutStore.push(row);
+      }
+      return route.fulfill({ json: { result: 1, msg: '成功', timestamp: Date.now() } });
+    }
+    if (path === '/dbz/control-plane/layout' && request.method() === 'DELETE') {
+      const nodeType = Number(url.searchParams.get('nodeType'));
+      const nodeId = url.searchParams.get('nodeId');
+      const index = layoutStore.findIndex(
+        (item) => item.nodeType === nodeType && item.nodeId === nodeId,
+      );
+      if (index >= 0) {
+        layoutStore.splice(index, 1);
+      }
+      return route.fulfill({ json: { result: 1, msg: '成功', timestamp: Date.now() } });
+    }
+    // 调色板新增 Kafka 集群：真的把记录塞进夹具，页面刷新后才能找到新节点并保存布局
+    if (path === '/dbz/kafka-broker' && request.method() === 'POST') {
+      const body = request.postDataJSON();
+      const record = {
+        id: String(nextBrokerId),
+        name: body.name,
+        bootstrapServers: body.bootstrapServers,
+        securityProtocol: body.securityProtocol,
+        saslMechanism: body.saslMechanism,
+        saslUsername: body.saslUsername ?? null,
+        runStatus: 0,
+        remark: body.remark ?? '',
+        enabled: body.enabled ?? true,
+        createrId: '1',
+        createMs: String(Date.now()),
+        updaterId: '1',
+        updateMs: String(Date.now()),
+      };
+      nextBrokerId += 1;
+      brokers.push(record);
+      return route.fulfill({ json: ro(record) });
     }
     await route.fulfill({ json: { result: 1, msg: '成功', timestamp: Date.now() } });
     return;
@@ -508,6 +570,9 @@ await page.route('**/dbz/**', async (route) => {
     });
   }
   if (path === '/dbz/dead-letter/page') return route.fulfill({ json: pageOf(deadLetters) });
+  if (path === '/dbz/control-plane/layout') {
+    return route.fulfill({ json: ro(layoutStore) });
+  }
   if (path === '/dbz/dead-letter/pending-count') {
     return route.fulfill({
       json: ro([{ connectorType: 2, connectorId: '301', count: 1 }]),
@@ -556,71 +621,96 @@ try {
   );
   await page.screenshot({ path: `${SHOTS}/01-dashboard.png`, fullPage: true });
 
-  /* 1a. 控制面视图：broker → Connect → 连接器的层级与实时状态 */
+  /* 1a. 控制面视图：自由画布、节点操作、下游锁定的连线规则 */
   await page.click('.ant-menu-item:has-text("控制面视图")');
-  await page.waitForSelector('.dbz-topology-broker', { state: 'visible' });
+  await page.waitForSelector('.dbz-graph-node[data-node-key="1:401"]');
   check(
-    '控制面按 broker 分组',
-    (await page.locator('.dbz-topology-broker').count()) >= 2,
-    `实际 ${await page.locator('.dbz-topology-broker').count()}`,
+    '画布渲染 8 个节点（3 broker + 2 Connect + 2 上游 + 1 下游）',
+    (await page.locator('.dbz-graph-node').count()) === 8,
+    `实际 ${await page.locator('.dbz-graph-node').count()}`,
   );
   check(
-    '控制面展示 Connect 层级',
-    (await page.locator('.dbz-topology-connect').count()) === 2,
-    `实际 ${await page.locator('.dbz-topology-connect').count()}`,
+    '画布渲染 6 条连线（归属 5 + 数据流 1）',
+    (await page.locator('.dbz-graph-edge-hit').count()) === 6,
+    `实际 ${await page.locator('.dbz-graph-edge-hit').count()}`,
   );
   check(
-    '控制面展示上游连接器',
-    (await page.locator('.dbz-topology-connector:has-text("订单库增量")').count()) >= 1,
+    '左侧调色板有 4 类可拖拽组件',
+    (await page.locator('.dbz-palette-item').count()) === 4,
+    `实际 ${await page.locator('.dbz-palette-item').count()}`,
   );
   check(
-    '控制面展示下游连接器',
-    (await page.locator('.dbz-topology-connector:has-text("订单同步到数仓")').count()) >= 1,
+    '缩略图与缩放控件可见',
+    (await page.locator('.dbz-graph-minimap').isVisible()) &&
+      (await page.locator('.dbz-graph-controls').isVisible()),
+  );
+  check(
+    '图例区分归属、数据流与下游锁定',
+    (await page.locator('.dbz-graph-legend').innerText()).includes('下游锁定'),
+  );
+  check(
+    '顶栏展示节点数',
+    (await page.locator('.dbz-canvas-topbar .ant-tag:has-text("8 个节点")').count()) === 1,
   );
   check(
     'Connect 自身健康标签来自 health 接口',
-    (await page.locator('.dbz-topology-connect .ant-tag:has-text("v3.7.1")').count()) === 2,
-    `实际 ${await page.locator('.dbz-topology-connect .ant-tag:has-text("v3.7.1")').count()}`,
+    (await page.locator('.dbz-graph-node--connect .ant-tag:has-text("v3.7.1")').count()) === 2,
+    `实际 ${await page.locator('.dbz-graph-node--connect .ant-tag:has-text("v3.7.1")').count()}`,
   );
   check(
     '顶部汇总 Connect 健康可达数',
-    (await page.locator('.dbz-toolbar .ant-tag:has-text("Connect 健康 2/2 可达")').count()) === 1,
-  );
-  check(
-    '连接器卡片显示待处理死信角标',
-    (await page
-      .locator('.dbz-topology-connector:has-text("订单同步到数仓") .ant-tag:has-text("死信 1")')
-      .count()) >= 1,
+    (await page.locator('.dbz-canvas-topbar .ant-tag:has-text("Connect 可达 2/2")').count()) === 1,
   );
   check(
     '顶部汇总待处理死信总数',
-    (await page.locator('.dbz-toolbar .ant-tag:has-text("待处理死信 1")').count()) === 1,
+    (await page.locator('.dbz-canvas-topbar .ant-tag:has-text("死信 1")').count()) === 1,
   );
   check(
-    '集群上有实时连接器但库里没有时标出未纳管',
-    (await page.locator('.dbz-topology-unmanaged:has-text("manual-test-connector")').count()) >= 1,
-  );
-  const sinkRow = page.locator('.dbz-topology-connector:has-text("订单同步到数仓")').first();
-  check(
-    '未部署的 sink 实时状态标为未部署',
-    (await sinkRow.locator('.ant-tag:has-text("集群上未部署")').count()) === 1,
+    '下游节点显示待处理死信角标',
+    (await page
+      .locator('.dbz-graph-node[data-node-key="4:301"] .ant-tag:has-text("死信 1")')
+      .count()) >= 1,
   );
   check(
-    '库内与实时不一致有汇总提示',
-    (await page.locator('.ant-alert:has-text("库内状态与集群实时状态不一致")').count()) === 1,
+    '库内与实时不一致的节点有黄色标记',
+    (await page.locator('.dbz-graph-mismatch').count()) >= 2,
+    `实际 ${await page.locator('.dbz-graph-mismatch').count()}`,
   );
   check(
-    '不一致的连接器节点有黄色标记',
-    (await page.locator('.dbz-topology-mismatch').count()) >= 2,
-    `实际 ${await page.locator('.dbz-topology-mismatch').count()}`,
+    '顶部汇总状态不一致处数',
+    (await page.locator('.dbz-canvas-topbar .ant-tag:has-text("处状态不一致")').count()) === 1,
+  );
+
+  // 选中节点 → 编辑配置：请求体要带新名称
+  await selectNode('1:401');
+  await page.waitForSelector('.dbz-graph-inspector .dbz-inspector-panel');
+  check(
+    '选中节点后检查器展示名称与类型',
+    (await page.locator('.dbz-graph-inspector').innerText()).includes('订单消息集群'),
+  );
+  await page.locator('.dbz-graph-inspector button:has-text("编辑配置")').click();
+  await page.waitForSelector('.ant-modal-wrap:visible');
+  const brokerModal = visibleModal().last();
+  // 等 Modal 的 afterOpenChange 回填完成，否则刚 fill 的值会被 setFieldsValue 覆盖
+  await page.waitForFunction(() => {
+    const input = document.querySelector('.ant-modal-wrap #name');
+    return input && input.value !== '';
+  });
+  await brokerModal.locator('#name').fill('订单消息集群-冒烟');
+  await brokerModal.locator('.ant-modal-footer .ant-btn-primary').click();
+  await waitNoVisibleModal();
+  const editRequest = posted.findLast(
+    (item) => item.method === 'PUT' && item.path === '/dbz/kafka-broker',
+  );
+  check(
+    '画布内编辑配置调用修改接口',
+    editRequest?.body?.id === '401' && editRequest?.body?.name === '订单消息集群-冒烟',
+    JSON.stringify(editRequest?.body),
   );
 
   // 图上直接重启：请求要打到 Connect 的 restart 接口
-  await page
-    .locator('.dbz-topology-connector:has-text("订单库增量")')
-    .first()
-    .locator('button:has-text("重启")')
-    .click();
+  await selectNode('3:201');
+  await page.locator('.dbz-graph-inspector button:has-text("重启")').click();
   const restartPopconfirm = page.locator('.ant-popconfirm', { hasText: '重启连接器' });
   await restartPopconfirm.waitFor();
   await restartPopconfirm.locator('.ant-btn-primary').click();
@@ -638,20 +728,14 @@ try {
 
   // 详情抽屉：集群实时配置 + 实时状态 + 任务
   await page
-    .locator('.dbz-topology-connector:has-text("订单库增量")')
-    .first()
-    .locator('button:has-text("详情")')
+    .locator('.dbz-graph-inspector button')
+    .filter({ hasText: /详\s*情/ })
     .click();
   await page.waitForSelector('.ant-drawer-title:has-text("连接器详情")');
   await page.waitForSelector('.ant-drawer .ant-tag:has-text("集群实时")');
   check(
     '详情展示集群实时连接器配置',
-    (await page.locator('.ant-drawer .dbz-json-view').innerText()).includes('MySqlConnector') &&
-      (await page.locator('.ant-drawer .ant-tag:has-text("集群实时")').count()) === 1,
-  );
-  check(
-    '详情同时展示库内与实时状态',
-    (await page.locator('.ant-drawer').innerText()).includes('集群实时状态'),
+    (await page.locator('.ant-drawer .dbz-json-view').innerText()).includes('MySqlConnector'),
   );
   check(
     '详情展示实时任务',
@@ -660,7 +744,194 @@ try {
   );
   await page.screenshot({ path: `${SHOTS}/01a-control-plane-detail.png`, fullPage: false });
   await page.click('.ant-drawer-close');
+  await page.waitForSelector('.ant-drawer-title', { state: 'hidden' });
+  // 抽屉遮罩有自己的淡出动画，没散场前下面的节点点不到
+  await page.waitForTimeout(500);
+
+  // 删除下游节点：提示必须列出受影响的数据流与写入目标
+  await selectNode('4:301');
+  await page.locator('.dbz-inspector-footer button:has-text("删除节点")').click();
+  const deleteConfirm = page.locator('.ant-modal-confirm');
+  await deleteConfirm.waitFor({ state: 'visible' });
+  const deleteText = (await deleteConfirm.innerText()).replace(/\s+/g, ' ');
+  check(
+    '删除提示列出受影响的数据流',
+    deleteText.includes('订单库增量 → 订单同步到数仓'),
+    deleteText.slice(0, 160),
+  );
+  check(
+    '删除提示说明受影响的写入目标',
+    deleteText.includes('写入目标 订单同步到数仓'),
+    deleteText.slice(0, 160),
+  );
+  await deleteConfirm.locator('.ant-btn').first().click();
+  await deleteConfirm.waitFor({ state: 'hidden' });
+  check(
+    '取消删除时不调用删除接口',
+    !posted.some((item) => item.method === 'DELETE' && item.path === '/dbz/sink-connector/301'),
+  );
+
+  // 点选连线 → 检查器说明下游锁定；Delete 快捷键被拒绝
+  // 数据流是 source → sink 的正交折线，两个节点左对齐，只有两节点之间的竖直段没有被节点盖住
+  const flowSourceBox = await page
+    .locator('.dbz-graph-node[data-node-key="3:201"]')
+    .boundingBox();
+  const flowSinkBox = await page
+    .locator('.dbz-graph-node[data-node-key="4:301"]')
+    .boundingBox();
+  await page.mouse.click(
+    (flowSourceBox.x + flowSourceBox.width + flowSinkBox.x) / 2,
+    (flowSourceBox.y + flowSourceBox.height + flowSinkBox.y) / 2,
+  );
+  await page.waitForSelector('.dbz-graph-inspector .dbz-inspector-panel');
+  check(
+    '选中连线后检查器标明下游锁定',
+    (await page.locator('.dbz-graph-inspector').innerText()).includes('下游（锁定）') &&
+      (await page.locator('.dbz-graph-inspector').innerText()).includes('下游目标不可更改'),
+  );
+  await page.keyboard.press('Delete');
+  await page.waitForSelector('.ant-message-notice-content:has-text("连线不能删除")');
+  check(
+    '删除快捷键对连线无效并给出提示',
+    (await page.locator('.ant-message-notice-content:has-text("连线不能删除")').count()) >= 1,
+  );
+  check(
+    '连线没有删除接口调用',
+    !posted.some((item) => item.method === 'DELETE' && item.path === '/dbz/control-plane/layout'),
+  );
+
+  // 拖动连线上游端：数据流的上游从 201 换到另一条 source
+  const reconHandle = page.locator(
+    '[data-edge-id="flow:source:201:sink:301"].dbz-graph-edge-handle',
+  );
+  const handleBox = await reconHandle.boundingBox();
+  const otherSourceBox = await page
+    .locator('.dbz-graph-node[data-node-key="3:1928374650123456789"]')
+    .boundingBox();
+  const postedBeforeReconnect = posted.length;
+  await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(otherSourceBox.x + 40, otherSourceBox.y + 40, { steps: 12 });
+  await page.mouse.up();
+  await page.waitForTimeout(400);
+  const reconnectRequest = posted
+    .slice(postedBeforeReconnect)
+    .find((item) => item.method === 'PUT' && item.path === '/dbz/sink-connector');
+  check(
+    '拖动连线上游端可更换上游',
+    reconnectRequest?.body?.id === '301' &&
+      reconnectRequest?.body?.sourceConnectorId === '1928374650123456789',
+    JSON.stringify(reconnectRequest?.body),
+  );
+
+  // 下游锁标不响应拖拽：拖到别的节点不会产生任何请求
+  const lockMarker = page.locator(
+    '[data-edge-id="flow:source:201:sink:301"].dbz-graph-edge-lock',
+  );
+  const lockBox = await lockMarker.boundingBox();
+  const postedBeforeLockDrag = posted.length;
+  await page.mouse.move(lockBox.x + lockBox.width / 2, lockBox.y + lockBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(otherSourceBox.x + 60, otherSourceBox.y + 60, { steps: 12 });
+  await page.mouse.up();
   await page.waitForTimeout(300);
+  check(
+    '下游端拖拽无效，不产生写请求',
+    posted.length === postedBeforeLockDrag,
+    `${postedBeforeLockDrag} -> ${posted.length}`,
+  );
+  check(
+    '下游锁标带「下游目标不可更改」提示',
+    (await page
+      .locator('[data-edge-id="flow:source:201:sink:301"].dbz-graph-edge-lock title')
+      .textContent())?.includes('下游目标不可更改') ?? false,
+  );
+
+  // 拖动节点后自动保存布局；刷新后位置保持
+  const brokerNode = page.locator('.dbz-graph-node[data-node-key="1:401"]');
+  const brokerBox = await brokerNode.boundingBox();
+  await page.mouse.move(brokerBox.x + brokerBox.width / 2, brokerBox.y + brokerBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(
+    brokerBox.x + brokerBox.width / 2 + 120,
+    brokerBox.y + brokerBox.height / 2 + 80,
+    { steps: 14 },
+  );
+  await page.mouse.up();
+  await page.waitForTimeout(400);
+  const layoutPut = posted.findLast(
+    (item) =>
+      item.method === 'PUT' &&
+      item.path === '/dbz/control-plane/layout' &&
+      item.body?.nodeType === 1 &&
+      item.body?.nodeId === '401',
+  );
+  check(
+    '拖动节点后自动保存布局',
+    typeof layoutPut?.body?.x === 'number' && typeof layoutPut?.body?.y === 'number',
+    JSON.stringify(layoutPut?.body),
+  );
+
+  await page.reload({ waitUntil: 'networkidle' });
+  await page.waitForSelector('.dbz-graph-node[data-node-key="1:401"]');
+  const persistedLeft = await page
+    .locator('.dbz-graph-node[data-node-key="1:401"]')
+    .evaluate((element) => parseFloat(element.style.left));
+  check(
+    '刷新后节点位置从库内布局恢复',
+    Math.abs(persistedLeft - layoutPut.body.x) < 1,
+    `节点 left=${persistedLeft}，保存值=${layoutPut.body.x}`,
+  );
+
+  // 调色板拖入新节点：表单保存后落到画布并写入布局
+  const paletteBroker = page.locator('.dbz-palette-item[data-kind="broker"]');
+  const paletteBox = await paletteBroker.boundingBox();
+  const viewportBox = await page.locator('.dbz-graph-viewport').boundingBox();
+  const dropX = viewportBox.x + viewportBox.width * 0.55;
+  const dropY = viewportBox.y + viewportBox.height * 0.72;
+  await page.mouse.move(paletteBox.x + paletteBox.width / 2, paletteBox.y + paletteBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(dropX, dropY, { steps: 12 });
+  await page.mouse.up();
+  await page.waitForSelector('.ant-modal-wrap:visible');
+  const createModal = visibleModal().last();
+  // 新增表单没有回填值可等，等 afterOpenChange 跑完（resetFields + 默认值）再填
+  await page.waitForTimeout(500);
+  await createModal.locator('#name').fill('冒烟新集群');
+  await createModal.locator('#bootstrapServers').fill('10.0.9.9:9092');
+  await createModal.locator('.ant-modal-footer .ant-btn-primary').click();
+  await waitNoVisibleModal();
+  await page.waitForSelector('.dbz-graph-node[data-node-key="1:499"]');
+  const createLayout = posted.findLast(
+    (item) =>
+      item.method === 'PUT' &&
+      item.path === '/dbz/control-plane/layout' &&
+      item.body?.nodeType === 1 &&
+      item.body?.nodeId === '499',
+  );
+  check(
+    '调色板新增节点后保存落位布局',
+    typeof createLayout?.body?.x === 'number',
+    JSON.stringify(createLayout?.body),
+  );
+  check(
+    '新增节点出现在画布上',
+    (await page.locator('.dbz-graph-node[data-node-key="1:499"]').count()) === 1,
+  );
+  check(
+    '新增后顶栏节点数更新',
+    (await page.locator('.dbz-canvas-topbar .ant-tag:has-text("9 个节点")').count()) === 1,
+  );
+
+  // 新增节点会写进 broker 夹具，后面的列表用例仍按原始 3 条断言，这里恢复夹具
+  brokers.splice(
+    brokers.findIndex((broker) => broker.id === '499'),
+    1,
+  );
+  const createdLayoutIndex = layoutStore.findIndex((item) => item.nodeId === '499');
+  if (createdLayoutIndex >= 0) {
+    layoutStore.splice(createdLayoutIndex, 1);
+  }
 
   const topologyOverflow = await page.evaluate(
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth,

@@ -380,6 +380,28 @@ export interface KafkaConnectorResetOffsetInput extends KafkaConnectorDeleteInpu
   resume?: boolean;
 }
 
+/** # 控制面画布节点类型（`ControlPlaneNodeType`） */
+export type ControlPlaneNodeType = 1 | 2 | 3 | 4;
+
+/** # 控制面画布节点位置（`DbzControlPlaneLayoutVo`） */
+export interface DbzControlPlaneLayoutVo {
+  nodeType: ControlPlaneNodeType;
+  nodeId: Id;
+  /** 画布世界坐标 X */
+  x: number;
+  /** 画布世界坐标 Y */
+  y: number;
+  updateMs: string;
+}
+
+/** # 保存画布节点位置（`DbzControlPlaneLayoutUpsertDto`） */
+export interface DbzControlPlaneLayoutUpsertInput {
+  nodeType: ControlPlaneNodeType;
+  nodeId: Id;
+  x: number;
+  y: number;
+}
+
 /** # 死信连接器类型（`DeadLetterConnectorType`） */
 export type DeadLetterConnectorType = 1 | 2;
 

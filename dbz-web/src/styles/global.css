@@ -498,3 +498,673 @@ body {
     min-height: 44px;
   }
 }
+
+/* ============================================================
+   控制面自由画布（方案 A）
+   ============================================================ */
+
+.dbz-canvas-page {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  height: calc(100vh - 112px);
+  min-height: 560px;
+}
+
+.dbz-canvas-topbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.dbz-canvas-title {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.dbz-canvas-title .ant-typography {
+  margin: 0;
+}
+
+.dbz-canvas-caption,
+.dbz-canvas-loaded {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.dbz-canvas-error {
+  margin: 0;
+}
+
+.dbz-canvas-loading {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fff;
+  border: 1px solid #eef0f4;
+  border-radius: 12px;
+}
+
+.dbz-clickable {
+  cursor: pointer;
+}
+
+.dbz-canvas-shell {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  overflow: hidden;
+  background: #fff;
+  border: 1px solid #eef0f4;
+  border-radius: 12px;
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.04);
+}
+
+/* 左侧组件调色板 */
+.dbz-palette {
+  width: 208px;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 12px;
+  overflow-y: auto;
+  background: #fbfcfe;
+  border-right: 1px solid #eef0f4;
+}
+
+.dbz-palette-title {
+  padding: 0 4px 4px;
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.dbz-palette-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: #fff;
+  border: 1px solid #e8ebf2;
+  border-radius: 9px;
+  cursor: grab;
+  user-select: none;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s,
+    transform 0.15s;
+}
+
+.dbz-palette-item:hover {
+  border-color: #91caff;
+  box-shadow: 0 4px 12px rgba(22, 119, 255, 0.08);
+}
+
+.dbz-palette-item:active {
+  cursor: grabbing;
+  transform: scale(0.98);
+}
+
+.dbz-palette-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: #eef4ff;
+  color: #1677ff;
+  font-size: 15px;
+}
+
+.dbz-palette-item strong {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.88);
+}
+
+.dbz-palette-item small {
+  display: block;
+  margin-top: 2px;
+  font-size: 11px;
+  line-height: 1.35;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.dbz-palette-tip {
+  margin-top: auto;
+  padding: 10px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: rgba(0, 0, 0, 0.45);
+  background: #f5f7fb;
+  border-radius: 8px;
+}
+
+.dbz-palette-ghost {
+  position: fixed;
+  z-index: 1100;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: #1677ff;
+  background: #fff;
+  border: 1px dashed #1677ff;
+  border-radius: 7px;
+  pointer-events: none;
+  box-shadow: 0 6px 16px rgba(22, 119, 255, 0.15);
+}
+
+/* 画布 */
+.dbz-canvas-main {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.dbz-graph-viewport {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background-color: #f8fafc;
+  background-image: radial-gradient(#dbe0ea 1px, transparent 1px);
+  background-size: 20px 20px;
+  cursor: grab;
+  touch-action: none;
+}
+
+.dbz-graph-viewport:active {
+  cursor: grabbing;
+}
+
+.dbz-graph-world {
+  position: absolute;
+  left: 0;
+  top: 0;
+  transform-origin: 0 0;
+}
+
+.dbz-graph-edges,
+.dbz-graph-overlay {
+  position: absolute;
+  left: 0;
+  top: 0;
+  overflow: visible;
+}
+
+.dbz-graph-edges {
+  z-index: 1;
+  pointer-events: none;
+}
+
+.dbz-graph-overlay {
+  z-index: 5;
+  pointer-events: none;
+}
+
+.dbz-graph-edge-line {
+  fill: none;
+  stroke-width: 2;
+  pointer-events: none;
+}
+
+.dbz-graph-edge--ownership {
+  opacity: 0.78;
+}
+
+.dbz-graph-edge--flow {
+  stroke-width: 2.4;
+}
+
+.dbz-graph-edge-line.is-selected {
+  stroke-width: 3.2;
+  filter: drop-shadow(0 0 3px rgba(22, 119, 255, 0.55));
+}
+
+.dbz-graph-edge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 14;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.dbz-graph-edge-handle {
+  pointer-events: auto;
+  cursor: grab;
+}
+
+.dbz-graph-edge-handle:active {
+  cursor: grabbing;
+}
+
+.dbz-graph-edge-lock {
+  pointer-events: auto;
+  cursor: not-allowed;
+}
+
+.dbz-graph-reconnect-preview {
+  fill: none;
+  stroke: #1677ff;
+  stroke-width: 2;
+  stroke-dasharray: 6 5;
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+/* 节点 */
+.dbz-graph-node {
+  position: absolute;
+  z-index: 3;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 11px 13px;
+  overflow: visible;
+  background: #fff;
+  border: 1px solid #e5e8f0;
+  border-radius: 11px;
+  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+  cursor: grab;
+  user-select: none;
+  transition:
+    border-color 0.15s,
+    box-shadow 0.15s;
+}
+
+.dbz-graph-node:active {
+  cursor: grabbing;
+}
+
+.dbz-graph-node.is-selected {
+  border-color: #1677ff;
+  box-shadow:
+    0 0 0 3px rgba(22, 119, 255, 0.12),
+    0 8px 22px rgba(15, 23, 42, 0.1);
+}
+
+.dbz-graph-node.is-link-target {
+  border-style: dashed;
+  border-color: #91caff;
+}
+
+.dbz-graph-node.is-link-hover {
+  border-color: #1677ff;
+  box-shadow:
+    0 0 0 3px rgba(22, 119, 255, 0.22),
+    0 8px 22px rgba(15, 23, 42, 0.1);
+}
+
+.dbz-graph-node--success {
+  border-top: 3px solid #52c41a;
+}
+
+.dbz-graph-node--error {
+  border-top: 3px solid #ff4d4f;
+}
+
+.dbz-graph-node--warning {
+  border-top: 3px solid #faad14;
+}
+
+.dbz-graph-node--default {
+  border-top: 3px solid #bfbfbf;
+  opacity: 0.82;
+}
+
+.dbz-graph-node-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.dbz-graph-node-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex-shrink: 0;
+  border-radius: 6px;
+  background: #f2f5fb;
+  color: #475467;
+  font-size: 13px;
+}
+
+.dbz-graph-node-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 13.5px;
+  font-weight: 600;
+  line-height: 1.3;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: rgba(0, 0, 0, 0.88);
+}
+
+.dbz-graph-mismatch {
+  flex-shrink: 0;
+  color: #faad14;
+  font-size: 14px;
+}
+
+.dbz-graph-node-status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+
+.dbz-graph-node-status .ant-tag {
+  margin-inline-end: 0;
+  font-size: 11px;
+  line-height: 18px;
+}
+
+.dbz-graph-node-sub {
+  overflow: hidden;
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.dbz-mono {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+}
+
+.dbz-graph-pin {
+  position: absolute;
+  z-index: 6;
+  width: 12px;
+  height: 12px;
+  background: #fff;
+  border: 2px solid #8c8c8c;
+  border-radius: 50%;
+}
+
+.dbz-graph-pin-out {
+  cursor: crosshair;
+  transition: transform 0.12s;
+}
+
+.dbz-graph-pin-out:hover {
+  transform: scale(1.2);
+}
+
+.dbz-graph-pin-in {
+  background: #595959;
+  border-color: #595959;
+  border-radius: 2px;
+  cursor: not-allowed;
+}
+
+.dbz-graph-pin-out:not(.dbz-graph-pin-right) {
+  bottom: -7px;
+  left: 50%;
+  margin-left: -6px;
+}
+
+.dbz-graph-pin-out.dbz-graph-pin-right {
+  top: 50%;
+  right: -7px;
+  margin-top: -6px;
+}
+
+.dbz-graph-pin-in.dbz-graph-pin-top {
+  top: -7px;
+  left: 50%;
+  margin-left: -6px;
+}
+
+.dbz-graph-pin-in.dbz-graph-pin-left {
+  top: 50%;
+  left: -7px;
+  margin-top: -6px;
+}
+
+/* 画布控件、缩略图、图例 */
+.dbz-graph-controls {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid #e8ebf2;
+  border-radius: 9px;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08);
+}
+
+.dbz-graph-controls button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 30px;
+  padding: 0 8px;
+  font-size: 12px;
+  color: #475467;
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.dbz-graph-controls button:hover {
+  background: #f2f5fb;
+  color: #1677ff;
+}
+
+.dbz-graph-scale {
+  min-width: 38px;
+  text-align: center;
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.dbz-graph-minimap {
+  position: absolute;
+  right: 12px;
+  bottom: 12px;
+  z-index: 10;
+  width: 196px;
+  height: 128px;
+  padding: 4px;
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid #e8ebf2;
+  border-radius: 9px;
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08);
+  cursor: pointer;
+}
+
+.dbz-graph-minimap svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.dbz-graph-legend {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 10;
+  display: flex;
+  gap: 14px;
+  padding: 6px 10px;
+  font-size: 11px;
+  color: rgba(0, 0, 0, 0.55);
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid #e8ebf2;
+  border-radius: 8px;
+  pointer-events: none;
+}
+
+.dbz-graph-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.dbz-legend-line {
+  display: inline-block;
+  width: 22px;
+  height: 0;
+  border-top: 2px solid #8c8c8c;
+}
+
+.dbz-legend-ownership {
+  border-top-style: dashed;
+}
+
+.dbz-legend-flow {
+  border-top-color: #1677ff;
+}
+
+.dbz-legend-lock {
+  display: inline-block;
+  width: 9px;
+  height: 9px;
+  background: #595959;
+  border-radius: 2px;
+}
+
+/* 右侧属性检查器 */
+.dbz-graph-inspector {
+  width: 340px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  background: #fff;
+  border-left: 1px solid #eef0f4;
+}
+
+.dbz-inspector-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 14px 16px 24px;
+}
+
+.dbz-inspector-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.dbz-inspector-head .ant-typography {
+  margin: 0 0 4px;
+}
+
+.dbz-inspector-head .ant-tag {
+  margin-inline-end: 0;
+}
+
+.dbz-inspector-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.dbz-inspector-live {
+  padding: 8px 10px;
+  font-size: 11.5px;
+  line-height: 1.5;
+  color: rgba(0, 0, 0, 0.55);
+  background: #fafbfd;
+  border-radius: 7px;
+}
+
+.dbz-inspector-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding-top: 12px;
+  border-top: 1px solid #f0f2f7;
+}
+
+.dbz-inspector-tip {
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.dbz-inspector-tip p {
+  margin: 0 0 6px;
+}
+
+.dbz-inspector-lock {
+  margin-right: 3px;
+  color: #595959;
+}
+
+.dbz-delete-impact p {
+  margin: 0 0 8px;
+}
+
+.dbz-delete-impact ul {
+  margin: 0 0 10px;
+  padding-left: 18px;
+}
+
+.dbz-delete-impact li {
+  margin-bottom: 4px;
+}
+
+@media (max-width: 1280px) {
+  .dbz-palette {
+    width: 180px;
+  }
+
+  .dbz-graph-inspector {
+    width: 300px;
+  }
+}
+
+@media (max-width: 1024px) {
+  .dbz-canvas-page {
+    height: auto;
+    min-height: 0;
+  }
+
+  .dbz-canvas-shell {
+    flex-direction: column;
+    min-height: 720px;
+  }
+
+  .dbz-palette {
+    width: 100%;
+    flex-direction: row;
+    flex-wrap: wrap;
+    border-right: none;
+    border-bottom: 1px solid #eef0f4;
+  }
+
+  .dbz-palette-item {
+    flex: 1 1 180px;
+  }
+
+  .dbz-palette-tip {
+    display: none;
+  }
+
+  .dbz-graph-inspector {
+    width: 100%;
+    border-left: none;
+    border-top: 1px solid #eef0f4;
+  }
+}

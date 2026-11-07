@@ -1,3 +1,4 @@
+mod dbz_control_plane_layout_router;
 mod dbz_dead_letter_router;
 mod dbz_kafka_broker_check_router;
 mod dbz_kafka_broker_router;
