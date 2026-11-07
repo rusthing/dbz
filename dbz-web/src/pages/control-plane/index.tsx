@@ -4,22 +4,20 @@
  * 以方案 A 的交互为准：左侧组件调色板拖到画布新增节点，节点可自由摆放，空白平移、
  * 以指针为中心缩放、右下角缩略图；右侧是属性检查器。
  *
- * 连线规则是「下游锁定」：
- * - 连线上游端可以拖到另一台同类节点，改挂上游；
- * - 下游端是方形锁标，不响应拖拽，检查器里也不提供改下游的入口；
- * - 连线不能删除，删除快捷键对连线无效；要断开链路只能删除下游节点，
- *   删除前会把受影响的数据流和写入目标列出来。
+ * 连线规则是「下游锁定」：只画归属关系（Kafka 集群 → Connect → 连接器），
+ * 连线上游端可以拖到另一台同类节点改挂上游；下游端是方形锁标，不响应拖拽，
+ * 检查器里也不提供改下游的入口；连线不能删除，要断开链路只能删除下游节点。
+ *
+ * 启用/停用、重启、编辑、删除、集群检测都放在节点卡片上；右侧属性检查器只负责
+ * 展示库内配置、实时状态、任务与异常，不再另开详情抽屉。
  *
  * 节点位置按「节点类型 + 记录 ID」存 `dbz_control_plane_layout`，拖动松手即保存，
  * 多人打开同一套连接器看到一致布局。
  */
 
 import {
-  DeleteOutlined,
-  EditOutlined,
   LockOutlined,
   ReloadOutlined,
-  SyncOutlined,
   WarningOutlined,
 } from '@ant-design/icons';
 import {
@@ -28,9 +26,9 @@ import {
   Button,
   Descriptions,
   Empty,
-  Popconfirm,
   Space,
   Spin,
+  Table,
   Tag,
   Tooltip,
   Typography,
@@ -53,16 +51,15 @@ import type {
   DeadLetterConnectorType,
   Id,
 } from '../../api/types';
-import EnabledSwitch from '../../components/EnabledSwitch';
 import StatusTag from '../../components/StatusTag';
 import {
   connectorRunStatusDic,
   kafkaBrokerStatusDic,
   kafkaConnectStatusDic,
+  kafkaConnectorStatusDic,
 } from '../../dic';
 import { useAsync, type AsyncState } from '../../hooks/useAsync';
-import { errorMessage, orDash } from '../../utils/format';
-import ConnectorDetailDrawer from './ConnectorDetailDrawer';
+import { errorMessage, formatMs, orDash, prettyJson, truncate } from '../../utils/format';
 import ControlPlaneCanvas from './ControlPlaneCanvas';
 import {
   NODE_TYPE_OF,
@@ -73,19 +70,21 @@ import {
   nodeKeyOf,
   type CanvasEdge,
   type CanvasNode,
+  type CanvasNodeAction,
   type CanvasNodeKind,
 } from './canvas-model';
 import {
+  authLabelOf,
   brokerDetailOf,
   connectorDbDetailOf,
   connectDbDetailOf,
+  liveDetailOf,
   topicInfoOf,
 } from './details';
 import {
   buildControlPlane,
   liveFailureReason,
-  liveStatusLabel,
-  type ConnectorDetailTarget,
+  taskSummary,
   type ConnectorKind,
   type ConnectHealth,
   type LiveResult,
@@ -272,11 +271,6 @@ function kindLabel(kind: CanvasNodeKind): string {
   }
 }
 
-/** 连接器明细页 */
-function detailPageOf(kind: ConnectorKind): string {
-  return kind === 'source' ? '/source-connector' : '/sink-connector';
-}
-
 /** 节点明细页 */
 function nodeDetailPageOf(kind: CanvasNodeKind): string {
   switch (kind) {
@@ -299,7 +293,6 @@ export default function ControlPlanePage() {
   const [positions, setPositions] = useState<Record<string, Point>>({});
   const [selectedNodeKey, setSelectedNodeKey] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
-  const [detail, setDetail] = useState<ConnectorDetailTarget | null>(null);
   const [checkingBrokerId, setCheckingBrokerId] = useState<Id | null>(null);
   const [restartingKey, setRestartingKey] = useState<string | null>(null);
   const [busyNodeKey, setBusyNodeKey] = useState<string | null>(null);
@@ -545,7 +538,7 @@ export default function ControlPlanePage() {
     state.reload();
   };
 
-  /** 把上游端改挂到新节点；连线类型不同写的字段不同 */
+  /** 把上游端改挂到新节点；归属类型不同写的字段不同 */
   const setUpstream = async (edge: CanvasEdge, target: CanvasNode) => {
     if (target.key === edge.from) {
       message.info('上游没有变化');
@@ -557,20 +550,16 @@ export default function ControlPlanePage() {
           id: edge.relation.connectId,
           kafkaBrokerId: target.id,
         });
-      } else if (edge.relation.type === 'connect-connector') {
-        if (edge.relation.connectorKind === 'source') {
-          await sourceConnectorApi.modify({
-            id: edge.relation.connectorId,
-            kafkaConnectId: target.id,
-          });
-        } else {
-          await sinkConnectorApi.modify({
-            id: edge.relation.connectorId,
-            kafkaConnectId: target.id,
-          });
-        }
+      } else if (edge.relation.connectorKind === 'source') {
+        await sourceConnectorApi.modify({
+          id: edge.relation.connectorId,
+          kafkaConnectId: target.id,
+        });
       } else {
-        await sinkConnectorApi.modify({ id: edge.relation.sinkId, sourceConnectorId: target.id });
+        await sinkConnectorApi.modify({
+          id: edge.relation.connectorId,
+          kafkaConnectId: target.id,
+        });
       }
       message.success(`已把上游改为「${target.name}」；下游目标锁定不变`);
       state.reload();
@@ -579,7 +568,7 @@ export default function ControlPlanePage() {
     }
   };
 
-  /** 从节点锚点新建连线：归属改外键，数据流改 sink 的上游 */
+  /** 从节点锚点新建归属连线 */
   const createEdge = async (from: CanvasNode, to: CanvasNode) => {
     try {
       if (from.kind === 'broker' && to.kind === 'connect') {
@@ -592,9 +581,6 @@ export default function ControlPlanePage() {
           await sinkConnectorApi.modify({ id: to.id, kafkaConnectId: from.id });
         }
         message.success(`已把「${to.name}」挂到「${from.name}」`);
-      } else if (from.kind === 'source' && to.kind === 'sink') {
-        await sinkConnectorApi.modify({ id: to.id, sourceConnectorId: from.id });
-        message.success(`已建立数据流「${from.name} → ${to.name}」`);
       } else {
         message.warning('这两种节点之间不支持连线');
         return;
@@ -609,92 +595,34 @@ export default function ControlPlanePage() {
     message.warning('连线不能删除。上游端可以拖到其他节点更换上游；要断开链路，请删除下游节点。');
   };
 
-  /** 删除节点前的依赖说明：数据流与写入目标必须写清楚 */
-  const deleteImpactOf = (node: CanvasNode) => {
-    const direct = affectedEdgesOf(node, edges);
-    const all = new Set(direct);
-    if (node.kind === 'connect' || node.kind === 'broker') {
-      const connectIds =
-        node.kind === 'connect'
-          ? new Set([(node.record as DbzKafkaConnectVo).id])
-          : new Set(
-              state.data.connects
-                .filter((cluster) => cluster.kafkaBrokerId === (node.record as DbzKafkaBrokerVo).id)
-                .map((cluster) => cluster.id),
-            );
-      const sourceKeys = new Set(
-        state.data.sources
-          .filter((source) => connectIds.has(source.kafkaConnectId))
-          .map((source) => nodeKeyOf('source', source.id)),
-      );
-      const sinkKeys = new Set(
-        state.data.sinks
-          .filter((sink) => connectIds.has(sink.kafkaConnectId))
-          .map((sink) => nodeKeyOf('sink', sink.id)),
-      );
-      for (const edge of edges) {
-        if (edge.kind === 'flow' && (sourceKeys.has(edge.from) || sinkKeys.has(edge.to))) {
-          all.add(edge);
-        }
-      }
-    }
-    return [...all];
-  };
+  /** 删除节点前提示会移除的归属关系 */
+  const deleteImpactOf = (node: CanvasNode) => affectedEdgesOf(node, edges);
 
   const confirmDeleteNode = (node: CanvasNode) => {
-    const impact = deleteImpactOf(node);
-    const nodeMap = new Map(nodes.map((item) => [item.key, item]));
-    const flows = impact
-      .filter((edge) => edge.kind === 'flow')
-      .map((edge) => ({
-        source: nodeMap.get(edge.from)?.name ?? '未知上游',
-        sink: nodeMap.get(edge.to)?.name ?? '未知下游',
-        sinkRecord: nodeMap.get(edge.to)?.record as DbzSinkConnectorVo | undefined,
-      }));
-    const ownerships = impact.filter((edge) => edge.kind === 'ownership');
-    const dependentChildren = impact.some((edge) => edge.kind === 'ownership' && edge.from === node.key);
+    const ownerships = deleteImpactOf(node);
+    const dependentChildren = ownerships.some((edge) => edge.from === node.key);
 
     modal.confirm({
       title: `删除${kindLabel(node.kind)}「${node.name}」`,
-      width: 560,
+      width: 520,
       okText: '删除节点',
       okButtonProps: { danger: true },
       cancelText: '取消',
       content: (
         <div className="dbz-delete-impact">
-          {flows.length > 0 ? (
-            <>
-              <p>删除后会断开以下数据流，并影响对应的写入目标：</p>
-              <ul>
-                {flows.map((flow, index) => (
-                  <li key={`${flow.source}-${flow.sink}-${index}`}>
-                    <span className="dbz-mono">
-                      {flow.source} → {flow.sink}
-                    </span>
-                    {flow.sinkRecord && (
-                      <span>
-                        ：写入目标 <strong>{flow.sink}</strong>（
-                        {flow.sinkRecord.connectorName || '未命名连接器'}）不再接收数据
-                      </span>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </>
-          ) : (
-            <p>这条记录没有下游数据流，删除不会断掉写入链路。</p>
-          )}
-          {ownerships.length > 0 && (
+          {ownerships.length > 0 ? (
             <p>
-              同时会移除 {ownerships.length} 条归属关系
+              删除后会移除 {ownerships.length} 条归属关系
               {dependentChildren ? '；服务端检测到仍有子记录时可能拒绝删除，请先处理依赖。' : '。'}
             </p>
+          ) : (
+            <p>这个节点没有关联的归属关系。</p>
           )}
           <Alert
             type="warning"
             showIcon
             message="删除不可恢复"
-            description="连接器会同时从 Kafka Connect 注销；需要保留写入目标，请先改挂上游或另建下游。"
+            description="连接器会同时从 Kafka Connect 注销；需要保留下游连接器，请先改挂到其他 Connect。"
           />
         </div>
       ),
@@ -724,6 +652,70 @@ export default function ControlPlanePage() {
     });
   };
 
+  /** 卡片上的启用/停用：沿用原来的影响说明，集中在这里确认 */
+  const confirmToggleNode = (node: CanvasNode) => {
+    const enabled = (node.record as { enabled: boolean }).enabled;
+    const confirmContent =
+      node.kind === 'broker'
+        ? '禁用后这台集群不参与健康检查，挂在它上面的连接器发不了 Kafka 信号；重新启用后由下一轮检查重新判定状态。'
+        : node.kind === 'connect'
+          ? '禁用后这台集群不参与健康检查，名下连接器会先从集群上注销；重新启用后由下一轮检查重新部署。'
+          : TOGGLE_CONFIRM;
+    modal.confirm({
+      title: `${enabled ? '停用' : '启用'}「${node.name}」？`,
+      content: confirmContent,
+      okText: enabled ? '停用' : '启用',
+      okButtonProps: enabled ? { danger: true } : undefined,
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          if (node.kind === 'broker') {
+            await toggleBroker(node.record as DbzKafkaBrokerVo, !enabled);
+          } else if (node.kind === 'connect') {
+            await toggleConnect(node.record as DbzKafkaConnectVo, !enabled);
+          } else {
+            await toggleConnector(node.kind, node.record as ManagedConnectorRecord, !enabled);
+          }
+        } catch (reason) {
+          message.error(errorMessage(reason));
+        }
+      },
+    });
+  };
+
+  /** 卡片上的重启：会连同任务一起重启 */
+  const confirmRestartNode = (node: CanvasNode) => {
+    const record = node.record as ManagedConnectorRecord;
+    modal.confirm({
+      title: `重启「${record.name}」？`,
+      content: '会连同任务一起重启，Kafka Connect 异步执行，状态稍后刷新。',
+      okText: '重启',
+      cancelText: '取消',
+      onOk: () => restartConnector(record),
+    });
+  };
+
+  /** 卡片操作统一入口：卡片只负责点击，确认与写库都在页面里 */
+  const handleNodeAction = (node: CanvasNode, action: CanvasNodeAction) => {
+    switch (action) {
+      case 'toggle':
+        confirmToggleNode(node);
+        break;
+      case 'restart':
+        confirmRestartNode(node);
+        break;
+      case 'edit':
+        setEditTarget(node);
+        break;
+      case 'delete':
+        confirmDeleteNode(node);
+        break;
+      case 'check':
+        void checkBroker(node.record as DbzKafkaBrokerVo);
+        break;
+    }
+  };
+
   const renderInspector = () => {
     if (selectedEdge) {
       const fromNode = nodes.find((node) => node.key === selectedEdge.from);
@@ -731,10 +723,8 @@ export default function ControlPlanePage() {
       return (
         <div className="dbz-inspector-panel">
           <div className="dbz-inspector-head">
-            <Typography.Title level={5}>连线属性</Typography.Title>
-            <Tag color={selectedEdge.kind === 'flow' ? 'blue' : 'default'}>
-              {selectedEdge.kind === 'flow' ? '数据流' : '归属'}
-            </Tag>
+            <Typography.Title level={5}>归属连线</Typography.Title>
+            <Tag>归属</Tag>
           </div>
           <Descriptions
             column={1}
@@ -748,11 +738,7 @@ export default function ControlPlanePage() {
             type="info"
             showIcon
             message="下游目标不可更改"
-            description={
-              selectedEdge.kind === 'flow'
-                ? '这条数据流由下游连接器的「上游连接器」决定。拖动连线上游端的圆形把手可以换到另一个 source；下游端不响应拖拽，连线也没有删除入口。'
-                : '这条归属关系由下游记录的所属 Connect / 集群决定。拖动连线上游端的圆形把手可以换到另一台 Connect 或集群；下游端锁定，连线不能删除。'
-            }
+            description="这条归属关系由下游记录的所属 Connect / 集群决定。拖动连线上游端的圆形把手可以换到另一台 Connect 或集群；下游端不响应拖拽，连线也没有删除入口。"
           />
           <div className="dbz-inspector-actions">
             <Button onClick={() => setSelectedEdgeId(null)}>取消选中</Button>
@@ -772,19 +758,17 @@ export default function ControlPlanePage() {
           <Typography.Title level={5}>属性检查器</Typography.Title>
           <Empty
             image={Empty.PRESENTED_IMAGE_SIMPLE}
-            description="选中节点查看配置与操作；选中连线查看上下游与锁定说明。"
+            description="选中节点查看库内配置、实时状态、任务与异常；选中连线查看上下游与锁定说明。"
           />
           <div className="dbz-inspector-tip">
             <p>拖动连线上游端的圆形把手可以更换上游；方形锁标表示下游锁定。</p>
-            <p>连线不能删除。要断开数据流，请删除下游节点，删除前会列出受影响的写入目标。</p>
+            <p>连线不能删除。要断开链路，请删除下游节点。</p>
           </div>
         </div>
       );
     }
 
     const node = selectedNode;
-    const mismatch = node.mismatch;
-    const detailButton = node.kind === 'source' || node.kind === 'sink';
 
     return (
       <div className="dbz-inspector-panel">
@@ -798,134 +782,140 @@ export default function ControlPlanePage() {
           </Button>
         </div>
 
-        {mismatch && (
+        {node.mismatch && (
           <Alert
             type="warning"
             showIcon
             icon={<WarningOutlined />}
             message="库内记录与实时状态不一致"
-            description={mismatch}
+            description={node.mismatch}
           />
         )}
 
-        {node.kind === 'broker' && (
-          <>
-            <Descriptions
-              column={1}
-              size="small"
-              items={[
-                {
-                  key: 'status',
-                  label: '状态',
-                  children: (
-                    <StatusTag
-                      dic={kafkaBrokerStatusDic}
-                      value={(node.record as DbzKafkaBrokerVo).runStatus}
-                      detail={brokerDetailOf(node.record as DbzKafkaBrokerVo)}
-                    />
-                  ),
-                },
-                {
-                  key: 'address',
-                  label: '地址',
-                  children: <span className="dbz-mono">{orDash((node.record as DbzKafkaBrokerVo).bootstrapServers)}</span>,
-                },
-                {
-                  key: 'enabled',
-                  label: '启用',
-                  children: (node.record as DbzKafkaBrokerVo).enabled ? '是' : '否',
-                },
-              ]}
-            />
-            <div className="dbz-inspector-actions">
-              <Button
+        {node.kind === 'broker' && (() => {
+          const broker = node.record as DbzKafkaBrokerVo;
+          return (
+            <>
+              <Typography.Title level={5} className="dbz-inspector-section">
+                库内配置
+              </Typography.Title>
+              <Descriptions
+                column={1}
                 size="small"
-                loading={checkingBrokerId === node.id}
-                onClick={() => void checkBroker(node.record as DbzKafkaBrokerVo)}
-              >
-                检测
-              </Button>
-              <Button size="small" icon={<EditOutlined />} onClick={() => setEditTarget(node)}>
-                编辑配置
-              </Button>
-              <Button size="small" type="link" onClick={() => navigate(nodeDetailPageOf(node.kind))}>
-                明细
-              </Button>
-              <EnabledSwitch
-                enabled={(node.record as DbzKafkaBrokerVo).enabled}
-                name={node.name}
-                confirmContent="禁用后这台集群不参与健康检查，挂在它上面的连接器发不了 Kafka 信号；重新启用后由下一轮检查重新判定状态。"
-                onToggle={(enabled) => toggleBroker(node.record as DbzKafkaBrokerVo, enabled)}
+                items={[
+                  {
+                    key: 'address',
+                    label: '地址',
+                    children: <span className="dbz-mono">{orDash(broker.bootstrapServers)}</span>,
+                  },
+                  { key: 'auth', label: '认证', children: authLabelOf(broker) },
+                  { key: 'enabled', label: '启用', children: broker.enabled ? '是' : '否' },
+                  { key: 'update', label: '最近检查', children: formatMs(broker.updateMs) },
+                  { key: 'remark', label: '备注', children: orDash(broker.remark) },
+                ]}
               />
-            </div>
-          </>
-        )}
+              <Typography.Title level={5} className="dbz-inspector-section">
+                实时状态
+              </Typography.Title>
+              <Descriptions
+                column={1}
+                size="small"
+                items={[
+                  {
+                    key: 'status',
+                    label: '检测状态',
+                    children: (
+                      <StatusTag
+                        dic={kafkaBrokerStatusDic}
+                        value={broker.runStatus}
+                        detail={brokerDetailOf(broker)}
+                      />
+                    ),
+                  },
+                ]}
+              />
+              {broker.runMsg && (
+                <Alert
+                  type={broker.runStatus === 3 ? 'error' : 'warning'}
+                  showIcon
+                  message="最近一次检测结论"
+                  description={broker.runMsg}
+                />
+              )}
+            </>
+          );
+        })()}
 
-        {node.kind === 'connect' && (
-          <>
-            <Descriptions
-              column={1}
-              size="small"
-              items={[
-                {
-                  key: 'status',
-                  label: '库内状态',
-                  children: (
-                    <StatusTag
-                      dic={kafkaConnectStatusDic}
-                      value={(node.record as DbzKafkaConnectVo).runStatus}
-                      detail={connectDbDetailOf(node.record as DbzKafkaConnectVo)}
-                    />
-                  ),
-                },
-                {
-                  key: 'health',
-                  label: '实时健康',
-                  children: node.health?.error ? (
-                    <Tooltip title={node.health.error}>
-                      <Tag color="error">探测失败</Tag>
-                    </Tooltip>
-                  ) : node.health?.health ? (
-                    <Tag color={node.health.health.reachable ? 'success' : 'error'}>
-                      {node.health.health.reachable
-                        ? `v${node.health.health.version ?? '?'} · ${node.health.health.workerCount} worker · ${node.health.health.connectorCount} 连接器`
-                        : '不可达'}
-                    </Tag>
-                  ) : (
-                    <Tag>未探测</Tag>
-                  ),
-                },
-                {
-                  key: 'broker',
-                  label: 'Kafka 集群',
-                  children: node.broker?.name ?? '未知',
-                },
-                {
-                  key: 'url',
-                  label: '地址',
-                  children: <span className="dbz-mono">{orDash((node.record as DbzKafkaConnectVo).url)}</span>,
-                },
-              ]}
-            />
-            <div className="dbz-inspector-actions">
-              <Button size="small" icon={<EditOutlined />} onClick={() => setEditTarget(node)}>
-                编辑配置
-              </Button>
-              <Button size="small" type="link" onClick={() => navigate('/kafka-connect')}>
-                集群连接器
-              </Button>
-              <Button size="small" type="link" onClick={() => navigate(nodeDetailPageOf(node.kind))}>
-                明细
-              </Button>
-              <EnabledSwitch
-                enabled={(node.record as DbzKafkaConnectVo).enabled}
-                name={node.name}
-                confirmContent="禁用后这台集群不参与健康检查，名下连接器会先从集群上注销；重新启用后由下一轮检查重新部署。"
-                onToggle={(enabled) => toggleConnect(node.record as DbzKafkaConnectVo, enabled)}
+        {node.kind === 'connect' && (() => {
+          const cluster = node.record as DbzKafkaConnectVo;
+          return (
+            <>
+              <Typography.Title level={5} className="dbz-inspector-section">
+                库内配置
+              </Typography.Title>
+              <Descriptions
+                column={1}
+                size="small"
+                items={[
+                  {
+                    key: 'url',
+                    label: '地址',
+                    children: <span className="dbz-mono">{orDash(cluster.url)}</span>,
+                  },
+                  { key: 'broker', label: 'Kafka 集群', children: node.broker?.name ?? '未知' },
+                  { key: 'enabled', label: '启用', children: cluster.enabled ? '是' : '否' },
+                  { key: 'update', label: '最近检查', children: formatMs(cluster.updateMs) },
+                  { key: 'remark', label: '备注', children: orDash(cluster.remark) },
+                ]}
               />
-            </div>
-          </>
-        )}
+              <Typography.Title level={5} className="dbz-inspector-section">
+                实时状态
+              </Typography.Title>
+              <Descriptions
+                column={1}
+                size="small"
+                items={[
+                  {
+                    key: 'status',
+                    label: '库内状态',
+                    children: (
+                      <StatusTag
+                        dic={kafkaConnectStatusDic}
+                        value={cluster.runStatus}
+                        detail={connectDbDetailOf(cluster, node.broker)}
+                      />
+                    ),
+                  },
+                  {
+                    key: 'health',
+                    label: '实时健康',
+                    children: node.health?.error ? (
+                      <Tooltip title={node.health.error}>
+                        <Tag color="error">探测失败</Tag>
+                      </Tooltip>
+                    ) : node.health?.health ? (
+                      <Tag color={node.health.health.reachable ? 'success' : 'error'}>
+                        {node.health.health.reachable
+                          ? `v${node.health.health.version ?? '?'} · ${node.health.health.workerCount} worker · ${node.health.health.connectorCount} 连接器`
+                          : '不可达'}
+                      </Tag>
+                    ) : (
+                      <Tag>未探测</Tag>
+                    ),
+                  },
+                ]}
+              />
+              {node.liveIssue && (
+                <Alert
+                  type="error"
+                  showIcon
+                  message="连接器查询失败"
+                  description={node.liveIssue}
+                />
+              )}
+            </>
+          );
+        })()}
 
         {(node.kind === 'source' || node.kind === 'sink') && (() => {
           const record = node.record as ManagedConnectorRecord;
@@ -937,48 +927,32 @@ export default function ControlPlanePage() {
                   (source) => source.id === (node.record as DbzSinkConnectorVo).sourceConnectorId,
                 )
               : undefined;
+          const { abnormal, total } = node.live
+            ? taskSummary(node.live)
+            : { abnormal: 0, total: 0 };
+          const failure = node.live ? liveFailureReason(node.live) : null;
           return (
             <>
+              <Typography.Title level={5} className="dbz-inspector-section">
+                库内配置
+              </Typography.Title>
               <Descriptions
                 column={1}
                 size="small"
                 items={[
                   {
-                    key: 'status',
-                    label: '实时状态',
-                    children: node.liveIssue ? (
-                      <Tooltip title={node.liveIssue}>
-                        <Tag color="error">实时查询失败</Tag>
-                      </Tooltip>
-                    ) : node.live ? (
-                      <Tooltip title={liveFailureReason(node.live) ?? ''}>
-                        <Tag
-                          color={
-                            node.live.state === 0
-                              ? 'success'
-                              : node.live.state === 1
-                                ? 'error'
-                                : 'warning'
-                          }
-                        >
-                          {liveStatusLabel(node.live.state)}
-                        </Tag>
-                      </Tooltip>
-                    ) : (
-                      <Tag color="warning">集群未部署</Tag>
-                    ),
+                    key: 'connectorName',
+                    label: '连接器名称',
+                    children: <span className="dbz-mono">{orDash(record.connectorName)}</span>,
                   },
                   {
-                    key: 'dbStatus',
-                    label: '库内状态',
-                    children: (
-                      <StatusTag
-                        dic={connectorRunStatusDic}
-                        value={record.runStatus}
-                        detail={connectorDbDetailOf(record, node.cluster)}
-                      />
-                    ),
+                    key: 'cluster',
+                    label: '所属 Connect',
+                    children: node.cluster?.enabled
+                      ? node.cluster.name
+                      : `${node.cluster?.name ?? '未知'}（已停用）`,
                   },
+                  { key: 'broker', label: 'Kafka 集群', children: node.broker?.name ?? '未知' },
                   ...(topic
                     ? [
                         {
@@ -998,16 +972,29 @@ export default function ControlPlanePage() {
                       ]
                     : []),
                   {
-                    key: 'cluster',
-                    label: '所属 Connect',
-                    children: node.cluster?.enabled ? node.cluster.name : `${node.cluster?.name ?? '未知'}（已停用）`,
+                    key: 'dbStatus',
+                    label: '库内状态',
+                    children: (
+                      <StatusTag
+                        dic={connectorRunStatusDic}
+                        value={record.runStatus}
+                        detail={connectorDbDetailOf(record, node.cluster)}
+                      />
+                    ),
                   },
+                  { key: 'enabled', label: '启用', children: record.enabled ? '是' : '否' },
+                  { key: 'update', label: '最近检查', children: formatMs(record.updateMs) },
+                  { key: 'remark', label: '备注', children: orDash(record.remark) },
                   {
                     key: 'dead',
                     label: '待处理死信',
                     children:
                       node.dead > 0 ? (
-                        <Tag color="error" className="dbz-clickable" onClick={() => navigate('/dead-letter')}>
+                        <Tag
+                          color="error"
+                          className="dbz-clickable"
+                          onClick={() => navigate('/dead-letter')}
+                        >
                           死信 {node.dead}
                         </Tag>
                       ) : (
@@ -1016,67 +1003,127 @@ export default function ControlPlanePage() {
                   },
                 ]}
               />
-              {node.live && (
-                <div className="dbz-inspector-live dbz-mono">
-                  {liveFailureReason(node.live) ??
-                    `运行正常 · worker ${node.live.workerId ?? '未知'} · 任务 ${node.live.tasks.length} 个`}
-                </div>
-              )}
-              <div className="dbz-inspector-actions">
-                {detailButton && (
-                  <Button
-                    size="small"
-                    onClick={() =>
-                      setDetail({ kind: kind as ConnectorKind, record })
-                    }
-                  >
-                    详情
-                  </Button>
-                )}
-                <Button size="small" icon={<EditOutlined />} onClick={() => setEditTarget(node)}>
-                  编辑配置
-                </Button>
-                <Button size="small" type="link" onClick={() => navigate(detailPageOf(kind))}>
-                  明细
-                </Button>
-                {record.enabled && node.live && !node.liveIssue && !node.connectDisabled && (
-                  <Popconfirm
-                    title="重启连接器？"
-                    description="会连同任务一起重启，Kafka Connect 异步执行。"
-                    okText="重启"
-                    cancelText="取消"
-                    onConfirm={() => void restartConnector(record)}
-                  >
-                    <Button
-                      size="small"
-                      type="link"
-                      icon={<SyncOutlined />}
-                      loading={restartingKey === connectorKey(record)}
-                    >
-                      重启
-                    </Button>
-                  </Popconfirm>
-                )}
-                <EnabledSwitch
-                  enabled={record.enabled}
-                  name={record.name}
-                  confirmContent={TOGGLE_CONFIRM}
-                  onToggle={(enabled) => toggleConnector(kind, record, enabled)}
+              <pre className="dbz-json-view">{prettyJson(record.connectorConfig) || '--'}</pre>
+
+              <Typography.Title level={5} className="dbz-inspector-section">
+                实时状态
+              </Typography.Title>
+              <Descriptions
+                column={1}
+                size="small"
+                items={[
+                  {
+                    key: 'status',
+                    label: '实时状态',
+                    children: node.liveIssue ? (
+                      <Tooltip title={node.liveIssue}>
+                        <Tag color="error">实时查询失败</Tag>
+                      </Tooltip>
+                    ) : node.connectDisabled ? (
+                      <Tag>所属 Connect 已停用</Tag>
+                    ) : !record.enabled ? (
+                      <Tag>已停用</Tag>
+                    ) : node.live ? (
+                      <StatusTag
+                        dic={kafkaConnectorStatusDic}
+                        value={node.live.state}
+                        detail={liveDetailOf(node.live)}
+                      />
+                    ) : (
+                      <Tag color="warning">集群未部署</Tag>
+                    ),
+                  },
+                  {
+                    key: 'worker',
+                    label: 'Worker',
+                    children: <span className="dbz-mono">{orDash(node.live?.workerId)}</span>,
+                  },
+                  {
+                    key: 'class',
+                    label: '连接器类',
+                    children: (
+                      <span className="dbz-mono">{orDash(node.live?.connectorClass)}</span>
+                    ),
+                  },
+                  {
+                    key: 'tasks',
+                    label: '任务',
+                    children:
+                      total === 0
+                        ? '无'
+                        : `${total} 个${abnormal > 0 ? `（异常 ${abnormal} 个）` : ''}`,
+                  },
+                ]}
+              />
+              {node.liveIssue && (
+                <Alert
+                  type="error"
+                  showIcon
+                  message="实时查询失败"
+                  description={node.liveIssue}
                 />
-              </div>
+              )}
+
+              <Typography.Title level={5} className="dbz-inspector-section">
+                任务与异常
+              </Typography.Title>
+              {node.live && node.live.tasks.length > 0 ? (
+                <Table
+                  size="small"
+                  rowKey="id"
+                  pagination={false}
+                  dataSource={node.live.tasks}
+                  columns={[
+                    {
+                      title: '任务',
+                      dataIndex: 'id',
+                      width: 58,
+                      render: (id: number) => `#${id}`,
+                    },
+                    {
+                      title: '状态',
+                      dataIndex: 'state',
+                      width: 84,
+                      render: (state: number) => (
+                        <StatusTag dic={kafkaConnectorStatusDic} value={state} />
+                      ),
+                    },
+                    {
+                      title: '异常',
+                      dataIndex: 'trace',
+                      ellipsis: true,
+                      render: (trace?: string | null) =>
+                        trace ? (
+                          <Tooltip title={trace}>
+                            <span className="dbz-ellipsis">{truncate(trace, 80)}</span>
+                          </Tooltip>
+                        ) : (
+                          '--'
+                        ),
+                    },
+                  ]}
+                />
+              ) : (
+                <Typography.Text type="secondary">
+                  {node.live ? '没有任务。' : '集群上没有该连接器，拿不到任务与异常。'}
+                </Typography.Text>
+              )}
+              {failure && (
+                <Alert type="error" showIcon message="异常原因" description={failure} />
+              )}
             </>
           );
         })()}
 
         <div className="dbz-inspector-footer">
-          <Button
-            danger
-            icon={<DeleteOutlined />}
-            loading={busyNodeKey === node.key}
-            onClick={() => confirmDeleteNode(node)}
-          >
-            删除节点
+          <Button size="small" type="link" onClick={() => navigate(nodeDetailPageOf(node.kind))}>
+            打开明细页
           </Button>
+          {(node.kind === 'source' || node.kind === 'sink') && node.dead > 0 && (
+            <Button size="small" type="link" onClick={() => navigate('/dead-letter')}>
+              处理死信
+            </Button>
+          )}
         </div>
         <div className="dbz-inspector-tip">
           <p>
@@ -1156,6 +1203,10 @@ export default function ControlPlanePage() {
           onReconnectEdge={(edge, target) => void setUpstream(edge, target)}
           onCreateAt={handleCreateAt}
           onEdgeDeleteRejected={edgeDeleteRejected}
+          onNodeAction={handleNodeAction}
+          busyNodeKey={busyNodeKey}
+          checkingBrokerId={checkingBrokerId}
+          restartingKey={restartingKey}
           renderInspector={renderInspector}
         />
       )}
@@ -1190,52 +1241,6 @@ export default function ControlPlanePage() {
         onSuccess={formSuccess}
       />
 
-      <ConnectorDetailDrawer
-        target={detail}
-        cluster={
-          detail
-            ? state.data.connects.find((cluster) => cluster.id === detail.record.kafkaConnectId)
-            : undefined
-        }
-        broker={
-          detail
-            ? state.data.brokers.find(
-                (broker) =>
-                  broker.id ===
-                  state.data.connects.find(
-                    (cluster) => cluster.id === detail.record.kafkaConnectId,
-                  )?.kafkaBrokerId,
-              )
-            : undefined
-        }
-        upstream={
-          detail && detail.kind === 'sink'
-            ? state.data.sources.find(
-                (source) => source.id === (detail.record as DbzSinkConnectorVo).sourceConnectorId,
-              )
-            : undefined
-        }
-        live={
-          detail
-            ? state.data.live
-                .get(detail.record.kafkaConnectId)
-                ?.connectors.find((connector) => connector.name === detail.record.connectorName)
-            : undefined
-        }
-        liveIssue={detail ? state.data.live.get(detail.record.kafkaConnectId)?.error : undefined}
-        restarting={detail ? restartingKey === connectorKey(detail.record) : false}
-        onClose={() => setDetail(null)}
-        onRestart={() => {
-          if (detail) {
-            void restartConnector(detail.record);
-          }
-        }}
-        onToggle={async (enabled) => {
-          if (detail) {
-            await toggleConnector(detail.kind, detail.record, enabled);
-          }
-        }}
-      />
     </div>
   );
 }

@@ -630,9 +630,25 @@ try {
     `实际 ${await page.locator('.dbz-graph-node').count()}`,
   );
   check(
-    '画布渲染 6 条连线（归属 5 + 数据流 1）',
-    (await page.locator('.dbz-graph-edge-hit').count()) === 6,
+    '画布只渲染归属连线（5 条）',
+    (await page.locator('.dbz-graph-edge-hit').count()) === 5,
     `实际 ${await page.locator('.dbz-graph-edge-hit').count()}`,
+  );
+  check(
+    '没有数据流连线，连线不再分两种类型',
+    (await page.locator('.dbz-graph-edge--flow').count()) === 0 &&
+      (await page.locator('[data-edge-id^="flow:"]').count()) === 0,
+  );
+  check(
+    '归属线是浅色实线并带箭头',
+    await page
+      .locator('.dbz-graph-edge-line')
+      .first()
+      .evaluate((element) => {
+        const stroke = element.getAttribute('stroke');
+        const marker = element.getAttribute('marker-end');
+        return stroke === '#a9b6c9' && !element.getAttribute('stroke-dasharray') && marker === 'url(#dbz-arrow-edge)';
+      }),
   );
   check(
     '左侧调色板有 4 类可拖拽组件',
@@ -644,9 +660,11 @@ try {
     (await page.locator('.dbz-graph-minimap').isVisible()) &&
       (await page.locator('.dbz-graph-controls').isVisible()),
   );
+  const legendText = await page.locator('.dbz-graph-legend').innerText();
   check(
-    '图例区分归属、数据流与下游锁定',
-    (await page.locator('.dbz-graph-legend').innerText()).includes('下游锁定'),
+    '图例只保留归属与下游锁定',
+    legendText.includes('归属') && legendText.includes('下游锁定') && !legendText.includes('数据流'),
+    legendText,
   );
   check(
     '顶栏展示节点数',
@@ -681,14 +699,38 @@ try {
     (await page.locator('.dbz-canvas-topbar .ant-tag:has-text("处状态不一致")').count()) === 1,
   );
 
-  // 选中节点 → 编辑配置：请求体要带新名称
+  // 卡片操作：按钮组按节点类型给，图标带 Tooltip 文案
+  check(
+    'Kafka 集群卡片操作：启用/停用、检测、编辑、删除',
+    (await page.locator('.dbz-graph-node[data-node-key="1:401"] [data-node-action]').count()) === 4 &&
+      (await page.locator('.dbz-graph-node[data-node-key="1:401"] [data-node-action="check"]').count()) === 1,
+  );
+  check(
+    'Connect 卡片操作：启用/停用、编辑、删除',
+    (await page.locator('.dbz-graph-node[data-node-key="2:101"] [data-node-action]').count()) === 3 &&
+      (await page.locator('.dbz-graph-node[data-node-key="2:101"] [data-node-action="restart"]').count()) === 0,
+  );
+  check(
+    '连接器卡片操作：启用/停用、重启、编辑、删除',
+    (await page.locator('.dbz-graph-node[data-node-key="4:301"] [data-node-action]').count()) === 4 &&
+      (await page.locator('.dbz-graph-node[data-node-key="4:301"] [data-node-action="restart"]').count()) === 1,
+  );
+
+  // 属性检查器随选中节点切换：库内配置、实时状态、任务与异常都在这里
   await selectNode('1:401');
   await page.waitForSelector('.dbz-graph-inspector .dbz-inspector-panel');
+  const brokerInspectorText = await page.locator('.dbz-graph-inspector').innerText();
   check(
-    '选中节点后检查器展示名称与类型',
-    (await page.locator('.dbz-graph-inspector').innerText()).includes('订单消息集群'),
+    '选中 Kafka 集群后属性框展示库内配置与实时状态',
+    brokerInspectorText.includes('订单消息集群') &&
+      brokerInspectorText.includes('库内配置') &&
+      brokerInspectorText.includes('实时状态'),
+    brokerInspectorText.slice(0, 120),
   );
-  await page.locator('.dbz-graph-inspector button:has-text("编辑配置")').click();
+  check('原来是抽屉的详情不再重复弹出', (await page.locator('.ant-drawer').count()) === 0);
+
+  // 卡片上的编辑配置：请求体要带新名称
+  await page.locator('.dbz-graph-node[data-node-key="1:401"] [data-node-action="edit"]').click();
   await page.waitForSelector('.ant-modal-wrap:visible');
   const brokerModal = visibleModal().last();
   // 等 Modal 的 afterOpenChange 回填完成，否则刚 fill 的值会被 setFieldsValue 覆盖
@@ -703,65 +745,103 @@ try {
     (item) => item.method === 'PUT' && item.path === '/dbz/kafka-broker',
   );
   check(
-    '画布内编辑配置调用修改接口',
+    '卡片上的编辑配置调用修改接口',
     editRequest?.body?.id === '401' && editRequest?.body?.name === '订单消息集群-冒烟',
     JSON.stringify(editRequest?.body),
   );
 
-  // 图上直接重启：请求要打到 Connect 的 restart 接口
-  await selectNode('3:201');
-  await page.locator('.dbz-graph-inspector button:has-text("重启")').click();
-  const restartPopconfirm = page.locator('.ant-popconfirm', { hasText: '重启连接器' });
-  await restartPopconfirm.waitFor();
-  await restartPopconfirm.locator('.ant-btn-primary').click();
-  await page.waitForTimeout(500);
+  // 卡片上的集群检测
+  await page.locator('.dbz-graph-node[data-node-key="1:402"] [data-node-action="check"]').click();
+  await page.waitForTimeout(400);
+  const checkRequest = posted.findLast(
+    (item) => item.method === 'POST' && item.path === '/dbz/kafka-broker/check',
+  );
+  check(
+    '卡片上的集群检测调用检测接口',
+    checkRequest?.body?.id === '402',
+    JSON.stringify(checkRequest?.body),
+  );
+
+  // 卡片上的重启：确认后请求要打到 Connect 的 restart 接口
+  await page.locator('.dbz-graph-node[data-node-key="3:201"] [data-node-action="restart"]').click();
+  const restartConfirm = page.locator('.ant-modal-confirm');
+  await restartConfirm.waitFor({ state: 'visible' });
+  await restartConfirm.locator('.ant-btn-primary').click();
+  await restartConfirm.waitFor({ state: 'hidden' });
+  await page.waitForTimeout(400);
   const restartRequest = posted.find(
     (item) => item.method === 'POST' && item.path === '/dbz/kafka-connector/restart',
   );
   check(
-    '图上重启调用远端重启接口',
+    '卡片上的重启调用远端重启接口',
     restartRequest?.body?.connectorName === 'mysql-orders-source' &&
       restartRequest?.body?.kafkaConnectId === '101' &&
       restartRequest?.body?.includeTasks === true,
     JSON.stringify(restartRequest?.body),
   );
 
-  // 详情抽屉：集群实时配置 + 实时状态 + 任务
-  await page
-    .locator('.dbz-graph-inspector button')
-    .filter({ hasText: /详\s*情/ })
-    .click();
-  await page.waitForSelector('.ant-drawer-title:has-text("连接器详情")');
-  await page.waitForSelector('.ant-drawer .ant-tag:has-text("集群实时")');
+  // 选中连接器：配置 JSON、实时状态、任务与异常都在属性框里
+  await selectNode('3:201');
+  await page.waitForSelector('.dbz-graph-inspector .dbz-inspector-panel');
+  const connectorInspector = page.locator('.dbz-graph-inspector');
+  const connectorText = await connectorInspector.innerText();
   check(
-    '详情展示集群实时连接器配置',
-    (await page.locator('.ant-drawer .dbz-json-view').innerText()).includes('MySqlConnector'),
+    '属性框展示连接器的库内配置、实时状态、任务与异常',
+    connectorText.includes('库内配置') &&
+      connectorText.includes('实时状态') &&
+      connectorText.includes('任务与异常') &&
+      connectorText.includes('MySqlConnector'),
+    connectorText.slice(0, 160),
   );
   check(
-    '详情展示实时任务',
-    (await page.locator('.ant-drawer tbody tr.ant-table-row').count()) === 2,
-    `实际 ${await page.locator('.ant-drawer tbody tr.ant-table-row').count()}`,
+    '属性框任务表显示实时任务',
+    (await connectorInspector.locator('tbody tr.ant-table-row').count()) === 2,
+    `实际 ${await connectorInspector.locator('tbody tr.ant-table-row').count()}`,
   );
-  await page.screenshot({ path: `${SHOTS}/01a-control-plane-detail.png`, fullPage: false });
-  await page.click('.ant-drawer-close');
-  await page.waitForSelector('.ant-drawer-title', { state: 'hidden' });
-  // 抽屉遮罩有自己的淡出动画，没散场前下面的节点点不到
-  await page.waitForTimeout(500);
+  await page.screenshot({ path: `${SHOTS}/01a-control-plane-inspector.png`, fullPage: false });
 
-  // 删除下游节点：提示必须列出受影响的数据流与写入目标
-  await selectNode('4:301');
-  await page.locator('.dbz-inspector-footer button:has-text("删除节点")').click();
+  // 切到 Connect：属性框内容跟着换
+  await selectNode('2:101');
+  await page.waitForSelector('.dbz-graph-inspector .dbz-inspector-panel');
+  const connectInspectorText = await page.locator('.dbz-graph-inspector').innerText();
+  check(
+    '切换选中节点后属性框内容跟着变',
+    connectInspectorText.includes('生产集群-华东') &&
+      connectInspectorText.includes('http://10.0.0.11:8083') &&
+      connectInspectorText.includes('实时健康') &&
+      !connectInspectorText.includes('任务与异常'),
+    connectInspectorText.slice(0, 160),
+  );
+
+  // 卡片上的启用/停用
+  await page.locator('.dbz-graph-node[data-node-key="4:301"] [data-node-action="toggle"]').click();
+  const toggleConfirm = page.locator('.ant-modal-confirm');
+  await toggleConfirm.waitFor({ state: 'visible' });
+  await toggleConfirm.locator('.ant-btn-primary').click();
+  await toggleConfirm.waitFor({ state: 'hidden' });
+  await page.waitForTimeout(400);
+  const toggleRequest = posted.findLast(
+    (item) => item.method === 'PUT' && item.path === '/dbz/sink-connector',
+  );
+  check(
+    '卡片上的启用/停用调用修改接口',
+    toggleRequest?.body?.id === '301' && toggleRequest?.body?.enabled === false,
+    JSON.stringify(toggleRequest?.body),
+  );
+
+  // 卡片上的删除：提示只说明归属关系，不再列数据流与写入目标
+  await page.locator('.dbz-graph-node[data-node-key="4:301"] [data-node-action="delete"]').click();
   const deleteConfirm = page.locator('.ant-modal-confirm');
   await deleteConfirm.waitFor({ state: 'visible' });
   const deleteText = (await deleteConfirm.innerText()).replace(/\s+/g, ' ');
   check(
-    '删除提示列出受影响的数据流',
-    deleteText.includes('订单库增量 → 订单同步到数仓'),
+    '删除提示说明受影响的归属关系',
+    deleteText.includes('归属关系'),
     deleteText.slice(0, 160),
   );
   check(
-    '删除提示说明受影响的写入目标',
-    deleteText.includes('写入目标 订单同步到数仓'),
+    '删除提示不再列数据流与写入目标',
+    !deleteText.includes('数据流') && !deleteText.includes('写入目标'),
     deleteText.slice(0, 160),
   );
   await deleteConfirm.locator('.ant-btn').first().click();
@@ -771,21 +851,19 @@ try {
     !posted.some((item) => item.method === 'DELETE' && item.path === '/dbz/sink-connector/301'),
   );
 
-  // 点选连线 → 检查器说明下游锁定；Delete 快捷键被拒绝
-  // 数据流是 source → sink 的正交折线，两个节点左对齐，只有两节点之间的竖直段没有被节点盖住
-  const flowSourceBox = await page
-    .locator('.dbz-graph-node[data-node-key="3:201"]')
-    .boundingBox();
-  const flowSinkBox = await page
-    .locator('.dbz-graph-node[data-node-key="4:301"]')
-    .boundingBox();
+  // 点选归属连线 → 属性框说明下游锁定；Delete 快捷键被拒绝
+  // 归属关系是 connect → source 的正交折线，取包围盒中心即可命中横向段
+  const ownershipHit = page.locator(
+    '[data-edge-id="own:connect:101:source:201"].dbz-graph-edge-hit',
+  );
+  const ownershipBox = await ownershipHit.boundingBox();
   await page.mouse.click(
-    (flowSourceBox.x + flowSourceBox.width + flowSinkBox.x) / 2,
-    (flowSourceBox.y + flowSourceBox.height + flowSinkBox.y) / 2,
+    ownershipBox.x + ownershipBox.width / 2,
+    ownershipBox.y + ownershipBox.height / 2,
   );
   await page.waitForSelector('.dbz-graph-inspector .dbz-inspector-panel');
   check(
-    '选中连线后检查器标明下游锁定',
+    '选中归属连线后属性框标明下游锁定',
     (await page.locator('.dbz-graph-inspector').innerText()).includes('下游（锁定）') &&
       (await page.locator('.dbz-graph-inspector').innerText()).includes('下游目标不可更改'),
   );
@@ -800,39 +878,38 @@ try {
     !posted.some((item) => item.method === 'DELETE' && item.path === '/dbz/control-plane/layout'),
   );
 
-  // 拖动连线上游端：数据流的上游从 201 换到另一条 source
+  // 拖动归属连线上游端：source 201 从 Connect 101 换到 102
   const reconHandle = page.locator(
-    '[data-edge-id="flow:source:201:sink:301"].dbz-graph-edge-handle',
+    '[data-edge-id="own:connect:101:source:201"].dbz-graph-edge-handle',
   );
   const handleBox = await reconHandle.boundingBox();
-  const otherSourceBox = await page
-    .locator('.dbz-graph-node[data-node-key="3:1928374650123456789"]')
+  const otherConnectBox = await page
+    .locator('.dbz-graph-node[data-node-key="2:102"]')
     .boundingBox();
   const postedBeforeReconnect = posted.length;
   await page.mouse.move(handleBox.x + handleBox.width / 2, handleBox.y + handleBox.height / 2);
   await page.mouse.down();
-  await page.mouse.move(otherSourceBox.x + 40, otherSourceBox.y + 40, { steps: 12 });
+  await page.mouse.move(otherConnectBox.x + 40, otherConnectBox.y + 40, { steps: 12 });
   await page.mouse.up();
   await page.waitForTimeout(400);
   const reconnectRequest = posted
     .slice(postedBeforeReconnect)
-    .find((item) => item.method === 'PUT' && item.path === '/dbz/sink-connector');
+    .find((item) => item.method === 'PUT' && item.path === '/dbz/source-connector');
   check(
-    '拖动连线上游端可更换上游',
-    reconnectRequest?.body?.id === '301' &&
-      reconnectRequest?.body?.sourceConnectorId === '1928374650123456789',
+    '拖动归属连线上游端可换到另一台 Connect',
+    reconnectRequest?.body?.id === '201' && reconnectRequest?.body?.kafkaConnectId === '102',
     JSON.stringify(reconnectRequest?.body),
   );
 
   // 下游锁标不响应拖拽：拖到别的节点不会产生任何请求
   const lockMarker = page.locator(
-    '[data-edge-id="flow:source:201:sink:301"].dbz-graph-edge-lock',
+    '[data-edge-id="own:connect:101:source:201"].dbz-graph-edge-lock',
   );
   const lockBox = await lockMarker.boundingBox();
   const postedBeforeLockDrag = posted.length;
   await page.mouse.move(lockBox.x + lockBox.width / 2, lockBox.y + lockBox.height / 2);
   await page.mouse.down();
-  await page.mouse.move(otherSourceBox.x + 60, otherSourceBox.y + 60, { steps: 12 });
+  await page.mouse.move(otherConnectBox.x + 60, otherConnectBox.y + 60, { steps: 12 });
   await page.mouse.up();
   await page.waitForTimeout(300);
   check(
@@ -843,7 +920,7 @@ try {
   check(
     '下游锁标带「下游目标不可更改」提示',
     (await page
-      .locator('[data-edge-id="flow:source:201:sink:301"].dbz-graph-edge-lock title')
+      .locator('[data-edge-id="own:connect:101:source:201"].dbz-graph-edge-lock title')
       .textContent())?.includes('下游目标不可更改') ?? false,
   );
 
@@ -1046,7 +1123,7 @@ try {
   // 检测：真去拉一次 topic 列表，连不通也是 200（reachable=false）
   await page.locator('tbody tr.ant-table-row').first().locator('button:has-text("检测")').click();
   await page.waitForTimeout(600);
-  const brokerCheck = posted.find(
+  const brokerCheck = posted.findLast(
     (item) => item.method === 'POST' && item.path === '/dbz/kafka-broker/check',
   );
   check('检测发出 POST 且带记录ID', brokerCheck?.body?.id === '401', JSON.stringify(brokerCheck?.body));

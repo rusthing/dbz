@@ -710,21 +710,15 @@ body {
 
 .dbz-graph-edge-line {
   fill: none;
-  stroke-width: 2;
+  stroke-width: 1.8;
   pointer-events: none;
-}
-
-.dbz-graph-edge--ownership {
-  opacity: 0.78;
-}
-
-.dbz-graph-edge--flow {
-  stroke-width: 2.4;
+  opacity: 0.9;
 }
 
 .dbz-graph-edge-line.is-selected {
-  stroke-width: 3.2;
-  filter: drop-shadow(0 0 3px rgba(22, 119, 255, 0.55));
+  stroke-width: 3;
+  opacity: 1;
+  filter: drop-shadow(0 0 3px rgba(22, 119, 255, 0.5));
 }
 
 .dbz-graph-edge-hit {
@@ -878,6 +872,31 @@ body {
   color: rgba(0, 0, 0, 0.45);
 }
 
+/* 卡片底部操作：图钉图标 + Tooltip 文案 */
+.dbz-graph-node-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  margin-top: auto;
+  padding-top: 4px;
+  border-top: 1px solid #f0f2f7;
+}
+
+.dbz-graph-action {
+  display: inline-flex;
+}
+
+.dbz-graph-action .ant-btn {
+  width: 24px;
+  height: 22px;
+  padding: 0;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.dbz-graph-action .ant-btn:hover {
+  color: #1677ff;
+}
+
 .dbz-mono {
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
 }
@@ -888,7 +907,7 @@ body {
   width: 12px;
   height: 12px;
   background: #fff;
-  border: 2px solid #8c8c8c;
+  border: 2px solid #a9b6c9;
   border-radius: 50%;
 }
 
@@ -902,34 +921,22 @@ body {
 }
 
 .dbz-graph-pin-in {
-  background: #595959;
-  border-color: #595959;
+  background: #a9b6c9;
+  border-color: #a9b6c9;
   border-radius: 2px;
   cursor: not-allowed;
 }
 
-.dbz-graph-pin-out:not(.dbz-graph-pin-right) {
+.dbz-graph-pin-out {
   bottom: -7px;
   left: 50%;
   margin-left: -6px;
-}
-
-.dbz-graph-pin-out.dbz-graph-pin-right {
-  top: 50%;
-  right: -7px;
-  margin-top: -6px;
 }
 
 .dbz-graph-pin-in.dbz-graph-pin-top {
   top: -7px;
   left: 50%;
   margin-left: -6px;
-}
-
-.dbz-graph-pin-in.dbz-graph-pin-left {
-  top: 50%;
-  left: -7px;
-  margin-top: -6px;
 }
 
 /* 画布控件、缩略图、图例 */
@@ -1022,22 +1029,14 @@ body {
   display: inline-block;
   width: 22px;
   height: 0;
-  border-top: 2px solid #8c8c8c;
-}
-
-.dbz-legend-ownership {
-  border-top-style: dashed;
-}
-
-.dbz-legend-flow {
-  border-top-color: #1677ff;
+  border-top: 2px solid #a9b6c9;
 }
 
 .dbz-legend-lock {
   display: inline-block;
   width: 9px;
   height: 9px;
-  background: #595959;
+  background: #a9b6c9;
   border-radius: 2px;
 }
 
@@ -1070,6 +1069,19 @@ body {
 
 .dbz-inspector-head .ant-tag {
   margin-inline-end: 0;
+}
+
+/* 检查器里的信息分区标题 */
+.dbz-inspector-section {
+  margin: 4px 0 0 !important;
+  padding-top: 10px;
+  border-top: 1px solid #f0f2f7;
+  font-size: 12.5px !important;
+}
+
+.dbz-inspector-section:first-of-type {
+  border-top: none;
+  padding-top: 0;
 }
 
 .dbz-inspector-actions {

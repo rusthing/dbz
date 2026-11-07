@@ -14,13 +14,19 @@
 import {
   CloudServerOutlined,
   DatabaseOutlined,
+  DeleteOutlined,
+  EditOutlined,
   ExportOutlined,
   ImportOutlined,
   MinusOutlined,
+  PlayCircleOutlined,
   PlusOutlined,
+  ReloadOutlined,
+  StopOutlined,
+  ThunderboltOutlined,
   WarningOutlined,
 } from '@ant-design/icons';
-import { Tag, Tooltip } from 'antd';
+import { Button, Tag, Tooltip } from 'antd';
 import {
   useCallback,
   useEffect,
@@ -30,13 +36,15 @@ import {
   type PointerEvent as ReactPointerEvent,
   type ReactNode,
 } from 'react';
-import { liveFailureReason, liveStatusLabel, taskSummary } from './model';
+import type { Id } from '../../api/types';
+import { liveFailureReason, liveStatusLabel, taskSummary, type ManagedConnectorRecord } from './model';
 import {
   NODE_SIZE,
   defaultPosition,
   nodeTone,
   type CanvasEdge,
   type CanvasNode,
+  type CanvasNodeAction,
   type CanvasNodeKind,
 } from './canvas-model';
 
@@ -58,14 +66,12 @@ const PALETTE_ITEMS: { kind: CanvasNodeKind; label: string; hint: string; icon: 
 const UPSTREAM_KIND: Record<CanvasEdge['relation']['type'], CanvasNodeKind> = {
   'broker-connect': 'broker',
   'connect-connector': 'connect',
-  flow: 'source',
 };
 
 /** 从某个节点拉出连线时，目标节点必须是哪类 */
 const LINK_TARGET_KINDS: Partial<Record<CanvasNodeKind, CanvasNodeKind[]>> = {
   broker: ['connect'],
   connect: ['source', 'sink'],
-  source: ['sink'],
 };
 
 interface Point {
@@ -108,6 +114,12 @@ interface ControlPlaneCanvasProps {
   onCreateAt: (kind: CanvasNodeKind, x: number, y: number) => void;
   /** 尝试删除选中连线时的提示 */
   onEdgeDeleteRejected: (edge: CanvasEdge) => void;
+  /** 卡片上的启用/重启/编辑/删除/检测 */
+  onNodeAction: (node: CanvasNode, action: CanvasNodeAction) => void;
+  /** 各操作的 loading 状态 */
+  busyNodeKey: string | null;
+  checkingBrokerId: Id | null;
+  restartingKey: string | null;
   /** 右侧检查器内容 */
   renderInspector: () => ReactNode;
 }
@@ -126,11 +138,12 @@ function pointInNode(test: Point, node: CanvasNode, point: Point): boolean {
   );
 }
 
-/** 连线几何：归属走竖向折线，数据流走横向折线 */
+/** 连线几何：归属关系统一走竖向折线；同源多条线在底部错开，避免把手叠在一起 */
 function geometryOf(
   edge: CanvasEdge,
   nodeMap: Map<string, CanvasNode>,
   positions: Record<string, Point>,
+  offset: number,
 ): EdgeGeometry | null {
   const from = nodeMap.get(edge.from);
   const to = nodeMap.get(edge.to);
@@ -142,23 +155,12 @@ function geometryOf(
   const fromSize = NODE_SIZE[from.kind];
   const toSize = NODE_SIZE[to.kind];
 
-  if (edge.kind === 'flow') {
-    const start = { x: fromPos.x + fromSize.w, y: fromPos.y + fromSize.h / 2 };
-    const end = { x: toPos.x, y: toPos.y + toSize.h / 2 };
-    const midX = (start.x + end.x) / 2;
-    return {
-      edge,
-      start,
-      end,
-      handle: { x: start.x + 14, y: start.y },
-      lock: { x: end.x - 14, y: end.y },
-      path: `M${start.x},${start.y} L${midX},${start.y} L${midX},${end.y} L${end.x},${end.y}`,
-      color: '#1677ff',
-      marker: 'dbz-arrow-flow',
-    };
-  }
-
-  const start = { x: fromPos.x + fromSize.w / 2, y: fromPos.y + fromSize.h };
+  const startX = clamp(
+    fromPos.x + fromSize.w / 2 + offset,
+    fromPos.x + 18,
+    fromPos.x + fromSize.w - 18,
+  );
+  const start = { x: startX, y: fromPos.y + fromSize.h };
   const end = { x: toPos.x + toSize.w / 2, y: toPos.y };
   const midY = (start.y + end.y) / 2;
   return {
@@ -168,8 +170,8 @@ function geometryOf(
     handle: { x: start.x, y: start.y + 14 },
     lock: { x: end.x, y: end.y - 14 },
     path: `M${start.x},${start.y} L${start.x},${midY} L${end.x},${midY} L${end.x},${end.y}`,
-    color: '#8c8c8c',
-    marker: 'dbz-arrow-ownership',
+    color: '#a9b6c9',
+    marker: 'dbz-arrow-edge',
   };
 }
 
@@ -247,6 +249,114 @@ function NodeIcon({ kind }: { kind: CanvasNodeKind }) {
   }
 }
 
+interface NodeActionsProps {
+  node: CanvasNode;
+  busyNodeKey: string | null;
+  checkingBrokerId: Id | null;
+  restartingKey: string | null;
+  onSelect: (key: string) => void;
+  onAction: (node: CanvasNode, action: CanvasNodeAction) => void;
+}
+
+/** 卡片底部的操作行：只给图标，文案放 Tooltip */
+function NodeActions({
+  node,
+  busyNodeKey,
+  checkingBrokerId,
+  restartingKey,
+  onSelect,
+  onAction,
+}: NodeActionsProps) {
+  const enabled = (node.record as { enabled: boolean }).enabled;
+  const items: {
+    action: CanvasNodeAction;
+    title: string;
+    icon: ReactNode;
+    danger?: boolean;
+    disabled?: boolean;
+    loading?: boolean;
+  }[] = [
+    {
+      action: 'toggle',
+      title: enabled ? '停用' : '启用',
+      icon: enabled ? <StopOutlined /> : <PlayCircleOutlined />,
+    },
+  ];
+
+  if (node.kind === 'broker') {
+    items.push({
+      action: 'check',
+      title: '集群检测',
+      icon: <ThunderboltOutlined />,
+      loading: checkingBrokerId === node.id,
+    });
+  }
+
+  if (node.kind === 'source' || node.kind === 'sink') {
+    const record = node.record as ManagedConnectorRecord;
+    let title = '重启';
+    let disabled = false;
+    if (node.connectDisabled) {
+      title = '所属 Kafka Connect 已停用，先启用 Connect 后再重启';
+      disabled = true;
+    } else if (!record.enabled) {
+      title = '连接器已停用，先启用后再重启';
+      disabled = true;
+    } else if (node.liveIssue) {
+      title = '实时查询失败，拿不到连接器状态';
+      disabled = true;
+    } else if (!node.live) {
+      title = '集群上没有该连接器，无法重启';
+      disabled = true;
+    }
+    items.push({
+      action: 'restart',
+      title,
+      icon: <ReloadOutlined />,
+      disabled,
+      loading: restartingKey === `${record.kafkaConnectId}:${record.connectorName}`,
+    });
+  }
+
+  items.push({ action: 'edit', title: '编辑配置', icon: <EditOutlined /> });
+  items.push({
+    action: 'delete',
+    title: '删除',
+    icon: <DeleteOutlined />,
+    danger: true,
+    loading: busyNodeKey === node.key,
+  });
+
+  return (
+    <div
+      className="dbz-graph-node-actions"
+      data-no-drag
+      onPointerDown={(event) => event.stopPropagation()}
+    >
+      {items.map((item) => (
+        <Tooltip key={item.action} title={item.title}>
+          <span className="dbz-graph-action">
+            <Button
+              size="small"
+              type="text"
+              danger={item.danger}
+              icon={item.icon}
+              disabled={item.disabled}
+              loading={item.loading}
+              aria-label={item.title}
+              data-node-action={item.action}
+              onClick={() => {
+                onSelect(node.key);
+                onAction(node, item.action);
+              }}
+            />
+          </span>
+        </Tooltip>
+      ))}
+    </div>
+  );
+}
+
 export default function ControlPlaneCanvas({
   nodes,
   edges,
@@ -260,6 +370,10 @@ export default function ControlPlaneCanvas({
   onReconnectEdge,
   onCreateAt,
   onEdgeDeleteRejected,
+  onNodeAction,
+  busyNodeKey,
+  checkingBrokerId,
+  restartingKey,
   renderInspector,
 }: ControlPlaneCanvasProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
@@ -268,12 +382,33 @@ export default function ControlPlaneCanvas({
   const fittedRef = useRef(false);
 
   const nodeMap = useMemo(() => new Map(nodes.map((node) => [node.key, node])), [nodes]);
+
+  /** 同一个上游节点拉出的多条连线在底部错开，否则把手会叠在同一个点上 */
+  const edgeOffsets = useMemo(() => {
+    const groups = new Map<string, CanvasEdge[]>();
+    for (const edge of edges) {
+      const list = groups.get(edge.from);
+      if (list) {
+        list.push(edge);
+      } else {
+        groups.set(edge.from, [edge]);
+      }
+    }
+    const result = new Map<string, number>();
+    for (const list of groups.values()) {
+      list.forEach((edge, index) => {
+        result.set(edge.id, (index - (list.length - 1) / 2) * 26);
+      });
+    }
+    return result;
+  }, [edges]);
+
   const geometries = useMemo(
     () =>
       edges
-        .map((edge) => geometryOf(edge, nodeMap, positions))
+        .map((edge) => geometryOf(edge, nodeMap, positions, edgeOffsets.get(edge.id) ?? 0))
         .filter((item): item is EdgeGeometry => Boolean(item)),
-    [edges, nodeMap, positions],
+    [edges, nodeMap, positions, edgeOffsets],
   );
   const geometryByEdge = useMemo(
     () => new Map(geometries.map((item) => [item.edge.id, item])),
@@ -625,9 +760,6 @@ export default function ControlPlaneCanvas({
     ? (() => {
         const pos = positions[linkFrom.key] ?? defaultPosition(linkFrom.kind, 0);
         const size = NODE_SIZE[linkFrom.kind];
-        if (linkFrom.kind === 'source') {
-          return { x: pos.x + size.w, y: pos.y + size.h / 2 };
-        }
         return { x: pos.x + size.w / 2, y: pos.y + size.h };
       })()
     : null;
@@ -702,21 +834,17 @@ export default function ControlPlaneCanvas({
               aria-hidden
             >
               <defs>
-                <marker id="dbz-arrow-ownership" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-                  <path d="M0,0 L10,5 L0,10 z" fill="#8c8c8c" />
-                </marker>
-                <marker id="dbz-arrow-flow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
-                  <path d="M0,0 L10,5 L0,10 z" fill="#1677ff" />
+                <marker id="dbz-arrow-edge" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+                  <path d="M0,0 L10,5 L0,10 z" fill="#a9b6c9" />
                 </marker>
               </defs>
               {geometries.map(({ edge, path, color, marker }) => (
                 <g key={edge.id}>
                   <path
-                    className={`dbz-graph-edge-line dbz-graph-edge--${edge.kind}${selectedEdgeId === edge.id ? ' is-selected' : ''}`}
+                    className={`dbz-graph-edge-line${selectedEdgeId === edge.id ? ' is-selected' : ''}`}
                     d={path}
                     stroke={color}
                     markerEnd={`url(#${marker})`}
-                    strokeDasharray={edge.kind === 'ownership' ? '6 4' : undefined}
                   />
                   <path
                     className="dbz-graph-edge-hit"
@@ -727,7 +855,7 @@ export default function ControlPlaneCanvas({
                       onSelectEdge(edge.id);
                     }}
                   >
-                    <title>{edge.kind === 'ownership' ? '归属关系：上游可更换，下游锁定，不可删除' : '数据流：上游可更换，下游锁定，不可删除'}</title>
+                    <title>归属关系：上游可更换，下游锁定，不可删除</title>
                   </path>
                 </g>
               ))}
@@ -771,6 +899,15 @@ export default function ControlPlaneCanvas({
                     {node.sub}
                   </div>
 
+                  <NodeActions
+                    node={node}
+                    busyNodeKey={busyNodeKey}
+                    checkingBrokerId={checkingBrokerId}
+                    restartingKey={restartingKey}
+                    onSelect={onSelectNode}
+                    onAction={onNodeAction}
+                  />
+
                   {(node.kind === 'broker' || node.kind === 'connect') && (
                     <span
                       className="dbz-graph-pin dbz-graph-pin-out"
@@ -779,18 +916,12 @@ export default function ControlPlaneCanvas({
                       onPointerDown={(event) => handleAnchorPointerDown(event, node)}
                     />
                   )}
-                  {node.kind === 'connect' && <span className="dbz-graph-pin dbz-graph-pin-in dbz-graph-pin-top" data-no-drag title="归属入口（下游锁定）" />}
-                  {node.kind === 'source' && (
-                    <>
-                      <span className="dbz-graph-pin dbz-graph-pin-out dbz-graph-pin-right" data-no-drag title="从这里拖出数据流" onPointerDown={(event) => handleAnchorPointerDown(event, node)} />
-                      <span className="dbz-graph-pin dbz-graph-pin-in dbz-graph-pin-top" data-no-drag title="归属入口（下游锁定）" />
-                    </>
-                  )}
-                  {node.kind === 'sink' && (
-                    <>
-                      <span className="dbz-graph-pin dbz-graph-pin-in dbz-graph-pin-top" data-no-drag title="归属入口（下游锁定）" />
-                      <span className="dbz-graph-pin dbz-graph-pin-in dbz-graph-pin-left" data-no-drag title="数据流入口（下游锁定）" />
-                    </>
+                  {(node.kind === 'connect' || node.kind === 'source' || node.kind === 'sink') && (
+                    <span
+                      className="dbz-graph-pin dbz-graph-pin-in dbz-graph-pin-top"
+                      data-no-drag
+                      title="归属入口（下游锁定）"
+                    />
                   )}
                 </div>
               );
@@ -826,7 +957,7 @@ export default function ControlPlaneCanvas({
                         event.preventDefault();
                       }}
                     >
-                      <rect x={-8} y={-8} width={16} height={16} rx={3} fill="#595959" />
+                      <rect x={-8} y={-8} width={16} height={16} rx={3} fill="#a9b6c9" />
                       {/* 锁标用 SVG 画，避免把 HTML 的 antd 图标塞进 SVG 里 */}
                       <rect x={-4} y={-1} width={8} height={6} rx={1} fill="#fff" />
                       <path d="M-2.5,-1 A2.5,2.5 0 0 1 2.5,-1" fill="none" stroke="#fff" strokeWidth={1.2} />
@@ -915,8 +1046,7 @@ export default function ControlPlaneCanvas({
           </div>
 
           <div className="dbz-graph-legend">
-            <span><i className="dbz-legend-line dbz-legend-ownership" />归属</span>
-            <span><i className="dbz-legend-line dbz-legend-flow" />数据流</span>
+            <span><i className="dbz-legend-line" />归属</span>
             <span><i className="dbz-legend-lock" />下游锁定</span>
           </div>
         </div>

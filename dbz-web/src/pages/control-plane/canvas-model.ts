@@ -2,10 +2,13 @@
  * # 控制面画布的数据整理
  *
  * 把 `buildControlPlane` 组装出的 broker → connect → connector 树压平成图节点，
- * 再由外键关系生成两类连线：
+ * 只按归属关系生成连线：
  *
- * - **归属**：broker → connect（`kafka_broker_id`）、connect → source/sink（`kafka_connect_id`）；
- * - **数据流**：source → sink（`source_connector_id`）。
+ * - broker → connect（`kafka_broker_id`）；
+ * - connect → source/sink（`kafka_connect_id`）。
+ *
+ * source → sink 的数据流不在画布上画：两组连接器同属一台 Connect，归属线已经
+ * 表达了它们跑在哪，再画数据流只会让图变乱。
  *
  * 位置不在这里算：有持久化位置就用持久化的，没有才按默认网格摆放。
  */
@@ -27,6 +30,9 @@ import type {
 } from './model';
 
 export type CanvasNodeKind = 'broker' | 'connect' | 'source' | 'sink';
+
+/** 节点卡片上的操作 */
+export type CanvasNodeAction = 'toggle' | 'restart' | 'edit' | 'delete' | 'check';
 
 export type NodeTone = 'success' | 'error' | 'warning' | 'default';
 
@@ -54,33 +60,29 @@ export interface CanvasNode {
   health?: ConnectHealth;
   /** 待处理死信数（仅连接器） */
   dead: number;
-  /** 所属 Connect，用于详情抽屉 */
+  /** 所属 Connect，用于属性检查器 */
   cluster?: DbzKafkaConnectVo;
   broker?: DbzKafkaBrokerVo;
 }
 
-export type CanvasEdgeKind = 'ownership' | 'flow';
-
 /** 连线的真实业务关系；换上游时按这个分支写回不同的外键 */
 export type CanvasEdgeRelation =
   | { type: 'broker-connect'; connectId: Id }
-  | { type: 'connect-connector'; connectorKind: 'source' | 'sink'; connectorId: Id }
-  | { type: 'flow'; sinkId: Id };
+  | { type: 'connect-connector'; connectorKind: 'source' | 'sink'; connectorId: Id };
 
 export interface CanvasEdge {
   id: string;
-  kind: CanvasEdgeKind;
   from: string;
   to: string;
   relation: CanvasEdgeRelation;
 }
 
-/** 节点尺寸：宽度足够放完整连接器名，避免一多就截断 */
+/** 节点尺寸：宽度放完整连接器名，高度给底部操作按钮留一行 */
 export const NODE_SIZE: Record<CanvasNodeKind, { w: number; h: number }> = {
-  broker: { w: 240, h: 96 },
-  connect: { w: 240, h: 104 },
-  source: { w: 240, h: 94 },
-  sink: { w: 240, h: 94 },
+  broker: { w: 240, h: 136 },
+  connect: { w: 240, h: 140 },
+  source: { w: 240, h: 132 },
+  sink: { w: 240, h: 132 },
 };
 
 export const NODE_TYPE_OF: Record<CanvasNodeKind, ControlPlaneNodeType> = {
@@ -94,7 +96,7 @@ export function nodeKeyOf(kind: CanvasNodeKind, id: Id): string {
   return `${NODE_TYPE_OF[kind]}:${id}`;
 }
 
-/** 默认网格：集群/Connect 居中，上游在左、下游在右，数据流天然从左向右 */
+/** 默认网格：集群/Connect 居上，连接器在下排 */
 export function defaultPosition(
   kind: CanvasNodeKind,
   index: number,
@@ -232,7 +234,7 @@ export function flattenNodes(
   return list;
 }
 
-/** 由外键生成连线：归属边 + 数据流边 */
+/** 由外键生成归属连线：broker → connect → connector */
 export function buildEdges(
   brokers: DbzKafkaBrokerVo[],
   connects: DbzKafkaConnectVo[],
@@ -244,7 +246,6 @@ export function buildEdges(
   for (const cluster of connects) {
     edges.push({
       id: `own:broker:${cluster.kafkaBrokerId}:connect:${cluster.id}`,
-      kind: 'ownership',
       from: nodeKeyOf('broker', cluster.kafkaBrokerId),
       to: nodeKeyOf('connect', cluster.id),
       relation: { type: 'broker-connect', connectId: cluster.id },
@@ -254,7 +255,6 @@ export function buildEdges(
   for (const source of sources) {
     edges.push({
       id: `own:connect:${source.kafkaConnectId}:source:${source.id}`,
-      kind: 'ownership',
       from: nodeKeyOf('connect', source.kafkaConnectId),
       to: nodeKeyOf('source', source.id),
       relation: { type: 'connect-connector', connectorKind: 'source', connectorId: source.id },
@@ -264,17 +264,9 @@ export function buildEdges(
   for (const sink of sinks) {
     edges.push({
       id: `own:connect:${sink.kafkaConnectId}:sink:${sink.id}`,
-      kind: 'ownership',
       from: nodeKeyOf('connect', sink.kafkaConnectId),
       to: nodeKeyOf('sink', sink.id),
       relation: { type: 'connect-connector', connectorKind: 'sink', connectorId: sink.id },
-    });
-    edges.push({
-      id: `flow:source:${sink.sourceConnectorId}:sink:${sink.id}`,
-      kind: 'flow',
-      from: nodeKeyOf('source', sink.sourceConnectorId),
-      to: nodeKeyOf('sink', sink.id),
-      relation: { type: 'flow', sinkId: sink.id },
     });
   }
 
@@ -293,8 +285,8 @@ export function buildEdges(
 /**
  * # 删除节点会波及的连线
  *
- * 删除 broker / connect 时服务端通常还会因为子记录拒绝，但提示里要把可能断掉的
- * 数据流和写入目标先列出来，让运维知道为什么删不掉、删掉会失去什么。
+ * 删除 broker / connect 时服务端通常还会因为子记录拒绝，提示里要把可能断掉的
+ * 归属关系先列出来，让运维知道为什么删不掉、删掉会失去什么。
  */
 export function affectedEdgesOf(node: CanvasNode, edges: CanvasEdge[]): CanvasEdge[] {
   return edges.filter((edge) => edge.from === node.key || edge.to === node.key);
