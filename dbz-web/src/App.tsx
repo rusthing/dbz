@@ -7,7 +7,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { RequireAuth } from './auth/AuthContext';
 import AppLayout from './layouts/AppLayout';
-import ConnectorTopologyPage from './pages/connector-topology';
+import ControlPanelPage from './pages/control-panel';
 import DeadLetterPage from './pages/dead-letter';
 import KafkaConnectorPage from './pages/kafka-connector';
 import LoginPage from './pages/login';
@@ -24,17 +24,18 @@ export default function App() {
           </RequireAuth>
         }
       >
-        {/* 画布承接原先的列表页；旧地址保留重定向，避免收藏夹直接 404 */}
-        <Route index element={<Navigate to="/connector-topology" replace />} />
-        <Route path="connector-topology" element={<ConnectorTopologyPage />} />
-        <Route path="control-plane" element={<Navigate to="/connector-topology" replace />} />
+        {/* 控制面板承接原先的列表页；旧地址保留重定向，避免收藏夹直接 404 */}
+        <Route index element={<Navigate to="/control-panel" replace />} />
+        <Route path="control-panel" element={<ControlPanelPage />} />
+        <Route path="connector-topology" element={<Navigate to="/control-panel" replace />} />
+        <Route path="control-plane" element={<Navigate to="/control-panel" replace />} />
         <Route path="kafka-connector" element={<KafkaConnectorPage />} />
-        <Route path="kafka-broker" element={<Navigate to="/connector-topology" replace />} />
-        <Route path="kafka-connect" element={<Navigate to="/connector-topology" replace />} />
-        <Route path="source-connector" element={<Navigate to="/connector-topology" replace />} />
-        <Route path="sink-connector" element={<Navigate to="/connector-topology" replace />} />
+        <Route path="kafka-broker" element={<Navigate to="/control-panel" replace />} />
+        <Route path="kafka-connect" element={<Navigate to="/control-panel" replace />} />
+        <Route path="source-connector" element={<Navigate to="/control-panel" replace />} />
+        <Route path="sink-connector" element={<Navigate to="/control-panel" replace />} />
         <Route path="dead-letter" element={<DeadLetterPage />} />
-        <Route path="*" element={<Navigate to="/connector-topology" replace />} />
+        <Route path="*" element={<Navigate to="/control-panel" replace />} />
       </Route>
     </Routes>
   );

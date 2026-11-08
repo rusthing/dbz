@@ -135,7 +135,7 @@ function payloadText(value: unknown): string {
   return JSON.stringify(value ?? null, null, 2) ?? '';
 }
 
-/** 列表里的原始报文只做单行预览，完整内容放详情页，避免超长报文撑开表格 */
+/** 列表里的原始报文只做单行预览，完整内容由悬停提示给出，避免超长报文撑开表格 */
 function payloadInline(value: unknown): string {
   return JSON.stringify(value ?? null) ?? '';
 }
@@ -536,13 +536,13 @@ export default function DeadLetterPage() {
     {
       title: '状态',
       dataIndex: 'status',
-      width: 100,
+      width: 70,
       render: (value: DeadLetterStatus) => <StatusTag dic={deadLetterStatusDic} value={value} />,
     },
     {
       title: '连接器',
       key: 'connector',
-      width: 190,
+      width: 215,
       ellipsis: true,
       render: (_, record) => (
         <Space direction="vertical" size={0}>
@@ -556,7 +556,7 @@ export default function DeadLetterPage() {
     {
       title: '失败分类',
       dataIndex: 'failureCategory',
-      width: 150,
+      width: 84,
       render: (value: DeadLetterFailureCategory, record) => (
         <Space size={4} wrap>
           <StatusTag dic={deadLetterFailureCategoryDic} value={value} />
@@ -571,12 +571,10 @@ export default function DeadLetterPage() {
     {
       title: '失败原因',
       dataIndex: 'reason',
+      width: 125,
       ellipsis: true,
       render: (reason: string, record) => (
         <div className="dbz-reason-cell">
-          <Tooltip title={reason}>
-            <span className="dbz-ellipsis">{orDash(reason)}</span>
-          </Tooltip>
           {record.failureDetail && (
             <Popover
               trigger="click"
@@ -592,38 +590,44 @@ export default function DeadLetterPage() {
               />
             </Popover>
           )}
+          <Tooltip title={reason}>
+            <span className="dbz-ellipsis">{orDash(reason)}</span>
+          </Tooltip>
         </div>
       ),
     },
     {
       title: '原始报文',
       dataIndex: 'payload',
-      width: 260,
+      width: 84,
       ellipsis: true,
       render: (payload: unknown) => (
-        <span className="dbz-mono dbz-ellipsis" title="完整报文见详情页">
-          {payloadInline(payload)}
-        </span>
+        <Tooltip
+          placement="topLeft"
+          title={<span className="dbz-payload-hint">{payloadText(payload)}</span>}
+        >
+          <span className="dbz-mono dbz-ellipsis">{payloadInline(payload)}</span>
+        </Tooltip>
       ),
     },
     {
       title: '次数',
       dataIndex: 'retryCount',
-      width: 76,
+      width: 40,
       className: 'dbz-num',
       render: (value: number) => value,
     },
     {
       title: '末次失败',
       dataIndex: 'lastSeenMs',
-      width: 160,
+      width: 130,
       className: 'dbz-num',
       render: (ms: string) => formatMs(ms),
     },
     {
       title: '最近重投',
       key: 'lastRetry',
-      width: 160,
+      width: 120,
       render: (_, record) =>
         record.lastRetryMs ? (
           <Tooltip title={record.lastRetryMessage ?? ''}>
@@ -638,7 +642,7 @@ export default function DeadLetterPage() {
     {
       title: '操作',
       key: 'actions',
-      width: 150,
+      width: 210,
       fixed: 'right',
       render: (_, record) => (
         <Space size={4}>
@@ -866,7 +870,7 @@ export default function DeadLetterPage() {
           getCheckboxProps: (record) => ({ disabled: record.status === 1 || record.status === 2 }),
         }}
         locale={{ emptyText: loading ? '加载中…' : '暂无死信记录' }}
-        scroll={{ x: 1600 }}
+        scroll={{ x: 1078 }}
         pagination={{
           current: pageNum,
           pageSize,

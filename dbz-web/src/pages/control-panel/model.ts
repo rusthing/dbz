@@ -1,11 +1,11 @@
 /**
- * # 连接器拓扑的数据整理
+ * # 控制面板的数据整理
  *
  * 把四张表（broker / connect / source / sink）与每个 Connect 的实时记录
  * 拼成一棵 broker → connect → connector 的树。
  *
  * 状态口径只有一份：连接器的 `run_status` 由服务端统一回写（健康检查任务 +
- * 进入连接器拓扑时的刷新），前端按 {@link connectorRunStatusDic} 映射展示，
+ * 进入控制面板时的刷新），前端按 {@link connectorRunStatusDic} 映射展示，
  * 不再并列「库内状态 + 实时状态」，也不自行推断不一致。
  *
  * 「不一致」是后端落库标记 `inconsistent`：只由 Connect 卡片「检测」按配置内容
@@ -111,12 +111,12 @@ export function liveFailureReason(live: KafkaConnectorVo): string | null {
 }
 
 /**
- * # 组装连接器拓扑树
+ * # 组装控制面板树
  *
  * 顺序：broker 按名称、Connect 按名称、连接器按名称。数量级只有几十台，不额外做
  * 缓存或虚拟化。
  */
-export function buildConnectorTopology(
+export function buildControlPanel(
   brokers: DbzKafkaBrokerVo[],
   connects: DbzKafkaConnectVo[],
   sources: DbzSourceConnectorVo[],

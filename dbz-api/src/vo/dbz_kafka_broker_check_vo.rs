@@ -17,6 +17,8 @@ pub struct DbzKafkaBrokerCheckVo {
     pub reachable: bool,
     /// 拉到的 topic 数量（不通时为 0）
     pub topic_count: u32,
+    /// 拉到的 topic 名称（已排序；不通时为空）
+    pub topics: Vec<String>,
     /// 耗时（毫秒）
     pub elapsed_ms: u64,
     /// 失败原因或提示；连通时通常是 `None`

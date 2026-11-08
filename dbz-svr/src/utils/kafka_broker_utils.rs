@@ -201,19 +201,24 @@ impl KafkaBrokerUtils {
     /// # 探活
     ///
     /// 拉一次 topic 列表：能拿到说明集群可读、认证通过、controller 正常。返回 topic
-    /// 数量，调用方把它写进检测结果，让人有「确实连上了」的实感。
+    /// 名称（已排序）与耗时，调用方把名称直接展示到属性面板，让人有「确实连上了」
+    /// 的实感，而不是只看到一个数量。
     ///
     /// ## 返回值
-    /// * `Ok((u32, u64))` - topic 数量与耗时（毫秒）
+    /// * `Ok((Vec<String>, u64))` - topic 名称与耗时（毫秒）
     /// * `Err(anyhow::Error)` - 连接或查询失败
-    pub async fn check(conn: &BrokerConn) -> Result<(u32, u64), anyhow::Error> {
+    pub async fn check(conn: &BrokerConn) -> Result<(Vec<String>, u64), anyhow::Error> {
         let started = Instant::now();
         let client = Self::connect(conn).await?;
-        let topics = timeout(KAFKA_TIMEOUT, client.list_topics())
+        let mut topics: Vec<String> = timeout(KAFKA_TIMEOUT, client.list_topics())
             .await
             .map_err(|_| anyhow!("查询 Kafka 集群<{}>的 topic 列表超时", conn.name))?
-            .map_err(|e| anyhow!("查询 Kafka 集群<{}>的 topic 列表失败: {e}", conn.name))?;
-        Ok((topics.len() as u32, started.elapsed().as_millis() as u64))
+            .map_err(|e| anyhow!("查询 Kafka 集群<{}>的 topic 列表失败: {e}", conn.name))?
+            .into_iter()
+            .map(|topic| topic.name)
+            .collect();
+        topics.sort();
+        Ok((topics, started.elapsed().as_millis() as u64))
     }
 
     /// # 往信号 topic 投递一条信号

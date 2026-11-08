@@ -10,7 +10,6 @@ import {
   ApartmentOutlined,
   DownOutlined,
   LogoutOutlined,
-  UnorderedListOutlined,
   UserOutlined,
 } from '@ant-design/icons';
 import { Avatar, Dropdown, Layout, Menu, Typography } from 'antd';
@@ -19,21 +18,14 @@ import { useAuth } from '../auth/AuthContext';
 
 const { Sider, Header, Content } = Layout;
 
-/** 导航项：连接器拓扑负责管理，集群连接器负责查询集群现状，死信独立成页 */
+/** 导航项：控制面板负责管理，死信独立成页 */
 const NAV_ITEMS = [
   {
-    path: '/connector-topology',
-    label: '连接器拓扑',
-    title: '连接器拓扑',
+    path: '/control-panel',
+    label: '控制面板',
+    title: '控制面板',
     desc: 'Kafka 集群 → Connect → 连接器的拓扑图，实时状态、搜索定位与常用操作',
     icon: <ApartmentOutlined />,
-  },
-  {
-    path: '/kafka-connector',
-    label: '集群连接器',
-    title: '集群连接器',
-    desc: '查看 Kafka Connect 集群上实际运行的连接器（含未纳管）与已安装插件',
-    icon: <UnorderedListOutlined />,
   },
   {
     path: '/dead-letter',
@@ -44,12 +36,27 @@ const NAV_ITEMS = [
   },
 ];
 
+/**
+ * # 不在导航里的页面
+ *
+ * 集群连接器页已从左侧导航移除，但页面与接口保留、直接 URL 仍可访问；
+ * 单独维护标题，避免顶部回退成「控制面板」。
+ */
+const HIDDEN_PAGES = [
+  {
+    path: '/kafka-connector',
+    title: '集群连接器',
+    desc: '查看 Kafka Connect 集群上实际运行的连接器（含未纳管）与已安装插件',
+  },
+];
+
 export default function AppLayout() {
   const location = useLocation();
   const navigate = useNavigate();
   const { session, logout } = useAuth();
-  const current =
-    NAV_ITEMS.find((item) => location.pathname.startsWith(item.path)) ?? NAV_ITEMS[0];
+  const navItem = NAV_ITEMS.find((item) => location.pathname.startsWith(item.path));
+  const hiddenPage = HIDDEN_PAGES.find((item) => location.pathname.startsWith(item.path));
+  const current = navItem ?? hiddenPage ?? NAV_ITEMS[0];
 
   const handleLogout = async () => {
     await logout();

@@ -1,7 +1,7 @@
 /**
- * # 连接器拓扑画布的数据整理
+ * # 控制面板画布的数据整理
  *
- * 把 `buildConnectorTopology` 组装出的 broker → connect → connector 树压平成图节点，
+ * 把 `buildControlPanel` 组装出的 broker → connect → connector 树压平成图节点，
  * 只按归属关系生成连线：
  *
  * - broker → connect（`kafka_broker_id`）；
@@ -99,6 +99,12 @@ export interface CanvasNode {
   broker?: DbzKafkaBrokerVo;
 }
 
+/** 连线两端的连接点相对所在卡片中心的横向偏移；拖动后随卡片一起移动 */
+export interface EdgeAnchor {
+  startDx: number;
+  endDx: number;
+}
+
 /** 连线的真实业务关系，仅用于属性框说明；画布上不提供编辑入口 */
 export type CanvasEdgeRelation =
   | { type: 'broker-connect'; connectId: Id }
@@ -117,10 +123,10 @@ export interface CanvasEdge {
  * 固定宽高让同类卡片高度一致，操作行贴底对齐。
  */
 export const NODE_SIZE: Record<CanvasNodeKind, { w: number; h: number }> = {
-  broker: { w: 240, h: 194 },
-  connect: { w: 240, h: 194 },
-  source: { w: 240, h: 194 },
-  sink: { w: 240, h: 194 },
+  broker: { w: 360, h: 194 },
+  connect: { w: 360, h: 194 },
+  source: { w: 360, h: 194 },
+  sink: { w: 360, h: 194 },
 };
 
 export const NODE_TYPE_OF: Record<CanvasNodeKind, ControlPlaneNodeType> = {
@@ -157,13 +163,13 @@ export function defaultPosition(
 ): { x: number; y: number } {
   switch (kind) {
     case 'broker':
-      return { x: 420 + index * 300, y: 24 };
+      return { x: 420 + index * 390, y: 24 };
     case 'connect':
-      return { x: 420 + index * 300, y: 240 };
+      return { x: 420 + index * 390, y: 240 };
     case 'source':
-      return { x: 40 + index * 300, y: 460 };
+      return { x: 40 + index * 390, y: 460 };
     case 'sink':
-      return { x: 40 + (index % 2) * 320, y: 690 + Math.floor(index / 2) * 210 };
+      return { x: 40 + (index % 2) * 400, y: 690 + Math.floor(index / 2) * 210 };
   }
 }
 
@@ -234,11 +240,11 @@ function sourceAddressOf(record: DbzSourceConnectorVo): string {
   return `${valueOf('database.user')}@${valueOf('database.hostname')}:${valueOf('database.port')}/${prefix}`;
 }
 
-/** 下游连接器说明行：第一行 topic，第二行 http.api.url */
+/** 下游连接器说明行：topic 与 http.api.url 压成一行，完整内容由悬停提示给出 */
 function sinkAddressOf(record: DbzSinkConnectorVo): string {
   const topic = topicInfoOf('sink', record)?.value || '--';
   const url = connectorConfigValueOf(record, 'http.api.url') || '--';
-  return `${topic}\n${url}`;
+  return `${topic} · ${url}`;
 }
 
 /** 扁平化节点：副标题直接展示地址值，归属信息只在属性框里呈现 */

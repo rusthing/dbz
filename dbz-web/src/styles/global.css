@@ -224,6 +224,24 @@ body {
   flex: 1 1 auto;
 }
 
+/* 失败详情图标固定在文字前，文字仍占满剩余宽度并单行省略 */
+.dbz-reason-cell .ant-btn {
+  flex: none;
+}
+
+/* 原始报文悬停提示：完整报文换行 + 内部滚动，避免撑破视口 */
+.dbz-payload-hint {
+  display: block;
+  max-width: 520px;
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+}
+
 /* 详情页小节标题与复制按钮同一行 */
 .dbz-detail-section-head {
   display: flex;
@@ -377,182 +395,6 @@ body {
   word-break: break-word;
 }
 
-/* 控制面视图：Kafka 集群卡片 → Connect 卡片 → 连接器行的层级布局 */
-.dbz-topology-broker {
-  margin-bottom: 16px;
-  border-radius: 10px;
-}
-
-.dbz-topology-broker-head,
-.dbz-topology-connect-head {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  min-width: 0;
-}
-
-/* antd 默认给卡片标题加了 ellipsis，这里要把状态行完整露出来 */
-.dbz-topology-broker .ant-card-head-title,
-.dbz-topology-connect .ant-card-head-title {
-  overflow: visible;
-  white-space: normal;
-  text-overflow: clip;
-  padding: 0;
-}
-
-.dbz-topology-connect .ant-card-head {
-  padding: 10px 12px;
-  min-height: 0;
-}
-
-.dbz-topology-connect .ant-card-body {
-  padding: 12px;
-}
-
-.dbz-topology-title-line {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  min-width: 0;
-}
-
-.dbz-topology-name {
-  font-size: 14px;
-  font-weight: 600;
-}
-
-.dbz-topology-meta {
-  color: rgba(0, 0, 0, 0.45);
-  word-break: break-all;
-}
-
-.dbz-topology-count,
-.dbz-topology-db {
-  font-size: 12px;
-  color: rgba(0, 0, 0, 0.45);
-}
-
-.dbz-topology-db {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.dbz-topology-legend {
-  margin-bottom: 16px;
-}
-
-.dbz-topology-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
-  gap: 12px;
-}
-
-.dbz-topology-connect {
-  border-radius: 8px;
-  background: #fff;
-}
-
-.dbz-topology-issue {
-  margin-bottom: 8px;
-  font-size: 12px;
-  color: #cf1322;
-  word-break: break-all;
-}
-
-.dbz-topology-group {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.dbz-topology-group-label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: rgba(0, 0, 0, 0.45);
-}
-
-.dbz-topology-empty {
-  padding: 2px 0;
-  font-size: 12px;
-  color: rgba(0, 0, 0, 0.45);
-}
-
-.dbz-topology-connector {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 10px;
-  border: 1px solid #eef0f4;
-  border-radius: 8px;
-  background: #fafbfd;
-}
-
-.dbz-topology-connector-main {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  min-width: 0;
-}
-
-.dbz-topology-connector-line {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-  min-width: 0;
-}
-
-.dbz-topology-connector-name {
-  font-size: 13px;
-  font-weight: 500;
-}
-
-.dbz-topology-topic {
-  font-size: 12px;
-  color: rgba(0, 0, 0, 0.45);
-}
-
-.dbz-topology-topic-value {
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dbz-topology-connector-alias {
-  max-width: 100%;
-  overflow: hidden;
-  color: rgba(0, 0, 0, 0.45);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.dbz-topology-connector-actions {
-  display: flex;
-  flex: none;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 2px;
-  flex-wrap: wrap;
-}
-
-.dbz-topology-unmanaged {
-  margin-top: 10px;
-  font-size: 12px;
-  color: rgba(0, 0, 0, 0.45);
-  word-break: break-all;
-}
-
-.dbz-topology-unmanaged .ant-btn-link {
-  height: auto;
-  padding: 0 4px;
-}
-
 /*
  * 窄屏收尾：
  * - 侧栏由 antd 的 breakpoint 收起，内容区减小留白；
@@ -590,18 +432,6 @@ body {
     min-height: 40px;
   }
 
-  /* 控制面：单列铺开，连接器行改为上下两段，操作按钮换行后仍点得中 */
-  .dbz-topology-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .dbz-topology-connector {
-    flex-direction: column;
-  }
-
-  .dbz-topology-connector-actions {
-    justify-content: flex-start;
-  }
 }
 
 @media (pointer: coarse) {
@@ -888,13 +718,13 @@ body {
   color: rgba(0, 0, 0, 0.88);
 }
 
-/* 状态行上方留出一行空白，标签略微加宽，避免贴在说明行上 */
+/* 状态行压到卡片底部（紧贴操作行），标签略微加宽 */
 .dbz-graph-node-status {
   display: flex;
   gap: 5px;
   align-items: center;
   min-width: 0;
-  margin-top: 14px;
+  margin-top: auto;
   overflow: hidden;
   white-space: nowrap;
 }
@@ -943,16 +773,14 @@ body {
   word-break: break-word;
 }
 
-/* 下游连接器需要两行（topic / http.api.url），保留换行并用省略号收尾 */
+/* 说明行固定单行，超出省略；完整内容由 hover 提示给出 */
 .dbz-graph-node-sub {
-  display: -webkit-box;
+  display: block;
   overflow: hidden;
   font-size: 11px;
   line-height: 1.45;
-  white-space: pre-line;
-  overflow-wrap: anywhere;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
+  white-space: nowrap;
+  text-overflow: ellipsis;
   color: rgba(0, 0, 0, 0.45);
 }
 
@@ -962,7 +790,6 @@ body {
   align-items: center;
   flex-wrap: nowrap;
   gap: 2px;
-  margin-top: auto;
   padding-top: 6px;
   border-top: 1px solid #f0f2f7;
 }
@@ -1192,6 +1019,76 @@ body {
   padding-top: 0;
 }
 
+/* 集群检测结果：插件与 topic 各成一组，空组用灰字说明 */
+.dbz-inspector-check-hint {
+  margin-top: 8px;
+  padding: 8px 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: rgba(0, 0, 0, 0.45);
+  background: #fafbfc;
+  border: 1px dashed #e5eaf2;
+  border-radius: 8px;
+}
+
+.dbz-inspector-check-group {
+  margin-top: 8px;
+  padding: 8px 10px;
+  background: #fafbfc;
+  border: 1px solid #eef0f4;
+  border-radius: 8px;
+}
+
+.dbz-inspector-check-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 12px;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.72);
+}
+
+.dbz-inspector-check-count {
+  font-weight: 500;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+.dbz-inspector-check-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  max-height: 180px;
+  margin-top: 6px;
+  overflow: auto;
+}
+
+.dbz-inspector-check-list .ant-tag {
+  max-width: 100%;
+  margin-inline-end: 0;
+  overflow: hidden;
+  font-size: 11px;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.dbz-inspector-check-empty {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: rgba(0, 0, 0, 0.4);
+}
+
+.dbz-inspector-plugin-group + .dbz-inspector-plugin-group {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed #eef0f4;
+}
+
+.dbz-inspector-plugin-connect {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.65);
+}
+
 .dbz-inspector-actions {
   display: flex;
   flex-wrap: wrap;
@@ -1269,7 +1166,27 @@ body {
   }
 }
 
-/* ---------- 连线折点：选中后可拖，端点固定 ---------- */
+/* ---------- 连线连接点：选中后可左右拖，纵向归属不变 ---------- */
+.dbz-graph-anchor-handle {
+  pointer-events: all;
+  cursor: ew-resize;
+}
+
+.dbz-graph-anchor-hit {
+  fill: transparent;
+  pointer-events: all;
+}
+
+.dbz-graph-anchor-shape {
+  fill: #1677ff;
+  opacity: 0.4;
+}
+
+.dbz-graph-anchor-handle:hover .dbz-graph-anchor-shape {
+  opacity: 0.85;
+}
+
+/* ---------- 连线折点：选中后可上下拖 ---------- */
 .dbz-graph-bend-handle {
   pointer-events: all;
   cursor: grab;

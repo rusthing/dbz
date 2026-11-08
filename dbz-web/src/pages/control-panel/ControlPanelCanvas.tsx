@@ -1,9 +1,9 @@
 /**
- * # 连接器拓扑画布
+ * # 控制面板画布
  *
  * 交互按「只选上游、其余自动推导」收敛：
  * - 节点可拖、空白可平移、滚轮以指针为中心缩放、缩略图、正交折线箭头；
- * - 连线只作展示：两端都没有把手，不能拖动改上下游，也不能删除；
+ * - 连线只作展示：两端的连接点可左右拖动避让、中间折点可上下拖动，不能改上下游，也不能删除；
  * - 新增下级只走节点底部的「+」按钮，点击后由页面打开父级已固定的表单；
  * - 四类卡片同一骨架，类型图标 + 类型文字 + 主色用于识别，状态只用标签表达。
  *
@@ -50,6 +50,7 @@ import {
   type CanvasNode,
   type CanvasNodeAction,
   type CanvasNodeKind,
+  type EdgeAnchor,
 } from './canvas-model';
 
 /** 画布缩放范围 */
@@ -82,6 +83,12 @@ interface EdgeGeometry {
   path: string;
   start: Point;
   end: Point;
+  /** 两端连接点的横向可拖动范围（相对卡片中心的偏移） */
+  startDx: { min: number; max: number };
+  endDx: { min: number; max: number };
+  /** 两端未加用户偏移时的基准 X（卡片中心 + 同源错开） */
+  startBaseX: number;
+  endBaseX: number;
   /** 正交走线的中间水平段 Y；拖动折点即改这个值 */
   midY: number;
   handle: Point;
@@ -89,18 +96,27 @@ interface EdgeGeometry {
   marker: string;
 }
 
-interface ConnectorTopologyCanvasProps {
+interface ControlPanelCanvasProps {
   nodes: CanvasNode[];
   edges: CanvasEdge[];
   positions: Record<string, Point>;
   /** 已持久化的连线折点：edgeId → 中间水平段 Y */
   edgeBends: Record<string, number>;
+  /** 已持久化的连接点横向偏移：edgeId → 两端偏移 */
+  edgeAnchors: Record<string, EdgeAnchor>;
   selectedNodeKey: string | null;
   selectedEdgeId: string | null;
   /** 拖动过程中持续回调，`commit=false`；松手时 `commit=true` 由页面落库 */
   onNodeMove: (key: string, x: number, y: number, commit: boolean) => void;
   /** 拖动折点：commit=false 只更新本地，松手才落库 */
   onEdgeBend: (edgeId: string, midY: number, commit: boolean) => void;
+  /** 左右拖动连接点：commit=false 只更新本地，松手才落库 */
+  onEdgeAnchor: (
+    edgeId: string,
+    anchor: 'start' | 'end',
+    dx: number,
+    commit: boolean,
+  ) => void;
   onSelectNode: (key: string | null) => void;
   onSelectEdge: (id: string | null) => void;
   /** 点击节点底部「+」：父级固定，页面按子类型打开新增表单 */
@@ -152,6 +168,7 @@ function geometryOf(
   positions: Record<string, Point>,
   offset: number,
   bend?: number,
+  anchor?: EdgeAnchor,
 ): EdgeGeometry | null {
   const from = nodeMap.get(edge.from);
   const to = nodeMap.get(edge.to);
@@ -163,14 +180,30 @@ function geometryOf(
   const fromSize = NODE_SIZE[from.kind];
   const toSize = NODE_SIZE[to.kind];
 
+  // 连接点 = 卡片中心 + 同源错开 + 用户拖动偏移；偏移存相对中心，节点移动时跟着走
+  const startBaseX = fromPos.x + fromSize.w / 2 + offset;
+  const endBaseX = toPos.x + toSize.w / 2;
+  const startDx = {
+    min: fromPos.x + 18 - startBaseX,
+    max: fromPos.x + fromSize.w - 18 - startBaseX,
+  };
+  const endDx = {
+    min: toPos.x + 18 - endBaseX,
+    max: toPos.x + toSize.w - 18 - endBaseX,
+  };
   const startX = clamp(
-    fromPos.x + fromSize.w / 2 + offset,
+    startBaseX + clamp(anchor?.startDx ?? 0, startDx.min, startDx.max),
     fromPos.x + 18,
     fromPos.x + fromSize.w - 18,
   );
+  const endX = clamp(
+    endBaseX + clamp(anchor?.endDx ?? 0, endDx.min, endDx.max),
+    toPos.x + 18,
+    toPos.x + toSize.w - 18,
+  );
   const start = { x: startX, y: fromPos.y + fromSize.h };
-  const end = { x: toPos.x + toSize.w / 2, y: toPos.y };
-  // 端点由归属关系固定，只有中间水平段在竖直方向可拖；拖过的值优先
+  const end = { x: endX, y: toPos.y };
+  // 连接点可左右拖，中间水平段可上下拖；拖过的值优先
   const midY = clamp(
     typeof bend === 'number' && Number.isFinite(bend) ? bend : defaultMidY(start, end),
     BEND_MIN_Y,
@@ -180,6 +213,10 @@ function geometryOf(
     edge,
     start,
     end,
+    startDx,
+    endDx,
+    startBaseX,
+    endBaseX,
     midY,
     handle: { x: (start.x + end.x) / 2, y: midY },
     path: `M${start.x},${start.y} L${start.x},${midY} L${end.x},${midY} L${end.x},${end.y}`,
@@ -508,15 +545,17 @@ function NodeHead({
   );
 }
 
-export default function ConnectorTopologyCanvas({
+export default function ControlPanelCanvas({
   nodes,
   edges,
   positions,
   edgeBends,
+  edgeAnchors,
   selectedNodeKey,
   selectedEdgeId,
   onNodeMove,
   onEdgeBend,
+  onEdgeAnchor,
   onSelectNode,
   onSelectEdge,
   onAddChild,
@@ -530,7 +569,7 @@ export default function ConnectorTopologyCanvas({
   activeHitKey,
   focusToken,
   renderInspector,
-}: ConnectorTopologyCanvasProps) {
+}: ControlPanelCanvasProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<ViewState>({ x: 0, y: 0, scale: 1 });
   const [viewportSize, setViewportSize] = useState({ w: 0, h: 0 });
@@ -568,10 +607,11 @@ export default function ConnectorTopologyCanvas({
             positions,
             edgeOffsets.get(edge.id) ?? 0,
             edgeBends[edge.id],
+            edgeAnchors[edge.id],
           ),
         )
         .filter((item): item is EdgeGeometry => Boolean(item)),
-    [edges, nodeMap, positions, edgeOffsets, edgeBends],
+    [edges, nodeMap, positions, edgeOffsets, edgeBends, edgeAnchors],
   );
 
   /** 搜索高亮：命中节点只高亮，不隐藏其它节点，整体拓扑始终保留 */
@@ -691,6 +731,7 @@ export default function ConnectorTopologyCanvas({
       target.closest('.dbz-graph-node') ||
       target.closest('.dbz-graph-edge-hit') ||
       target.closest('.dbz-graph-bend-handle') ||
+      target.closest('.dbz-graph-anchor-handle') ||
       target.closest('.dbz-graph-controls') ||
       target.closest('.dbz-graph-minimap')
     ) {
@@ -792,6 +833,49 @@ export default function ConnectorTopologyCanvas({
     window.addEventListener('pointerup', up);
   };
 
+  /**
+   * # 左右拖动连接点
+   *
+   * 只改连接点相对卡片中心的横向偏移，两端的纵向归属不变；拖动过程只更新本地
+   * （`commit=false`），松手才落库，刷新后仍按保存的偏移绘制。
+   */
+  const handleAnchorPointerDown = (
+    event: ReactPointerEvent<SVGElement>,
+    geometry: EdgeGeometry,
+    which: 'start' | 'end',
+  ) => {
+    if (event.button !== 0) {
+      return;
+    }
+    event.stopPropagation();
+    onSelectEdge(geometry.edge.id);
+    const baseX = which === 'start' ? geometry.startBaseX : geometry.endBaseX;
+    const currentX = which === 'start' ? geometry.start.x : geometry.end.x;
+    const range = which === 'start' ? geometry.startDx : geometry.endDx;
+    const originDx = currentX - baseX;
+    const startClientX = event.clientX;
+    const scale = view.scale;
+    let moved = false;
+
+    const nextDxOf = (clientX: number) =>
+      clamp(originDx + (clientX - startClientX) / scale, range.min, range.max);
+    const move = (moveEvent: PointerEvent) => {
+      if (Math.abs(moveEvent.clientX - startClientX) > 2) {
+        moved = true;
+      }
+      onEdgeAnchor(geometry.edge.id, which, nextDxOf(moveEvent.clientX), false);
+    };
+    const up = (upEvent: PointerEvent) => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      if (moved) {
+        onEdgeAnchor(geometry.edge.id, which, nextDxOf(upEvent.clientX), true);
+      }
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
+
   /** 缩略图范围 */
   const bounds = useMemo(() => {
     if (!nodes.length) {
@@ -859,7 +943,7 @@ export default function ConnectorTopologyCanvas({
                     stroke={geometry.color}
                     markerEnd={`url(#${geometry.marker})`}
                   />
-                  {/* 端点由归属关系固定；选中后可拖中间水平段避让卡片，连线不能删除 */}
+                  {/* 上下游归属固定；选中后连接点可左右拖、中间水平段可上下拖，连线不能删除 */}
                   <path
                     className="dbz-graph-edge-hit"
                     data-edge-id={geometry.edge.id}
@@ -869,25 +953,65 @@ export default function ConnectorTopologyCanvas({
                       onSelectEdge(geometry.edge.id);
                     }}
                   >
-                    <title>端点固定，选中后可拖动中间折点避让卡片；不能删除</title>
+                    <title>选中后可左右拖动两端的连接点、上下拖动中间折点；不能删除</title>
                   </path>
                   {selectedEdgeId === geometry.edge.id && (
-                    <g
-                      className="dbz-graph-bend-handle"
-                      data-edge-bend={geometry.edge.id}
-                      transform={`translate(${geometry.handle.x}, ${geometry.handle.y})`}
-                      onPointerDown={(event) => handleBendPointerDown(event, geometry)}
-                    >
-                      <circle r={10} className="dbz-graph-bend-hit" />
-                      <rect
-                        x={-14}
-                        y={-4}
-                        width={28}
-                        height={8}
-                        rx={4}
-                        className="dbz-graph-bend-shape"
-                      />
-                      <title>拖动这个折点调整走线，避开卡片重叠</title>
+                    <g>
+                      <g
+                        className="dbz-graph-anchor-handle"
+                        data-edge-anchor={`${geometry.edge.id}:start`}
+                        transform={`translate(${geometry.start.x}, ${geometry.start.y + 18})`}
+                        onPointerDown={(event) =>
+                          handleAnchorPointerDown(event, geometry, 'start')
+                        }
+                      >
+                        <circle r={11} className="dbz-graph-anchor-hit" />
+                        <rect
+                          x={-12}
+                          y={-6}
+                          width={24}
+                          height={12}
+                          rx={6}
+                          className="dbz-graph-anchor-shape"
+                        />
+                        <title>左右拖动，调整上游连接点位置</title>
+                      </g>
+                      <g
+                        className="dbz-graph-anchor-handle"
+                        data-edge-anchor={`${geometry.edge.id}:end`}
+                        transform={`translate(${geometry.end.x}, ${geometry.end.y - 18})`}
+                        onPointerDown={(event) =>
+                          handleAnchorPointerDown(event, geometry, 'end')
+                        }
+                      >
+                        <circle r={11} className="dbz-graph-anchor-hit" />
+                        <rect
+                          x={-12}
+                          y={-6}
+                          width={24}
+                          height={12}
+                          rx={6}
+                          className="dbz-graph-anchor-shape"
+                        />
+                        <title>左右拖动，调整下游连接点位置</title>
+                      </g>
+                      <g
+                        className="dbz-graph-bend-handle"
+                        data-edge-bend={geometry.edge.id}
+                        transform={`translate(${geometry.handle.x}, ${geometry.handle.y})`}
+                        onPointerDown={(event) => handleBendPointerDown(event, geometry)}
+                      >
+                        <circle r={10} className="dbz-graph-bend-hit" />
+                        <rect
+                          x={-14}
+                          y={-4}
+                          width={28}
+                          height={8}
+                          rx={4}
+                          className="dbz-graph-bend-shape"
+                        />
+                        <title>上下拖动这个折点调整走线，避开卡片重叠</title>
+                      </g>
                     </g>
                   )}
                 </g>
@@ -923,9 +1047,13 @@ export default function ConnectorTopologyCanvas({
                     {node.name}
                   </div>
 
-                  <div className="dbz-graph-node-sub dbz-mono" title={node.sub}>
-                    {node.sub}
-                  </div>
+                  <Tooltip
+                    title={node.sub}
+                    placement="topLeft"
+                    styles={{ root: { maxWidth: 480 } }}
+                  >
+                    <div className="dbz-graph-node-sub dbz-mono">{node.sub}</div>
+                  </Tooltip>
 
                   <div className="dbz-graph-node-status" data-no-drag>
                     <NodeStatus node={node} />

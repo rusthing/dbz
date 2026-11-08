@@ -17,6 +17,10 @@ pub struct DbzControlPlaneEdgeBendUpsertDto {
     pub edge_id: String,
     /// 正交走线中间水平段的世界坐标 Y
     pub mid_y: f64,
+    /// 上游连接点相对卡片中心的横向偏移；不传则保留库内已有值
+    pub start_dx: Option<f64>,
+    /// 下游连接点相对卡片中心的横向偏移；不传则保留库内已有值
+    pub end_dx: Option<f64>,
 }
 
 /// # 删除一条连线的折点（恢复默认居中走线）

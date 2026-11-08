@@ -1,5 +1,5 @@
 /**
- * # 连接器拓扑
+ * # 控制面板
  *
  * 只选上游、其余自动推导：
  * - 新增下级只走节点底部的「+」，父级固定且表单里不出现；
@@ -74,6 +74,7 @@ import type {
   DbzDeadLetterCountVo,
   DbzKafkaBrokerVo,
   DbzKafkaConnectVo,
+  KafkaConnectorPluginVo,
   DbzSinkConnectorVo,
   DbzSourceConnectorVo,
   DeadLetterConnectorType,
@@ -83,7 +84,7 @@ import StatusTag from '../../components/StatusTag';
 import { connectorRunStatusDic, kafkaConnectorStatusDic } from '../../dic';
 import { useAsync, type AsyncState } from '../../hooks/useAsync';
 import { errorMessage, formatMs, orDash, prettyJson, truncate } from '../../utils/format';
-import ConnectorTopologyCanvas from './ConnectorTopologyCanvas';
+import ControlPanelCanvas from './ControlPanelCanvas';
 import {
   backupFileName,
   buildImportRows,
@@ -110,6 +111,7 @@ import {
   type CanvasNode,
   type CanvasNodeAction,
   type CanvasNodeKind,
+  type EdgeAnchor,
 } from './canvas-model';
 import {
   authLabelOf,
@@ -118,7 +120,7 @@ import {
   topicInfoOf,
 } from './details';
 import {
-  buildConnectorTopology,
+  buildControlPanel,
   liveFailureReason,
   taskSummary,
   type ConnectorKind,
@@ -135,7 +137,24 @@ import SourceConnectorForm from '../source-connector/SourceConnectorForm';
 /** 实时状态查询的最长等待时间：单台 Connect 卡住不能拖死整个视图 */
 const LIVE_TIMEOUT_MS = 15_000;
 
-interface ConnectorTopologyData {
+/** 一台 Connect 的插件检测结果；停用或查询失败都会给出原因 */
+interface BrokerPluginGroup {
+  connectName: string;
+  items: KafkaConnectorPluginVo[];
+  /** 未检测的原因：Connect 已停用或接口失败 */
+  issue?: string;
+}
+
+/** 一次集群检测：Kafka 侧 topic + 各 Connect 的插件，供属性面板分类展示 */
+interface BrokerCheckOutcome {
+  reachable: boolean;
+  topics: string[];
+  plugins: BrokerPluginGroup[];
+  elapsedMs: number;
+  message?: string | null;
+}
+
+interface ControlPanelData {
   brokers: DbzKafkaBrokerVo[];
   connects: DbzKafkaConnectVo[];
   sources: DbzSourceConnectorVo[];
@@ -150,11 +169,13 @@ interface ConnectorTopologyData {
   layout: { nodeType: number; nodeId: Id; x: number; y: number }[];
   /** 已保存的连线折点：edgeId → 中间水平段 Y */
   edgeBends: Record<string, number>;
+  /** 已保存的连接点横向偏移：edgeId → 两端偏移 */
+  edgeAnchors: Record<string, EdgeAnchor>;
   /** 本次实时采集时间 */
   loadedAt: number;
 }
 
-const EMPTY_DATA: ConnectorTopologyData = {
+const EMPTY_DATA: ControlPanelData = {
   brokers: [],
   connects: [],
   sources: [],
@@ -164,6 +185,7 @@ const EMPTY_DATA: ConnectorTopologyData = {
   deadLetter: new Map(),
   layout: [],
   edgeBends: {},
+  edgeAnchors: {},
   loadedAt: 0,
 };
 
@@ -417,7 +439,7 @@ interface RefreshSetting {
   seconds: number;
 }
 
-const REFRESH_STORAGE_KEY = 'dbz.connector-topology.refresh';
+const REFRESH_STORAGE_KEY = 'dbz.control-panel.refresh';
 const DEFAULT_REFRESH: RefreshSetting = { enabled: true, seconds: 15 };
 
 function loadRefreshSetting(): RefreshSetting {
@@ -467,7 +489,7 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 }
 
 /** 一次加载：四张表 + 每台 Connect 的实时连接器 + 死信计数 + 画布位置 */
-async function loadConnectorTopology(): Promise<ConnectorTopologyData> {
+async function loadControlPanel(): Promise<ControlPanelData> {
   const [brokers, connects, sources, sinks, deadLetterCounts, layout, edgeBends] =
     await Promise.all([
       kafkaBrokerApi.list(),
@@ -534,6 +556,12 @@ async function loadConnectorTopology(): Promise<ConnectorTopologyData> {
     deadLetter,
     layout,
     edgeBends: Object.fromEntries(edgeBends.map((item) => [item.edgeId, item.midY])),
+    edgeAnchors: Object.fromEntries(
+      edgeBends.map((item) => [
+        item.edgeId,
+        { startDx: item.startDx ?? 0, endDx: item.endDx ?? 0 },
+      ]),
+    ),
     loadedAt: Date.now(),
   };
 }
@@ -584,7 +612,7 @@ function connectorKey(record: ManagedConnectorRecord): string {
 
 /** 取某种节点在数据里的记录 */
 function recordsOfKind(
-  data: ConnectorTopologyData,
+  data: ControlPanelData,
   kind: CanvasNodeKind,
   fallback: { id: Id }[] = [],
 ): { id: Id }[] {
@@ -655,7 +683,7 @@ function childPositionOf(
     });
 
   for (const offset of [0, -1, 1, -2, 2, -3, 3]) {
-    const point = { x: baseX + offset * 280, y: baseY };
+    const point = { x: baseX + offset * 400, y: baseY };
     if (!overlaps(point)) {
       return point;
     }
@@ -663,17 +691,23 @@ function childPositionOf(
   return { x: baseX, y: baseY };
 }
 
-export default function ConnectorTopologyPage() {
+export default function ControlPanelPage() {
   const { message, modal } = AntdApp.useApp();
   const navigate = useNavigate();
-  const state: AsyncState<ConnectorTopologyData> = useAsync(loadConnectorTopology, [], EMPTY_DATA);
+  const state: AsyncState<ControlPanelData> = useAsync(loadControlPanel, [], EMPTY_DATA);
 
   const [positions, setPositions] = useState<Record<string, Point>>({});
   /** 连线折点：本地即时更新，松手才落库 */
   const [edgeBends, setEdgeBends] = useState<Record<string, number>>({});
+  /** 连接点横向偏移：本地即时更新，松手才落库 */
+  const [edgeAnchors, setEdgeAnchors] = useState<Record<string, EdgeAnchor>>({});
+  // 拖动回调注册在 pointerdown 时，闭包里的 state 会停留在那一刻；用 ref 保证落库存到最新两端偏移
+  const edgeAnchorsRef = useRef<Record<string, EdgeAnchor>>({});
   const [selectedNodeKey, setSelectedNodeKey] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [checkingKey, setCheckingKey] = useState<string | null>(null);
+  /** 集群检测结果：按集群 ID 保留，切 tab 回来还能看到上一次的 topic 与插件 */
+  const [brokerChecks, setBrokerChecks] = useState<Record<string, BrokerCheckOutcome>>({});
   const [restartingKey, setRestartingKey] = useState<string | null>(null);
   const [busyNodeKey, setBusyNodeKey] = useState<string | null>(null);
   const [togglingNodeKey, setTogglingNodeKey] = useState<string | null>(null);
@@ -801,7 +835,7 @@ export default function ConnectorTopologyPage() {
 
   const tree = useMemo(
     () =>
-      buildConnectorTopology(
+      buildControlPanel(
         state.data.brokers,
         state.data.connects,
         state.data.sources,
@@ -886,10 +920,12 @@ export default function ConnectorTopologyPage() {
     setPositions(next);
   }, [state.data.layout]);
 
-  /** 服务端保存的连线折点；拖动中的本地值以最新一次为准 */
+  /** 服务端保存的连线折点与连接点；拖动中的本地值以最新一次为准 */
   useEffect(() => {
     setEdgeBends(state.data.edgeBends);
-  }, [state.data.edgeBends]);
+    edgeAnchorsRef.current = state.data.edgeAnchors;
+    setEdgeAnchors(state.data.edgeAnchors);
+  }, [state.data.edgeBends, state.data.edgeAnchors]);
 
   /** 搜索命中：只作用于当前集群 tab，按名称 / topic / connectorName 匹配 */
   const searchHits = useMemo(() => {
@@ -1057,13 +1093,62 @@ export default function ConnectorTopologyPage() {
     });
   };
 
-  /** 恢复默认居中走线：只删折点，连线本身保留 */
+  /** 连线的默认中间水平段 Y：两端上下居中，落库时补齐折点字段 */
+  const defaultEdgeMidY = (edgeId: string): number => {
+    const edge = scopeEdges.find((item) => item.id === edgeId);
+    if (!edge) {
+      return 0;
+    }
+    const fromNode = scopeNodes.find((node) => node.key === edge.from);
+    const toNode = scopeNodes.find((node) => node.key === edge.to);
+    if (!fromNode || !toNode) {
+      return 0;
+    }
+    const fromPos = resolvedPositions[fromNode.key] ?? defaultPosition(fromNode.kind, 0);
+    const toPos = resolvedPositions[toNode.key] ?? defaultPosition(toNode.kind, 0);
+    return (fromPos.y + NODE_SIZE[fromNode.kind].h + toPos.y) / 2;
+  };
+
+  /** 左右拖动连接点：过程只改本地，松手落库；垂直折点一并带上，避免覆盖已保存值 */
+  const handleEdgeAnchor = (
+    edgeId: string,
+    anchor: 'start' | 'end',
+    dx: number,
+    commit: boolean,
+  ) => {
+    const current = edgeAnchorsRef.current[edgeId] ?? { startDx: 0, endDx: 0 };
+    const updated = {
+      ...current,
+      [anchor === 'start' ? 'startDx' : 'endDx']: dx,
+    };
+    edgeAnchorsRef.current = { ...edgeAnchorsRef.current, [edgeId]: updated };
+    setEdgeAnchors(edgeAnchorsRef.current);
+    if (!commit) {
+      return;
+    }
+    void controlPlaneApi
+      .saveEdgeBend({
+        edgeId,
+        midY: edgeBends[edgeId] ?? defaultEdgeMidY(edgeId),
+        startDx: updated.startDx,
+        endDx: updated.endDx,
+      })
+      .catch((reason: unknown) => {
+        message.error(`连接点保存失败：${errorMessage(reason)}`);
+      });
+  };
+
+  /** 恢复默认走线与连接点：只删布局记录，连线本身保留 */
   const resetEdgeBend = (edgeId: string) => {
     setEdgeBends((previous) => {
       const next = { ...previous };
       delete next[edgeId];
       return next;
     });
+    const nextAnchors = { ...edgeAnchorsRef.current };
+    delete nextAnchors[edgeId];
+    edgeAnchorsRef.current = nextAnchors;
+    setEdgeAnchors(nextAnchors);
     void controlPlaneApi.resetEdgeBend(edgeId).catch((reason: unknown) => {
       message.error(`恢复默认走线失败：${errorMessage(reason)}`);
     });
@@ -1146,12 +1231,51 @@ export default function ConnectorTopologyPage() {
     state.reload();
   };
 
-  /** 集群检测：只测 Kafka 连通性与 topic 数 */
+  /**
+   * 集群检测：Kafka 连通性 + topic 清单，同时把集群下各 Connect 的插件一起查出来
+   *
+   * 两项并行：Kafka 不通不代表 Connect 也不可达，插件仍能给出结论；结果按 cluster id
+   * 留在本地状态，属性面板按「插件 / topic」两组展示。
+   */
   const checkBroker = async (broker: DbzKafkaBrokerVo) => {
-    const result = await kafkaBrokerApi.check(broker.id);
+    const clusters = state.data.connects.filter((item) => item.kafkaBrokerId === broker.id);
+    const [result, plugins] = await Promise.all([
+      kafkaBrokerApi.check(broker.id),
+      Promise.all(
+        clusters.map(async (cluster): Promise<BrokerPluginGroup> => {
+          if (!cluster.enabled) {
+            return { connectName: cluster.name, items: [], issue: 'Connect 已停用，未发起检测' };
+          }
+          try {
+            const items = await kafkaConnectorApi.plugins(cluster.id);
+            return {
+              connectName: cluster.name,
+              items: [...items].sort((a, b) => a.class.localeCompare(b.class)),
+            };
+          } catch (reason) {
+            return {
+              connectName: cluster.name,
+              items: [],
+              issue: `插件查询失败：${errorMessage(reason)}`,
+            };
+          }
+        }),
+      ),
+    ]);
+    setBrokerChecks((previous) => ({
+      ...previous,
+      [broker.id]: {
+        reachable: result.reachable,
+        topics: result.topics ?? [],
+        plugins,
+        elapsedMs: result.elapsedMs,
+        message: result.message,
+      },
+    }));
     if (result.reachable) {
+      const pluginTotal = plugins.reduce((sum, group) => sum + group.items.length, 0);
       message.success(
-        `集群检测通过：topic ${result.topicCount} 个，耗时 ${Math.round(result.elapsedMs)} ms`,
+        `集群检测通过：topic ${result.topicCount} 个，插件 ${pluginTotal} 个，耗时 ${Math.round(result.elapsedMs)} ms`,
       );
     } else {
       modal.warning({
@@ -2283,11 +2407,12 @@ export default function ConnectorTopologyPage() {
           <Alert
             type="info"
             showIcon
-            message="端点由归属关系固定"
-            description="连线由下游记录的上游字段决定：下游连接器的上游在 sink 表单里选择；其它节点由「+」新增时的父节点固定。两端不能拖动，也不能删除；选中后可拖中间折点避让卡片，松手即保存。"
+            message="上下游关系固定，走线可调整"
+            description="连线由下游记录的上游字段决定：下游连接器的上游在 sink 表单里选择；其它节点由「+」新增时的父节点固定。两端连接点可左右拖动、中间折点可上下拖动，松手即保存；不能删除连线。"
           />
           <div className="dbz-inspector-actions">
-            {edgeBends[selectedEdge.id] !== undefined && (
+            {(edgeBends[selectedEdge.id] !== undefined ||
+              edgeAnchors[selectedEdge.id] !== undefined) && (
               <Button onClick={() => resetEdgeBend(selectedEdge.id)}>恢复默认走线</Button>
             )}
             <Button onClick={() => setSelectedEdgeId(null)}>取消选中</Button>
@@ -2311,7 +2436,7 @@ export default function ConnectorTopologyPage() {
           />
           <div className="dbz-inspector-tip">
             <p>新增下级走节点底部的「+」按钮；下游连接器的上游在 sink 表单里选择。</p>
-            <p>归属线只作展示，不能拖动，也不能删除。</p>
+            <p>归属线不能删除；选中后可左右拖连接点、上下拖折点。</p>
           </div>
         </div>
       );
@@ -2391,6 +2516,87 @@ export default function ConnectorTopologyPage() {
                   description={broker.runMsg}
                 />
               )}
+              {(() => {
+                const outcome = brokerChecks[String(broker.id)];
+                if (!outcome) {
+                  return (
+                    <div className="dbz-inspector-check-hint">
+                      点卡片上的「检测」可同时拉取 Kafka topic 与集群下各 Connect 的插件。
+                    </div>
+                  );
+                }
+                const pluginTotal = outcome.plugins.reduce(
+                  (sum, group) => sum + group.items.length,
+                  0,
+                );
+                return (
+                  <>
+                    <Typography.Title level={5} className="dbz-inspector-section">
+                      检测结果
+                    </Typography.Title>
+                    <div className="dbz-inspector-check-group">
+                      <div className="dbz-inspector-check-head">
+                        <span>Topic</span>
+                        <span className="dbz-inspector-check-count">
+                          {outcome.reachable ? `${outcome.topics.length} 个` : '未获取'}
+                        </span>
+                      </div>
+                      {outcome.topics.length > 0 ? (
+                        <div className="dbz-inspector-check-list">
+                          {outcome.topics.map((topic) => (
+                            <Tag key={topic} className="dbz-mono">
+                              {topic}
+                            </Tag>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="dbz-inspector-check-empty">
+                          {outcome.reachable
+                            ? '该集群上还没有任何 topic'
+                            : 'Kafka 不可达，未获取到 topic 列表'}
+                        </div>
+                      )}
+                    </div>
+                    <div className="dbz-inspector-check-group">
+                      <div className="dbz-inspector-check-head">
+                        <span>插件</span>
+                        <span className="dbz-inspector-check-count">{pluginTotal} 个</span>
+                      </div>
+                      {outcome.plugins.length > 0 ? (
+                        outcome.plugins.map((group) => (
+                          <div key={group.connectName} className="dbz-inspector-plugin-group">
+                            <div className="dbz-inspector-plugin-connect">{group.connectName}</div>
+                            {group.issue ? (
+                              <div className="dbz-inspector-check-empty">{group.issue}</div>
+                            ) : group.items.length > 0 ? (
+                              <div className="dbz-inspector-check-list">
+                                {group.items.map((item) => (
+                                  <Tooltip
+                                    key={item.class}
+                                    title={`${item.class}${item.version ? ` · v${item.version}` : ''}`}
+                                  >
+                                    <Tag className="dbz-mono">
+                                      {item.class.split('.').pop() || item.class}
+                                    </Tag>
+                                  </Tooltip>
+                                ))}
+                              </div>
+                            ) : (
+                              <div className="dbz-inspector-check-empty">
+                                该 Connect 未安装任何插件
+                              </div>
+                            )}
+                          </div>
+                        ))
+                      ) : (
+                        <div className="dbz-inspector-check-empty">
+                          该集群下还没有 Kafka Connect，未获取到插件
+                        </div>
+                      )}
+                    </div>
+                  </>
+                );
+              })()}
             </>
           );
         })()}
@@ -2675,7 +2881,7 @@ export default function ConnectorTopologyPage() {
     <div className="dbz-canvas-page">
       <div className="dbz-canvas-topbar">
         <div className="dbz-canvas-title">
-          <Typography.Title level={4}>连接器拓扑</Typography.Title>
+          <Typography.Title level={4}>控制面板</Typography.Title>
           <span className="dbz-canvas-caption">
             状态由健康检查与进入页面刷新回写，卡片只展示一个统一状态
           </span>
@@ -2794,7 +3000,7 @@ export default function ConnectorTopologyPage() {
           type="error"
           showIcon
           closable
-          message={`加载连接器拓扑数据失败：${state.error.message}`}
+          message={`加载控制面板数据失败：${state.error.message}`}
           className="dbz-canvas-error"
         />
       )}
@@ -2825,16 +3031,18 @@ export default function ConnectorTopologyPage() {
                 : '--'}
             </span>
           </div>
-          <ConnectorTopologyCanvas
+          <ControlPanelCanvas
             key={resolvedBrokerId ?? 'all'}
             nodes={scopeNodes}
             edges={scopeEdges}
             positions={resolvedPositions}
             edgeBends={edgeBends}
+            edgeAnchors={edgeAnchors}
             selectedNodeKey={selectedNodeKey}
             selectedEdgeId={selectedEdgeId}
             onNodeMove={handleNodeMove}
             onEdgeBend={handleEdgeBend}
+            onEdgeAnchor={handleEdgeAnchor}
             onSelectNode={(key) => {
               setSelectedNodeKey(key);
               setSelectedEdgeId(null);

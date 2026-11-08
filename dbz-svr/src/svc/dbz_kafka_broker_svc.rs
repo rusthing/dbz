@@ -305,6 +305,7 @@ impl DbzKafkaBrokerSvc {
             let result = DbzKafkaBrokerCheckVo {
                 reachable: false,
                 topic_count: 0,
+                topics: Vec::new(),
                 elapsed_ms: 0,
                 message: Some("记录已禁用，未发起检测".to_string()),
             };
@@ -316,7 +317,8 @@ impl DbzKafkaBrokerSvc {
         let elapsed_ms = started.elapsed().as_millis() as u64;
 
         let (result, status, run_msg) = match checked {
-            Ok((topic_count, _)) => {
+            Ok((topics, _)) => {
+                let topic_count = topics.len() as u32;
                 info!(
                     "Kafka 集群<{}>(id={})检测通过，{} 个 topic，耗时 {elapsed_ms}ms",
                     conn.name, model.id, topic_count
@@ -325,6 +327,7 @@ impl DbzKafkaBrokerSvc {
                     DbzKafkaBrokerCheckVo {
                         reachable: true,
                         topic_count,
+                        topics,
                         elapsed_ms,
                         message: None,
                     },
@@ -338,6 +341,7 @@ impl DbzKafkaBrokerSvc {
                     DbzKafkaBrokerCheckVo {
                         reachable: false,
                         topic_count: 0,
+                        topics: Vec::new(),
                         elapsed_ms,
                         message: Some(format!("{e:#}")),
                     },

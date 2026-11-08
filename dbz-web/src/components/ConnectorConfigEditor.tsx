@@ -385,7 +385,7 @@ const SINK_GROUPS: FieldGroup[] = [
         kind: 'text',
         required: true,
         placeholder: 'orders.orders.t_order',
-        help: '与上游「topic 前缀 + 库 + 表」拼出来的名字一致，多个用逗号分隔；可去「集群连接器」页的 topic 列表核对。',
+        help: '与上游「topic 前缀 + 库 + 表」拼出来的名字一致，多个用逗号分隔；可在「控制面板」的 Kafka 集群检测结果里核对 topic 列表。',
       },
       {
         key: 'tasks.max',

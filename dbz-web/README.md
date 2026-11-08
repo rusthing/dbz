@@ -204,7 +204,7 @@ src/
 ├── layouts/AppLayout.tsx
 ├── pages/
 │   ├── Dashboard.tsx            # 总览 + 异常清单
-│   ├── connector-topology/      # 连接器拓扑：broker → Connect → 连接器的实时卡片树
+│   ├── control-panel/      # 控制面板：broker → Connect → 连接器的实时卡片树
 │   ├── dead-letter/             # 死信列表 + 报文详情 + 重投/废弃
 │   ├── kafka-broker/            # 消息集群 CRUD + 连通性检测
 │   ├── kafka-connect/           # 集群 CRUD
@@ -349,7 +349,7 @@ scripts/smoke.mjs        # 冒烟测试
 | 页面 | 用到的接口 |
 | --- | --- |
 | 总览 | 四张表的 `/list`（含 Kafka 集群），在浏览器里算统计与异常；异常清单里消息集群排在集群之前一起列 |
-| 连接器拓扑 | 四张表的 `/list` + 每台 Connect 的 `GET /dbz/kafka-connector/list`（实时连接器）、`GET /dbz/kafka-connect/health`（Connect 自身健康）、`GET /dbz/kafka-connector/config`（属性框里的集群侧配置）；`POST /restart`；上游/下游 `PUT`（启用/停用）；`POST /kafka-broker/check` |
+| 控制面板 | 四张表的 `/list` + 每台 Connect 的 `GET /dbz/kafka-connector/list`（实时连接器）、`GET /dbz/kafka-connect/health`（Connect 自身健康）、`GET /dbz/kafka-connector/config`（属性框里的集群侧配置）；`POST /restart`；上游/下游 `PUT`（启用/停用）；`POST /kafka-broker/check` |
 | Kafka 集群 | `/dbz/kafka-broker` 的 `/page`、`POST`、`PUT`、`DELETE /{id}` + `POST /check` |
 | Kafka Connect | `/dbz/kafka-connect` 的 `/page`、`POST`、`PUT`、`DELETE /{id}` |
 | 上游连接器 | `/dbz/source-connector` 同上 + `GET /snapshot/preview`、`POST /snapshot` |
@@ -357,9 +357,9 @@ scripts/smoke.mjs        # 冒烟测试
 | 集群连接器 | `GET /dbz/kafka-connector/list`（集群上全部连接器）、`GET /dbz/kafka-connector/plugins`（已安装插件） |
 | 死信 | `GET /dbz/dead-letter/page`（连接器/状态/topic/时间筛选）、`GET /pending-count`（卡片角标）、`POST /retry`、`POST /discard`；`POST /report` 只给 magic 脚本调用 |
 
-## 连接器拓扑
+## 控制面板
 
-`/connector-topology` 把四张表按 **Kafka 集群 → Connect → 上游/下游连接器** 铺成卡片树，
+`/control-panel` 把四张表按 **Kafka 集群 → Connect → 上游/下游连接器** 铺成卡片树，
 新增下级走节点底部的「+」，新建 Kafka 集群走顶栏入口，不再跳转独立的明细页。
 
 - **状态口径**：连接器状态以每台 Connect 的 `GET /dbz/kafka-connector/list` 实时结果为主，
@@ -370,7 +370,7 @@ scripts/smoke.mjs        # 冒烟测试
 - **不一致判定**：只比「是否在运行中」这一层。启用但集群上没部署、禁用却还在跑、
   库内运行中而实时不是（或相反），都会提示；实时查询失败时不参与比对，避免误报。
 - **图上动作**：详情抽屉（集群实时配置、实时任务、异常原因）、启用/停用、重启；未纳管的
-  连接器不进入画布，统一到「集群连接器」页查看全量列表。
+  连接器不进入画布，统一到 `/kafka-connector` 页查看全量列表（该页入口已从左侧菜单移除，直接访问 URL 仍可用）。
 - **配置来源**：详情抽屉优先展示 `GET /connectors/{name}/config` 的集群侧配置；
   连接器不存在（404）或 Connect 不可达（500）时回落到库内 `connector_config`，并说明原因。
 - **刷新**：刷新按钮会重新拉四张表并对每台 Connect 实时采集 `list` 与 `health`；单台 Connect
@@ -513,7 +513,7 @@ Content-Type: application/json
 所以「注销」这个动作在前端**没有独立入口**：要让连接器停掉但保留记录，用「禁用」
 （`enabled = false`）；要彻底清理，直接删除。
 
-连接器拓扑卡片是直接对集群下手的地方，除了重启与删除，还有两个**不改库**的动作：
+控制面板卡片是直接对集群下手的地方，除了重启与删除，还有两个**不改库**的动作：
 
 | 操作 | Kafka Connect 接口 | 影响 |
 | --- | --- | --- |
@@ -526,8 +526,8 @@ Content-Type: application/json
 
 ## 已知限制
 
-- **健康检查周期**：列表页的状态是「上一轮检查的结论」，不是实时探测结果；「连接器拓扑」和「集群连接器」
-  会实时读取 Kafka Connect，但要把库内 `run_status` 追平仍需等 jobx 回写（Kafka 集群可在连接器拓扑手动检测）。
+- **健康检查周期**：列表页的状态是「上一轮检查的结论」，不是实时探测结果；「控制面板」和 `/kafka-connector`
+  会实时读取 Kafka Connect，但要把库内 `run_status` 追平仍需等 jobx 回写（Kafka 集群可在控制面板手动检测）。
 - **没有登录鉴权**：`X-User-Id` 由构建期变量写死（默认 `1`），审计字段在接入统一登录前都记成同一个人，
   只适用于内网/开发环境。
 - **子路径靠变量切**：`VITE_PUBLIC_BASE` 一次驱动 `base` / favicon / `basename` 三处；变量和网关前缀不一致就会出现

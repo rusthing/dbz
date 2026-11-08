@@ -7,7 +7,8 @@ use serde::{Deserialize, Serialize};
 ///
 /// 一行对应一条归属连线。唯一键是 `edge_id`（由两端节点 key 拼成，如
 /// `own:broker:1:connect:2`）；`mid_y` 是正交走线中间那段水平线的世界坐标 Y，
-/// 拖动折点只改这一个值，端点仍由两端节点位置决定、不可拖动。
+/// `start_dx` / `end_dx` 是两端连接点相对所在卡片中心的横向偏移，节点移动时
+/// 连接点跟着卡片走。
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, Default)]
 #[sea_orm(table_name = "dbz_control_plane_edge_layout")]
@@ -19,6 +20,10 @@ pub struct Model {
     pub edge_id: String,
     /// 正交走线中间水平段的 Y 坐标
     pub mid_y: f64,
+    /// 上游连接点相对卡片中心的横向偏移
+    pub start_dx: f64,
+    /// 下游连接点相对卡片中心的横向偏移
+    pub end_dx: f64,
     /// 创建者ID
     pub creater_id: i64,
     /// 创建时间戳

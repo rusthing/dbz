@@ -133,6 +133,8 @@ export interface DbzKafkaBrokerCheckVo {
   reachable: boolean;
   /** 集群上的 topic 数量 */
   topicCount: number;
+  /** 集群上的 topic 名称（已排序；不通时为空） */
+  topics: string[];
   /** 本次检测耗时（毫秒） */
   elapsedMs: number;
   /** 失败原因 */
@@ -447,11 +449,15 @@ export interface DbzControlPlaneLayoutUpsertInput {
   y: number;
 }
 
-/** # 画布连线折点（`DbzControlPlaneEdgeBendVo`） */
+/** # 画布连线折点与连接点（`DbzControlPlaneEdgeBendVo`） */
 export interface DbzControlPlaneEdgeBendVo {
   edgeId: string;
   /** 正交走线中间水平段的世界坐标 Y */
   midY: number;
+  /** 上游连接点相对卡片中心的横向偏移 */
+  startDx: number;
+  /** 下游连接点相对卡片中心的横向偏移 */
+  endDx: number;
   updateMs: string;
 }
 
@@ -459,6 +465,9 @@ export interface DbzControlPlaneEdgeBendVo {
 export interface DbzControlPlaneEdgeBendUpsertInput {
   edgeId: string;
   midY: number;
+  /** 不传则保留库内已有值，避免只拖折点时把连接点重置为 0 */
+  startDx?: number;
+  endDx?: number;
 }
 
 /** # 删除画布节点（`DbzControlPlaneNodeDeleteDto`） */
