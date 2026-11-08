@@ -59,12 +59,12 @@ import type {
   DeadLetterStatus,
   Id,
 } from '../../api/types';
+import OptionButtons from '../../components/OptionButtons';
 import StatusTag from '../../components/StatusTag';
 import {
   deadLetterFailureCategoryDic,
   deadLetterFailureSubtypeDic,
   deadLetterStatusDic,
-  dicOptions,
 } from '../../dic';
 import { useAsync } from '../../hooks/useAsync';
 import { usePagedQuery } from '../../hooks/usePagedQuery';
@@ -720,42 +720,48 @@ export default function DeadLetterPage() {
             applyFilters(next);
           }}
         />
-        <Select
-          allowClear
-          placeholder="状态"
-          style={{ width: 120 }}
-          options={dicOptions(deadLetterStatusDic)}
-          value={draft.status}
-          onChange={(value: DeadLetterStatus | undefined) => {
-            const next = { ...draft, status: value };
-            setDraft(next);
-            applyFilters(next);
-          }}
-        />
-        <Select
-          allowClear
-          placeholder="失败分类"
-          style={{ width: 130 }}
-          options={dicOptions(deadLetterFailureCategoryDic)}
-          value={draft.failureCategory}
-          onChange={(value: DeadLetterFailureCategory | undefined) => {
-            const next = { ...draft, failureCategory: value };
-            setDraft(next);
-            applyFilters(next);
-          }}
-        />
-        <Select
-          allowClear
-          placeholder="失败子类"
-          style={{ width: 130 }}
-          options={dicOptions(deadLetterFailureSubtypeDic)}
-          value={draft.failureSubtype}
-          onChange={(value: DeadLetterFailureSubtype | undefined) => {
-            const next = { ...draft, failureSubtype: value };
-            setDraft(next);
-            applyFilters(next);
-          }}
-        />
+        <div className="dbz-filter-group">
+          <span className="dbz-filter-label">状态</span>
+          <OptionButtons
+            allowClear
+            ariaLabel="死信状态"
+            options={deadLetterStatusDic}
+            value={draft.status}
+            onChange={(value) => {
+              const next = { ...draft, status: value };
+              setDraft(next);
+              applyFilters(next);
+            }}
+          />
+        </div>
+        <div className="dbz-filter-group">
+          <span className="dbz-filter-label">失败分类</span>
+          <OptionButtons
+            allowClear
+            ariaLabel="失败分类"
+            options={deadLetterFailureCategoryDic}
+            value={draft.failureCategory}
+            onChange={(value) => {
+              const next = { ...draft, failureCategory: value };
+              setDraft(next);
+              applyFilters(next);
+            }}
+          />
+        </div>
+        <div className="dbz-filter-group">
+          <span className="dbz-filter-label">失败子类</span>
+          <OptionButtons
+            allowClear
+            ariaLabel="失败子类"
+            options={deadLetterFailureSubtypeDic}
+            value={draft.failureSubtype}
+            onChange={(value) => {
+              const next = { ...draft, failureSubtype: value };
+              setDraft(next);
+              applyFilters(next);
+            }}
+          />
+        </div>
         <Input.Search
           allowClear
           placeholder="失败原因关键字"

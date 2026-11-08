@@ -8,15 +8,16 @@
  * 密码**只进不出**：编辑时输入框永远为空，留空表示沿用原密码，不是清空。
  */
 
-import { Alert, App as AntdApp, Form, Input, Modal, Select } from 'antd';
-import { useState } from 'react';
+import { Alert, App as AntdApp, Form, Input, Modal } from 'antd';
+import { useEffect, useState } from 'react';
 import { kafkaBrokerApi } from '../../api/kafka-broker';
 import type {
   DbzKafkaBrokerVo,
   KafkaSaslMechanism,
   KafkaSecurityProtocol,
 } from '../../api/types';
-import { dicOptions, kafkaSaslMechanismDic, kafkaSecurityProtocolDic } from '../../dic';
+import OptionButtons from '../../components/OptionButtons';
+import { kafkaSaslMechanismDic, kafkaSecurityProtocolDic } from '../../dic';
 import { useCancelConfirm } from '../../hooks/useCancelConfirm';
 import { errorMessage } from '../../utils/format';
 
@@ -48,6 +49,13 @@ export default function KafkaBrokerForm({ open, record, onCancel, onSuccess }: K
   // 协议决定后面三个字段出不出现，用 watch 跟着变
   const protocol = Form.useWatch('securityProtocol', form) ?? record?.securityProtocol ?? 0;
   const needsSasl = protocol === SASL;
+
+  // 切到 SASL 且尚无机制时补一个可连通的默认值（原 Select onChange 的联动逻辑）
+  useEffect(() => {
+    if (protocol === SASL && !form.getFieldValue('saslMechanism')) {
+      form.setFieldValue('saslMechanism', 1);
+    }
+  }, [form, protocol]);
 
   /**
    * # 弹窗完全打开后同步表单
@@ -161,15 +169,10 @@ export default function KafkaBrokerForm({ open, record, onCancel, onSuccess }: K
           extra="TLS 需要证书与 CA 配置，暂不支持；这两项是 dbz 真正连得上的取值。选了 SASL_PLAINTEXT 才需要下面的机制与账号。"
           rules={[{ required: true, message: '请选择安全协议' }]}
         >
-          <Select
-            options={dicOptions(kafkaSecurityProtocolDic)}
-            onChange={(next: KafkaSecurityProtocol) => {
-              // 机制为 None 时切到 SASL，下面的选择框会显出一个没有标签的 0；
-              // 直接给个能连上的默认值（服务端也要求 SASL 必须带机制）
-              if (next === SASL && !form.getFieldValue('saslMechanism')) {
-                form.setFieldValue('saslMechanism', 1);
-              }
-            }}
+          <OptionButtons
+            ariaLabel="安全协议"
+            options={kafkaSecurityProtocolDic}
+            onChange={() => undefined}
           />
         </Form.Item>
 
@@ -180,8 +183,10 @@ export default function KafkaBrokerForm({ open, record, onCancel, onSuccess }: K
               label="SASL 机制"
               rules={[{ required: true, message: '请选择 SASL 机制' }]}
             >
-              <Select
-                options={dicOptions(kafkaSaslMechanismDic).filter((option) => option.value !== 0)}
+              <OptionButtons
+                ariaLabel="SASL 机制"
+                options={kafkaSaslMechanismDic.filter((option) => option.value !== 0)}
+                onChange={() => undefined}
               />
             </Form.Item>
 
