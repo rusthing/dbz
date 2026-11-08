@@ -474,7 +474,10 @@ export interface DbzControlPlaneEdgeBendUpsertInput {
 export interface DbzControlPlaneNodeDeleteInput {
   nodeType: 'broker' | 'connect' | 'source' | 'sink';
   nodeId: Id;
-  /** 当前登录用户审核口令的 SM3 摘要（64 位小写十六进制），后端转发给 adm-rs 二次确认 */
+  /**
+   * 输入的审核口令的 SM3 摘要（64 位小写十六进制），后端转发给 adm-rs 二次确认。
+   * 未设置审核口令时由认证服务回退到登录口令，前端始终只提交这一个字段。
+   */
   auditPswd: string;
 }
 

@@ -574,7 +574,7 @@ let refreshCalls = 0;
 let failNextReset = false;
 /** 置 true 让下一次启用开关失败：验证开关回滚 */
 let failNextSinkToggle = false;
-/** 下一次删除审核口令校验的失败类型：wrong=口令错误，not-set=未设置，rate=频控，unavailable=认证服务不可用 */
+/** 下一次删除审核口令校验的失败类型：wrong=口令不正确，rate=频控，unavailable=认证服务不可用，user-unavailable=账号不可用 */
 let failNextDelete = null;
 /** 下一次登录的失败类型：wrong=账号或口令不正确，network=网络错误 */
 let failNextLogin = null;
@@ -832,24 +832,25 @@ await page.route('**/dbz/**', async (route) => {
       edgeBendStore.delete(url.searchParams.get('edgeId'));
       return route.fulfill({ json: { result: 1, msg: '成功', timestamp: Date.now() } });
     }
-    // 删除节点：审核口令错误 / 未设置 / 频控 / 认证服务不可用返回可区分文案
+    // 删除节点：口令不正确 / 频控 / 账号不可用 / 认证服务不可用返回可区分文案
+    // 未设置审核口令时后端自动改用登录口令，不再有「未设置」这类阻断错误
     if (path === '/dbz/control-plane/node-delete' && request.method() === 'POST') {
       if (failNextDelete === 'wrong') {
         failNextDelete = null;
         return route.fulfill({
           json: {
             result: 0,
-            msg: '审核口令错误：当前登录用户的审核口令不正确',
+            msg: '审核口令错误：当前登录用户的口令不正确',
             timestamp: Date.now(),
           },
         });
       }
-      if (failNextDelete === 'not-set') {
+      if (failNextDelete === 'user-unavailable') {
         failNextDelete = null;
         return route.fulfill({
           json: {
             result: 0,
-            msg: '审核口令未设置：当前用户尚未设置审核口令，请先在用户管理中设置',
+            msg: '账号不可用：当前用户已停用，请重新登录或联系管理员',
             timestamp: Date.now(),
           },
         });
@@ -1826,7 +1827,7 @@ try {
     (await sink303.locator('.dbz-graph-status-tag .ant-tag').innerText()).trim() === '失败',
   );
 
-  // 卡片上的删除：先看影响，再输入当前登录用户审核口令；失败分「审核口令错误 / 未设置 / 频控 / 认证服务不可用」
+  // 卡片上的删除：先看影响，再输入口令（未设置审核口令时后端改用登录口令）；失败分「口令不正确 / 频控 / 账号不可用 / 认证服务不可用」
   await page.locator('.dbz-graph-node[data-node-key="4:301"] [data-node-action="delete"]').click();
   const deleteModal = visibleModal().last();
   await deleteModal.waitFor({ state: 'visible' });
@@ -1842,9 +1843,10 @@ try {
     deleteText.slice(0, 160),
   );
   check(
-    '删除必须输入当前登录用户审核口令',
-    deleteText.includes('审核口令') &&
+    '删除弹窗说明未设置审核口令时使用登录口令',
+    deleteText.includes('未设置时使用登录口令') &&
       (await deleteModal.locator('[data-delete-password]').count()) === 1,
+    deleteText.slice(0, 200),
   );
   await deleteModal.locator('.ant-modal-footer .ant-btn').first().click();
   await waitNoVisibleModal();
@@ -1863,8 +1865,8 @@ try {
   await page.waitForTimeout(500);
   const wrongText = (await wrongPasswordModal.innerText()).replace(/\s+/g, ' ');
   check(
-    '审核口令错误时提示口令错误且弹窗不关闭',
-    (await wrongPasswordModal.isVisible()) && wrongText.includes('审核口令错误'),
+    '口令不正确时提示口令不正确且弹窗不关闭',
+    (await wrongPasswordModal.isVisible()) && wrongText.includes('口令不正确'),
     wrongText.slice(0, 200),
   );
 
@@ -1887,17 +1889,17 @@ try {
     JSON.stringify(deleteRequest?.body),
   );
 
-  // 审核口令未设置：提示先去用户管理设置，删除不执行
-  failNextDelete = 'not-set';
+  // 账号不可用：提示账号不可用，删除不执行，也不应说成未设置审核口令
+  failNextDelete = 'user-unavailable';
   await wrongPasswordModal.locator('[data-delete-confirm]').click();
   await page.waitForTimeout(500);
-  const notSetText = (await wrongPasswordModal.innerText()).replace(/\s+/g, ' ');
+  const userUnavailableText = (await wrongPasswordModal.innerText()).replace(/\s+/g, ' ');
   check(
-    '审核口令未设置时提示先设置且弹窗不关闭',
+    '账号不可用时提示账号不可用且弹窗不关闭',
     (await wrongPasswordModal.isVisible()) &&
-      notSetText.includes('审核口令未设置') &&
-      notSetText.includes('用户管理'),
-    notSetText.slice(0, 220),
+      userUnavailableText.includes('账号不可用') &&
+      !userUnavailableText.includes('审核口令未设置'),
+    userUnavailableText.slice(0, 220),
   );
 
   // 频控：提示稍后重试，且说明默认窗口

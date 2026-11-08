@@ -740,7 +740,7 @@ export default function ControlPanelPage() {
   /** 上游「重新同步」：复用快照弹窗，默认增量、可多选表 */
   const [resyncTarget, setResyncTarget] = useState<DbzSourceConnectorVo | null>(null);
 
-  /** 删除：当前登录用户审核口令弹窗；校验通过前不动任何数据 */
+  /** 删除：审核口令弹窗；未设置审核口令时由后端改用登录口令校验，校验通过前不动任何数据 */
   const [deleteTarget, setDeleteTarget] = useState<CanvasNode | null>(null);
   const [deletePassword, setDeletePassword] = useState('');
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -1521,7 +1521,8 @@ export default function ControlPanelPage() {
    * # 执行删除
    *
    * 后端先带上当前用户身份转发 adm-rs 校验审核口令，通过后才删除并写审计；失败时
-   * 一行数据都不动。前端按提示前缀区分「审核口令错误」「审核口令未设置」与
+   * 一行数据都不动。是否回退到登录口令完全由后端判定，前端只提交一个口令字段，
+   * 按接口返回的提示区分「口令不正确」「校验过于频繁」「账号不可用」
    * 「认证服务不可用」，后者不允许删除，也不能提示成口令错。
    */
   const executeDeleteNode = async () => {
@@ -1530,7 +1531,7 @@ export default function ControlPanelPage() {
     }
     const password = deletePassword.trim();
     if (!password) {
-      setDeleteError('审核口令错误：请输入当前登录用户的审核口令');
+      setDeleteError('请输入审核口令；未设置审核口令时输入登录口令');
       return;
     }
     setDeleteRunning(true);
@@ -1551,23 +1552,26 @@ export default function ControlPanelPage() {
       state.reload();
     } catch (reason) {
       const text = errorMessage(reason);
-      if (text.includes('登录状态已失效')) {
-        // 令牌失效：清会话并回登录页，删除未执行
-        notifySessionExpired();
-        setDeleteError(`登录状态已失效，删除未执行：${text}`);
-      } else if (text.includes('审核口令未设置')) {
-        // 用户还没设置审核口令：删除无法进行，需要先到用户管理里设置
-        setDeleteError(
-          `审核口令未设置，删除未执行：${text}。请先在用户管理中为当前用户设置审核口令。`,
-        );
-      } else if (text.includes('审核口令校验过于频繁')) {
+      // 顺序有讲究：账号不可用可能被包装成「登录状态已失效：当前用户不可用」，
+      // 必须排在会话失效之前，否则会把「换口令也没用」误判成「重新登录」。
+      if (text.includes('账号不可用') || text.includes('当前用户不可用')) {
+        setDeleteError(`账号不可用，删除未执行：${text}`);
+      } else if (text.includes('认证服务不可用')) {
+        // 认证服务不可用与口令错误是两回事：前者重试也没用，不能说成口令错
+        setDeleteError(`认证服务不可用，删除未执行：${text}`);
+      } else if (text.includes('频繁')) {
         // adm 频控响应不返回剩余秒数，只能提示默认窗口，避免编造倒计时
         setDeleteError(
           `审核口令校验过于频繁，删除未执行：${text}。认证服务默认 10 分钟内最多允许 5 次错误，请等待窗口结束后重试。`,
         );
-      } else if (text.includes('认证服务不可用')) {
-        // 认证服务不可用与口令错误是两回事：前者重试也没用，不能说成口令错
-        setDeleteError(`认证服务不可用，删除未执行：${text}`);
+      } else if (text.includes('登录状态已失效')) {
+        // 令牌失效：清会话并回登录页，删除未执行
+        notifySessionExpired();
+        setDeleteError(`登录状态已失效，删除未执行：${text}`);
+      } else if (text.includes('口令不正确') || text.includes('审核口令错误')) {
+        setDeleteError(
+          `审核口令不正确，删除未执行：${text}。未设置审核口令时请输入登录口令。`,
+        );
       } else {
         setDeleteError(text);
       }
@@ -3660,14 +3664,14 @@ export default function ControlPanelPage() {
               description="连接器会同时从 Kafka Connect 注销；需要保留下游连接器，请先改挂到其他 Connect。"
             />
             <div className="dbz-delete-password">
-              <Typography.Text strong>审核口令</Typography.Text>
+              <Typography.Text strong>审核口令（未设置时使用登录口令）</Typography.Text>
               <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 6 }}>
-                审核口令在浏览器内先做 SM3 摘要，后端带登录令牌转给认证服务校验；未设置审核口令的用户需先在用户管理中设置。
+                口令在浏览器内先做 SM3 摘要，后端带登录令牌转给认证服务校验；是否改用登录口令由认证服务判定，前端不做判断。
               </Typography.Text>
               <Input.Password
                 autoFocus
                 value={deletePassword}
-                placeholder="请输入当前登录用户的审核口令"
+                placeholder="请输入审核口令（未设置时输入登录口令）"
                 data-delete-password
                 onChange={(event) => {
                   setDeletePassword(event.target.value);
