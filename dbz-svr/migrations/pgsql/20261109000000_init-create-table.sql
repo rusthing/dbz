@@ -304,7 +304,8 @@ CREATE TABLE public.dbz_sink_connector (
     updater_id bigint NOT NULL,
     update_ms bigint NOT NULL,
     run_msg character varying(500),
-    inconsistent boolean DEFAULT false NOT NULL
+    inconsistent boolean DEFAULT false NOT NULL,
+    inconsistent_detail text
 );
 
 COMMENT ON TABLE public.dbz_sink_connector IS '下游连接器';
@@ -348,6 +349,8 @@ COMMENT ON COLUMN public.dbz_sink_connector.run_msg IS '检查结论（最近一
 
 COMMENT ON COLUMN public.dbz_sink_connector.inconsistent IS '检测不一致标记：库内配置与 Connect 实际配置不一致，或远端已不存在';
 
+COMMENT ON COLUMN public.dbz_sink_connector.inconsistent_detail IS '检测不一致时的对比快照（脱敏 JSON）：库内/远端逐项配置、差异标记与检测时间；一致时为 NULL';
+
 CREATE TABLE public.dbz_source_connector (
     id bigint NOT NULL,
     kafka_connect_id bigint NOT NULL,
@@ -362,7 +365,8 @@ CREATE TABLE public.dbz_source_connector (
     updater_id bigint NOT NULL,
     update_ms bigint NOT NULL,
     run_msg character varying(500),
-    inconsistent boolean DEFAULT false NOT NULL
+    inconsistent boolean DEFAULT false NOT NULL,
+    inconsistent_detail text
 );
 
 COMMENT ON TABLE public.dbz_source_connector IS '上游连接器';
@@ -403,6 +407,8 @@ COMMENT ON COLUMN public.dbz_source_connector.run_msg IS '检查结论（最近�
 @len 0..=500';
 
 COMMENT ON COLUMN public.dbz_source_connector.inconsistent IS '检测不一致标记：库内配置与 Connect 实际配置不一致，或远端已不存在';
+
+COMMENT ON COLUMN public.dbz_source_connector.inconsistent_detail IS '检测不一致时的对比快照（脱敏 JSON）：库内/远端逐项配置、差异标记与检测时间；一致时为 NULL';
 
 CREATE TABLE public.debezium_signal (
     id character varying(42) NOT NULL,
