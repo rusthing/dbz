@@ -73,7 +73,9 @@ impl DbzSinkConnectorSvc {
         _db: &C,
     ) -> Result<DbzSinkConnectorAddDto, SvcError> {
         let source_connector_id = add_dto.source_connector_id.ok_or_else(|| {
-            SvcError::from(anyhow!("请选择上游连接器，所属 Kafka Connect 由上游自动推导"))
+            SvcError::from(anyhow!(
+                "请选择上游连接器，所属 Kafka Connect 由上游自动推导"
+            ))
         })?;
         let kafka_connect_id = add_dto
             .kafka_connect_id
@@ -115,12 +117,9 @@ impl DbzSinkConnectorSvc {
                 one.id.value()
             );
             let reason = format!("{error:#}");
-            if let Err(e) = Self::update_run_status(
-                &one,
-                ConnectorRunStatus::Failed,
-                Some(reason.clone()),
-            )
-            .await
+            if let Err(e) =
+                Self::update_run_status(&one, ConnectorRunStatus::Failed, Some(reason.clone()))
+                    .await
             {
                 warn!(
                     "下游连接器<{}>(id={}) 下发失败的结论没能写回: {e}",

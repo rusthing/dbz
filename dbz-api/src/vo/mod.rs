@@ -1,9 +1,11 @@
+pub mod dbz_backup_vo;
 pub mod dbz_control_plane_edge_layout_vo;
 pub mod dbz_control_plane_layout_vo;
 pub mod dbz_control_plane_status_vo;
 pub mod dbz_dead_letter_vo;
 pub mod dbz_kafka_broker_check_vo;
 pub mod dbz_kafka_broker_vo;
+pub mod dbz_kafka_connect_detect_vo;
 pub mod dbz_kafka_connect_health_vo;
 pub mod dbz_kafka_connect_vo;
 pub mod dbz_sink_connector_vo;
@@ -11,12 +13,14 @@ pub mod dbz_source_connector_snapshot_vo;
 pub mod dbz_source_connector_vo;
 pub mod kafka_connector_vo;
 
+pub use dbz_backup_vo::*;
 pub use dbz_control_plane_edge_layout_vo::*;
 pub use dbz_control_plane_layout_vo::*;
 pub use dbz_control_plane_status_vo::*;
 pub use dbz_dead_letter_vo::*;
 pub use dbz_kafka_broker_check_vo::*;
 pub use dbz_kafka_broker_vo::*;
+pub use dbz_kafka_connect_detect_vo::*;
 pub use dbz_kafka_connect_health_vo::*;
 pub use dbz_kafka_connect_vo::*;
 pub use dbz_sink_connector_vo::*;

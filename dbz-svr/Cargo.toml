@@ -48,6 +48,7 @@ jobx-api-client = { workspace = true }
 jobx-wkr = { workspace = true }
 alarm-api = { workspace = true }
 alarm-api-client = { workspace = true }
+adm-api-client = { workspace = true }
 
 [build-dependencies]
 openssl = { version = "0.10.81", features = ["vendored"] }

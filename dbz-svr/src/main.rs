@@ -1,3 +1,4 @@
+use adm_api_client::setup_adm_api_client;
 use alarm_api_client::setup_alarm_api_client;
 use anyhow::anyhow;
 use config::Value;
@@ -30,6 +31,14 @@ async fn setup(
     setup_redis_conn(app_config.redis.clone(), changed).await?;
     setup_db_conn(app_config.db.clone(), changed).await?;
     setup_jobx_api_client(app_config.api.clone(), changed).await?;
+
+    // adm 是删除二次确认的前置依赖：配了才初始化客户端，没配就在删除时明确拒绝，
+    // 不让服务起不来，也不退回「不校验直接删」。
+    if app_config.api.contains_key("adm") {
+        setup_adm_api_client(app_config.api.clone(), changed).await?;
+    } else {
+        warn!("未配置 [api.adm]，删除口令校验不可用，删除操作会被拒绝");
+    }
 
     // 报警中心是选配：没写 `[api.alarm]` 就跳过告警，巡检照常跑（升级前的老
     // 部署就是这种形态，不该因为多了一个告警功能起不来）。

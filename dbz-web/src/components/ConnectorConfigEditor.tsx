@@ -385,7 +385,7 @@ const SINK_GROUPS: FieldGroup[] = [
         kind: 'text',
         required: true,
         placeholder: 'orders.orders.t_order',
-        help: '与上游「topic 前缀 + 库 + 表」拼出来的名字一致，多个用逗号分隔；可去远端连接器的 topic 列表核对。',
+        help: '与上游「topic 前缀 + 库 + 表」拼出来的名字一致，多个用逗号分隔；可去「集群连接器」页的 topic 列表核对。',
       },
       {
         key: 'tasks.max',

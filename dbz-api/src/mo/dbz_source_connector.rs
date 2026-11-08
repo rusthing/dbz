@@ -20,6 +20,10 @@ pub struct Model {
     pub run_msg: Option<String>,
     pub remark: Option<String>,
     pub enabled: bool,
+    /// 检测标记：库内 connectorConfig 与 Connect 实际配置/存在性不一致。
+    ///
+    /// 只由 Connect 卡片「检测」写入，不看运行状态，避免状态抖动误报。
+    pub inconsistent: bool,
     pub creater_id: i64,
     pub create_ms: i64,
     pub updater_id: i64,

@@ -7,6 +7,7 @@
 import { apiDelete, apiGet, apiGetPage, apiGetList, apiPost, apiPut, type QueryParams } from './client';
 import type {
   DbzKafkaConnectAddInput,
+  DbzKafkaConnectDetectVo,
   DbzKafkaConnectHealthVo,
   DbzKafkaConnectModifyInput,
   DbzKafkaConnectVo,
@@ -39,4 +40,13 @@ export const kafkaConnectApi = {
    */
   health: (kafkaConnectId: Id): Promise<DbzKafkaConnectHealthVo> =>
     apiGet(BASE + '/health', { kafkaConnectId }),
+
+  /**
+   * 检测并同步 Connect 上的连接器（写接口）
+   *
+   * 只看 `connectorConfig` 与远端存在性，不看运行状态：远端有库内没有 → 补录；
+   * 配置不一致 → 标记 `inconsistent`；远端已不存在 → 置禁用并标记。
+   */
+  detect: (kafkaConnectId: Id): Promise<DbzKafkaConnectDetectVo> =>
+    apiPost(BASE + '/detect', { kafkaConnectId }),
 };

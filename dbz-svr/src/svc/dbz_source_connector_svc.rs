@@ -90,12 +90,9 @@ impl DbzSourceConnectorSvc {
                 one.id.value()
             );
             let reason = format!("{error:#}");
-            if let Err(e) = Self::update_run_status(
-                &one,
-                ConnectorRunStatus::Failed,
-                Some(reason.clone()),
-            )
-            .await
+            if let Err(e) =
+                Self::update_run_status(&one, ConnectorRunStatus::Failed, Some(reason.clone()))
+                    .await
             {
                 warn!(
                     "上游连接器<{}>(id={}) 下发失败的结论没能写回: {e}",

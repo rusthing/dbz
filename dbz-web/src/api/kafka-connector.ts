@@ -1,5 +1,5 @@
 /**
- * # 远端连接器运维接口
+ * # 集群连接器运维接口
  *
  * 对应 `DbzKafkaConnectorRouter` 手写的五个接口，路径前缀 `/dbz/kafka-connector`。
  *

@@ -8,7 +8,7 @@
  *
  * - {@link kafkaConnectStatusDic} —— 集群自身是否可达（`dbz_kafka_connect.run_status`）；
  * - {@link connectorRunStatusDic} —— 检查任务对连接器得出的**结论**，会回写库；
- * - {@link kafkaConnectorStatusDic} —— 远端连接器**此刻**的实时状态，不落库。
+ * - {@link kafkaConnectorStatusDic} —— 集群连接器**此刻**的实时状态，不落库。
  */
 
 import type {
@@ -52,7 +52,7 @@ export const connectorRunStatusDic: DicItem<ConnectorRunStatus>[] = [
   { value: 6, label: '已停止', color: 'warning' },
 ];
 
-/** # 远端连接器实时状态 */
+/** # 集群连接器实时状态 */
 export const kafkaConnectorStatusDic: DicItem<KafkaConnectorStatus>[] = [
   { value: 0, label: '运行中', color: 'success' },
   { value: 1, label: '已失败', color: 'error' },

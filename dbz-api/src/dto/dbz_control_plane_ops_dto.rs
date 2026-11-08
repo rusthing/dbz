@@ -1,7 +1,8 @@
 //! # 控制面操作 DTO
 //!
-//! 画布连线折点与节点删除。删除必须带当前登录用户口令的一次摘要，服务端转发给
-//! adm-rs 的 `POST /adm/auth/verify-password` 二次确认后才真正删除；摘要本身不落库。
+//! 画布连线折点与节点删除。删除必须带当前登录用户**审核口令**的一次摘要，服务端转发
+//! 给 adm-rs 的 `POST /adm/auth/verify-audit-password` 二次确认后才真正删除；摘要本身
+//! 不落库。
 
 use robotech::api::U64;
 use serde::{Deserialize, Serialize};
@@ -35,10 +36,10 @@ pub struct DbzControlPlaneNodeDeleteDto {
     pub node_type: String,
     /// 节点记录 ID
     pub node_id: U64,
-    /// 当前登录用户口令的 SM3 摘要（64 位小写十六进制）
+    /// 当前登录用户审核口令的 SM3 摘要（64 位小写十六进制）
     ///
     /// 由前端对明文做一次 SM3 后提交，明文与摘要都不会落库；
-    /// 服务端只把它原样转发给 adm-rs 的 `POST /adm/auth/verify-password`。
+    /// 服务端只把它原样转发给 adm-rs 的 `POST /adm/auth/verify-audit-password`。
     /// @len 64..64
-    pub login_pswd: String,
+    pub audit_pswd: String,
 }

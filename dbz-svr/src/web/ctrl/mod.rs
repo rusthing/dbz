@@ -1,3 +1,4 @@
+pub mod dbz_backup_ctrl;
 pub mod dbz_control_plane_layout_ctrl;
 pub mod dbz_control_plane_ops_ctrl;
 pub mod dbz_control_plane_status_ctrl;
@@ -5,6 +6,7 @@ pub mod dbz_dead_letter_ctrl;
 pub mod dbz_kafka_broker_check_ctrl;
 pub mod dbz_kafka_broker_ctrl;
 pub mod dbz_kafka_connect_ctrl;
+pub mod dbz_kafka_connect_detect_ctrl;
 pub mod dbz_kafka_connect_health_ctrl;
 pub mod dbz_kafka_connector_ctrl;
 pub mod dbz_sink_connector_ctrl;

@@ -168,8 +168,8 @@ impl DbzDeadLetterSvc {
         if dto.connector_type == Some(DeadLetterConnectorType::Source) {
             return Err(anyhow!("死信仅支持下游连接器").into());
         }
-        let mut condition =
-            Condition::all().add(DeadLetterColumn::ConnectorType.eq(i16::from(DeadLetterConnectorType::Sink)));
+        let mut condition = Condition::all()
+            .add(DeadLetterColumn::ConnectorType.eq(i16::from(DeadLetterConnectorType::Sink)));
         if let Some(connector_type) = dto.connector_type {
             condition =
                 condition.add(DeadLetterColumn::ConnectorType.eq(i16::from(connector_type)));
@@ -184,12 +184,10 @@ impl DbzDeadLetterSvc {
             condition = condition.add(DeadLetterColumn::Topic.eq(topic.trim()));
         }
         if let Some(category) = dto.failure_category {
-            condition =
-                condition.add(DeadLetterColumn::FailureCategory.eq(i16::from(category)));
+            condition = condition.add(DeadLetterColumn::FailureCategory.eq(i16::from(category)));
         }
         if let Some(subtype) = dto.failure_subtype {
-            condition =
-                condition.add(DeadLetterColumn::FailureSubtype.eq(i16::from(subtype)));
+            condition = condition.add(DeadLetterColumn::FailureSubtype.eq(i16::from(subtype)));
         }
         if let Some(reason) = dto.reason.filter(|reason| !reason.trim().is_empty()) {
             condition = condition.add(DeadLetterColumn::Reason.contains(reason.trim()));
@@ -466,8 +464,14 @@ impl DbzDeadLetterSvc {
                 DeadLetterColumn::Status,
                 Expr::value(i16::from(DeadLetterStatus::Pending)),
             )
-            .col_expr(DeadLetterColumn::HandledBy, Expr::value(sea_orm::Value::BigInt(None)))
-            .col_expr(DeadLetterColumn::HandledMs, Expr::value(sea_orm::Value::BigInt(None)))
+            .col_expr(
+                DeadLetterColumn::HandledBy,
+                Expr::value(sea_orm::Value::BigInt(None)),
+            )
+            .col_expr(
+                DeadLetterColumn::HandledMs,
+                Expr::value(sea_orm::Value::BigInt(None)),
+            )
             .col_expr(
                 DeadLetterColumn::Remark,
                 Expr::value(sea_orm::Value::String(None)),
@@ -475,9 +479,7 @@ impl DbzDeadLetterSvc {
             .col_expr(DeadLetterColumn::UpdaterId, Expr::value(operator))
             .col_expr(DeadLetterColumn::UpdateMs, Expr::value(now))
             .filter(DeadLetterColumn::Id.is_in(ids.clone()))
-            .filter(
-                DeadLetterColumn::Status.eq(i16::from(DeadLetterStatus::ManualHandled)),
-            )
+            .filter(DeadLetterColumn::Status.eq(i16::from(DeadLetterStatus::ManualHandled)))
             .exec(db.as_ref())
             .await
             .map_err(|e| anyhow!("撤销人工处理失败: {e}"))?;
@@ -1257,11 +1259,13 @@ mod tests {
     #[test]
     fn complete_pk_fields_pass() {
         let config = json!({ "pk.fields": "id, tenant_id" });
-        assert!(DbzDeadLetterSvc::validate_field_payload(
-            &json!({ "id": 1001, "tenant_id": "t1" }),
-            Some(&config),
-        )
-        .is_ok());
+        assert!(
+            DbzDeadLetterSvc::validate_field_payload(
+                &json!({ "id": 1001, "tenant_id": "t1" }),
+                Some(&config),
+            )
+            .is_ok()
+        );
     }
 
     #[test]

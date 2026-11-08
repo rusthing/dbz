@@ -12,16 +12,15 @@ use crate::dao::{DbzSinkConnectorDao, DbzSourceConnectorDao};
 use crate::dic::{ConnectorRunStatus, ControlPlaneNodeType};
 use crate::dto::DbzResetConnectorOffsetsDto;
 use crate::mo::dbz_kafka_connect::Entity as ConnectEntity;
-use crate::vo::{DbzResetConnectorOffsetsVo, DbzResetOffsetsStepVo};
 use crate::mo::dbz_sink_connector::{
-    ActiveModel as SinkActiveModel, Column as SinkColumn, Entity as SinkEntity,
-    Model as SinkModel,
+    ActiveModel as SinkActiveModel, Column as SinkColumn, Entity as SinkEntity, Model as SinkModel,
 };
 use crate::mo::dbz_source_connector::{
     ActiveModel as SourceActiveModel, Column as SourceColumn, Entity as SourceEntity,
     Model as SourceModel,
 };
 use crate::utils::{KafkaConnectorError, KafkaConnectorUtils};
+use crate::vo::{DbzResetConnectorOffsetsVo, DbzResetOffsetsStepVo};
 use anyhow::anyhow;
 use chrono::{DateTime, FixedOffset};
 use robotech::api::Ro;
@@ -90,7 +89,9 @@ impl DbzControlPlaneStatusSvc {
                     refreshed += 1;
                 }
                 for sink in sinks {
-                    let msg = sink.enabled.then(|| "所属 Kafka Connect 已停用".to_string());
+                    let msg = sink
+                        .enabled
+                        .then(|| "所属 Kafka Connect 已停用".to_string());
                     Self::write_sink(db.as_ref(), &sink, ConnectorRunStatus::Disabled, msg, now)
                         .await?;
                     refreshed += 1;
@@ -121,8 +122,14 @@ impl DbzControlPlaneStatusSvc {
                 }
                 for sink in sinks {
                     if !sink.enabled {
-                        Self::write_sink(db.as_ref(), &sink, ConnectorRunStatus::Disabled, None, now)
-                            .await?;
+                        Self::write_sink(
+                            db.as_ref(),
+                            &sink,
+                            ConnectorRunStatus::Disabled,
+                            None,
+                            now,
+                        )
+                        .await?;
                         refreshed += 1;
                         continue;
                     }
@@ -134,8 +141,13 @@ impl DbzControlPlaneStatusSvc {
             }
 
             for source in sources {
-                let (status, msg) =
-                    Self::probe(&connect.url, &source.connector_name, source.enabled, &source).await;
+                let (status, msg) = Self::probe(
+                    &connect.url,
+                    &source.connector_name,
+                    source.enabled,
+                    &source,
+                )
+                .await;
                 Self::write_source(db.as_ref(), &source, status, msg, now).await?;
                 refreshed += 1;
             }
@@ -157,7 +169,10 @@ impl DbzControlPlaneStatusSvc {
                         db.as_ref(),
                         &sink,
                         ConnectorRunStatus::Failed,
-                        Some("所属 Connect 与上游连接器不一致，请编辑下游连接器重新选择上游".to_string()),
+                        Some(
+                            "所属 Connect 与上游连接器不一致，请编辑下游连接器重新选择上游"
+                                .to_string(),
+                        ),
                         now,
                     )
                     .await?;
@@ -193,7 +208,8 @@ impl DbzControlPlaneStatusSvc {
                 continue;
             }
             if !sink.enabled {
-                Self::write_sink(db.as_ref(), &sink, ConnectorRunStatus::Disabled, None, now).await?;
+                Self::write_sink(db.as_ref(), &sink, ConnectorRunStatus::Disabled, None, now)
+                    .await?;
             } else {
                 let (status, msg) = Self::unreachable(&sink, "所属 Kafka Connect 已不存在");
                 Self::write_sink(db.as_ref(), &sink, status, msg, now).await?;
@@ -259,7 +275,10 @@ impl DbzControlPlaneStatusSvc {
         let known = record.run_status();
         // 连续不可达时保留上一次写下的「最后已知」，不要用新的「不可达」覆盖掉
         if known == 5 {
-            return (ConnectorRunStatus::Unreachable, record.run_msg().map(str::to_string));
+            return (
+                ConnectorRunStatus::Unreachable,
+                record.run_msg().map(str::to_string),
+            );
         }
         let msg = format!(
             "{cause}；最后已知状态：{}（{}）",
@@ -284,11 +303,9 @@ impl DbzControlPlaneStatusSvc {
     fn ms_text(ms: i64) -> String {
         DateTime::from_timestamp_millis(ms)
             .map(|time| {
-                time.with_timezone(
-                    &FixedOffset::east_opt(8 * 3600).expect("东八区偏移固定合法"),
-                )
-                .format("%Y-%m-%d %H:%M:%S")
-                .to_string()
+                time.with_timezone(&FixedOffset::east_opt(8 * 3600).expect("东八区偏移固定合法"))
+                    .format("%Y-%m-%d %H:%M:%S")
+                    .to_string()
             })
             .unwrap_or_else(|| ms.to_string())
     }
@@ -310,15 +327,17 @@ impl DbzControlPlaneStatusSvc {
             }
         };
         if is_sink && !dto.confirm_replay {
-            return Ok(Ro::success("已取消：下游连接器需要确认会重放历史消息".to_string()).extra(Some(
-                DbzResetConnectorOffsetsVo {
-                    ok: false,
-                    failed_step: Some("confirm".to_string()),
-                    message: "未确认会重复写入下游，已取消执行".to_string(),
-                    connector_state: "未执行".to_string(),
-                    steps: vec![],
-                },
-            )));
+            return Ok(
+                Ro::success("已取消：下游连接器需要确认会重放历史消息".to_string()).extra(Some(
+                    DbzResetConnectorOffsetsVo {
+                        ok: false,
+                        failed_step: Some("confirm".to_string()),
+                        message: "未确认会重复写入下游，已取消执行".to_string(),
+                        connector_state: "未执行".to_string(),
+                        steps: vec![],
+                    },
+                )),
+            );
         }
 
         let connector_id = dto.connector_id.0 as i64;
@@ -350,21 +369,24 @@ impl DbzControlPlaneStatusSvc {
             return Err(anyhow!("Kafka Connect<{connect_id}>不存在").into());
         };
         if !connect.enabled {
-            return Ok(Ro::success("所属 Kafka Connect 已停用".to_string()).extra(Some(
-                DbzResetConnectorOffsetsVo {
-                    ok: false,
-                    failed_step: Some("stop".to_string()),
-                    message: "所属 Kafka Connect 已停用，无法执行".to_string(),
-                    connector_state: "未执行".to_string(),
-                    steps: vec![],
-                },
-            )));
+            return Ok(
+                Ro::success("所属 Kafka Connect 已停用".to_string()).extra(Some(
+                    DbzResetConnectorOffsetsVo {
+                        ok: false,
+                        failed_step: Some("stop".to_string()),
+                        message: "所属 Kafka Connect 已停用，无法执行".to_string(),
+                        connector_state: "未执行".to_string(),
+                        steps: vec![],
+                    },
+                )),
+            );
         }
 
         let mut steps = Vec::new();
 
         // 1. 停止
-        if let Err(error) = KafkaConnectorUtils::stop_connector(&connect.url, &connector_name).await {
+        if let Err(error) = KafkaConnectorUtils::stop_connector(&connect.url, &connector_name).await
+        {
             let state = Self::current_state(&connect.url, &connector_name).await;
             steps.push(DbzResetOffsetsStepVo {
                 step: "stop".to_string(),
@@ -372,13 +394,15 @@ impl DbzControlPlaneStatusSvc {
                 message: Some(error.to_string()),
             });
             let message = format!("停止连接器失败：{error}；当前状态：{state}");
-            return Ok(Ro::success(message.clone()).extra(Some(DbzResetConnectorOffsetsVo {
-                ok: false,
-                failed_step: Some("stop".to_string()),
-                message,
-                connector_state: state,
-                steps,
-            })));
+            return Ok(
+                Ro::success(message.clone()).extra(Some(DbzResetConnectorOffsetsVo {
+                    ok: false,
+                    failed_step: Some("stop".to_string()),
+                    message,
+                    connector_state: state,
+                    steps,
+                })),
+            );
         }
         steps.push(DbzResetOffsetsStepVo {
             step: "stop".to_string(),
@@ -396,16 +420,17 @@ impl DbzControlPlaneStatusSvc {
                 ok: false,
                 message: Some(error.to_string()),
             });
-            let message = format!(
-                "删除位点失败：{error}；连接器已停止但位点未清空，当前状态：{state}"
+            let message =
+                format!("删除位点失败：{error}；连接器已停止但位点未清空，当前状态：{state}");
+            return Ok(
+                Ro::success(message.clone()).extra(Some(DbzResetConnectorOffsetsVo {
+                    ok: false,
+                    failed_step: Some("clear".to_string()),
+                    message,
+                    connector_state: state,
+                    steps,
+                })),
             );
-            return Ok(Ro::success(message.clone()).extra(Some(DbzResetConnectorOffsetsVo {
-                ok: false,
-                failed_step: Some("clear".to_string()),
-                message,
-                connector_state: state,
-                steps,
-            })));
         }
         steps.push(DbzResetOffsetsStepVo {
             step: "clear".to_string(),
@@ -424,16 +449,16 @@ impl DbzControlPlaneStatusSvc {
                     ok: false,
                     message: Some(error.to_string()),
                 });
-                let message = format!(
-                    "恢复运行失败：{error}；位点已清空，连接器当前状态：{state}"
+                let message = format!("恢复运行失败：{error}；位点已清空，连接器当前状态：{state}");
+                return Ok(
+                    Ro::success(message.clone()).extra(Some(DbzResetConnectorOffsetsVo {
+                        ok: false,
+                        failed_step: Some("resume".to_string()),
+                        message,
+                        connector_state: state,
+                        steps,
+                    })),
                 );
-                return Ok(Ro::success(message.clone()).extra(Some(DbzResetConnectorOffsetsVo {
-                    ok: false,
-                    failed_step: Some("resume".to_string()),
-                    message,
-                    connector_state: state,
-                    steps,
-                })));
             }
             steps.push(DbzResetOffsetsStepVo {
                 step: "resume".to_string(),
@@ -448,17 +473,19 @@ impl DbzControlPlaneStatusSvc {
         }
 
         let state = Self::current_state(&connect.url, &connector_name).await;
-        Ok(Ro::success("位点重置完成".to_string()).extra(Some(DbzResetConnectorOffsetsVo {
-            ok: true,
-            failed_step: None,
-            message: if dto.resume {
-                "位点已清空并已恢复运行".to_string()
-            } else {
-                "位点已清空，连接器保持停止".to_string()
-            },
-            connector_state: state,
-            steps,
-        })))
+        Ok(
+            Ro::success("位点重置完成".to_string()).extra(Some(DbzResetConnectorOffsetsVo {
+                ok: true,
+                failed_step: None,
+                message: if dto.resume {
+                    "位点已清空并已恢复运行".to_string()
+                } else {
+                    "位点已清空，连接器保持停止".to_string()
+                },
+                connector_state: state,
+                steps,
+            })),
+        )
     }
 
     /// # 读取连接器当前状态（用于失败提示）

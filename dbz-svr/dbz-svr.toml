@@ -12,6 +12,12 @@ url = "redis://:xxxxxxxx@redis:6379"
 type = "MicroSvc"
 svc-name = "jobx-svr"
 
+# 认证中心：删除画布节点前校验当前登录用户的审核口令
+[api.adm]
+type = "MicroSvc"
+svc-name = "adm-svr"
+timeout = "5s"
+
 # 报警中心：连接器异常告警的接收方，报警中心再转给消息中心投递
 #
 # 事件来源、报警级别、事件策略不需要在这里写：首次启动时由 dbz 自己按

@@ -1,5 +1,5 @@
 /**
- * # 控制面视图
+ * # 连接器拓扑
  *
  * 只选上游、其余自动推导：
  * - 新增下级只走节点底部的「+」，父级固定且表单里不出现；
@@ -56,6 +56,7 @@ import {
 import { useNavigate } from 'react-router-dom';
 import { notifySessionExpired } from '../../auth/session';
 import { sm3 } from '../../lib/sm3';
+import { backupApi } from '../../api/backup';
 import {
   controlPlaneApi,
   type DbzResetConnectorOffsetsVo,
@@ -67,6 +68,9 @@ import { kafkaConnectorApi } from '../../api/kafka-connector';
 import { sinkConnectorApi } from '../../api/sink-connector';
 import { sourceConnectorApi } from '../../api/source-connector';
 import type {
+  BackupRestoreStrategy,
+  DbzBackupRestoreItemVo,
+  DbzBackupRestoreVo,
   DbzDeadLetterCountVo,
   DbzKafkaBrokerVo,
   DbzKafkaConnectVo,
@@ -79,8 +83,9 @@ import StatusTag from '../../components/StatusTag';
 import { connectorRunStatusDic, kafkaConnectorStatusDic } from '../../dic';
 import { useAsync, type AsyncState } from '../../hooks/useAsync';
 import { errorMessage, formatMs, orDash, prettyJson, truncate } from '../../utils/format';
-import ControlPlaneCanvas from './ControlPlaneCanvas';
+import ConnectorTopologyCanvas from './ConnectorTopologyCanvas';
 import {
+  backupFileName,
   buildImportRows,
   buildTransferFile,
   downloadJson,
@@ -109,10 +114,11 @@ import {
 import {
   authLabelOf,
   brokerDetailOf,
+  connectorConfigValueOf,
   topicInfoOf,
 } from './details';
 import {
-  buildControlPlane,
+  buildConnectorTopology,
   liveFailureReason,
   taskSummary,
   type ConnectorKind,
@@ -129,7 +135,7 @@ import SourceConnectorForm from '../source-connector/SourceConnectorForm';
 /** 实时状态查询的最长等待时间：单台 Connect 卡住不能拖死整个视图 */
 const LIVE_TIMEOUT_MS = 15_000;
 
-interface ControlPlaneData {
+interface ConnectorTopologyData {
   brokers: DbzKafkaBrokerVo[];
   connects: DbzKafkaConnectVo[];
   sources: DbzSourceConnectorVo[];
@@ -148,7 +154,7 @@ interface ControlPlaneData {
   loadedAt: number;
 }
 
-const EMPTY_DATA: ControlPlaneData = {
+const EMPTY_DATA: ConnectorTopologyData = {
   brokers: [],
   connects: [],
   sources: [],
@@ -200,6 +206,53 @@ const IMPORT_ACTION_COLOR: Record<ImportOutcome['action'], string> = {
   failed: 'error',
 };
 
+/**
+ * 一次恢复会话
+ *
+ * 预览与执行都走同一个后端入口：文件内容原样回传，`dryRun` 决定是否写库。
+ * 切换策略时重新取一次预览，保证界面上的计数与真正执行时的判定一致。
+ */
+interface RestoreSession {
+  fileName: string;
+  /** 原始 JSON（已通过格式校验，原样回传后端） */
+  file: unknown;
+  strategy: BackupRestoreStrategy;
+  phase: 'preview' | 'running' | 'result';
+  /** 切换策略后正在重新计算预览 */
+  loadingPreview: boolean;
+  preview: DbzBackupRestoreVo;
+  result: DbzBackupRestoreVo | null;
+}
+
+/** 恢复明细的层级文案 */
+const RESTORE_LEVEL_LABEL: Record<DbzBackupRestoreItemVo['level'], string> = {
+  broker: 'Kafka 集群',
+  connect: 'Connect',
+  source: '上游连接器',
+  sink: '下游连接器',
+};
+
+const RESTORE_LEVEL_COLOR: Record<DbzBackupRestoreItemVo['level'], string> = {
+  broker: 'blue',
+  connect: 'purple',
+  source: 'cyan',
+  sink: 'magenta',
+};
+
+const RESTORE_ACTION_LABEL: Record<DbzBackupRestoreItemVo['action'], string> = {
+  create: '新增',
+  overwrite: '覆盖',
+  skip: '跳过',
+  failed: '失败',
+};
+
+const RESTORE_ACTION_COLOR: Record<DbzBackupRestoreItemVo['action'], string> = {
+  create: 'success',
+  overwrite: 'geekblue',
+  skip: 'default',
+  failed: 'error',
+};
+
 /** 异常口径与卡片红色状态一致：失败与不可达，已停止/仅纳管不算异常 */
 function connectorStatusAbnormal(runStatus: number): boolean {
   return runStatus === 3 || runStatus === 5;
@@ -245,27 +298,13 @@ function connectorStatusOf(node: CanvasNode): number {
   return record.runStatus;
 }
 
-/** 读取连接器配置里的一个字符串项（配置不是 JSON 时返回空串） */
-function configValueOf(record: { connectorConfig: string }, key: string): string {
-  try {
-    const parsed: unknown = JSON.parse(record.connectorConfig);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return '';
-    }
-    const value = (parsed as Record<string, unknown>)[key];
-    return value === null || value === undefined ? '' : String(value).trim();
-  } catch {
-    return '';
-  }
-}
-
 /**
  * 下游清空位点后的起点由连接器自己的 `auto.offset.reset` 决定：
  * earliest 才会从头重放，latest 直接跳到末尾。提示必须按实际配置给出，
  * 不能统一按 earliest 吓人或按 latest 隐瞒。
  */
 function sinkOffsetHint(record: DbzSinkConnectorVo): string {
-  const value = configValueOf(record, 'auto.offset.reset').toLowerCase();
+  const value = connectorConfigValueOf(record, 'auto.offset.reset').toLowerCase();
   if (value === 'earliest') {
     return '该连接器的 auto.offset.reset=earliest：清空位点后会从 topic 最早位置重新消费，历史消息会全部重投下游，可能造成重复写入与死信。';
   }
@@ -277,7 +316,7 @@ function sinkOffsetHint(record: DbzSinkConnectorVo): string {
 
 /** 上游清空位点会触发的快照行为 */
 function sourceSnapshotHint(record: DbzSourceConnectorVo): string {
-  const mode = configValueOf(record, 'snapshot.mode') || '未配置';
+  const mode = connectorConfigValueOf(record, 'snapshot.mode') || '未配置';
   return `当前 snapshot.mode=${mode}：清空位点后会重新做一次全量快照，整库整表重读，下游会被重灌一遍。耗时与源库压力取决于数据量，请在低峰期执行。`;
 }
 
@@ -378,7 +417,7 @@ interface RefreshSetting {
   seconds: number;
 }
 
-const REFRESH_STORAGE_KEY = 'dbz.control-plane.refresh';
+const REFRESH_STORAGE_KEY = 'dbz.connector-topology.refresh';
 const DEFAULT_REFRESH: RefreshSetting = { enabled: true, seconds: 15 };
 
 function loadRefreshSetting(): RefreshSetting {
@@ -428,7 +467,7 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
 }
 
 /** 一次加载：四张表 + 每台 Connect 的实时连接器 + 死信计数 + 画布位置 */
-async function loadControlPlane(): Promise<ControlPlaneData> {
+async function loadConnectorTopology(): Promise<ConnectorTopologyData> {
   const [brokers, connects, sources, sinks, deadLetterCounts, layout, edgeBends] =
     await Promise.all([
       kafkaBrokerApi.list(),
@@ -545,7 +584,7 @@ function connectorKey(record: ManagedConnectorRecord): string {
 
 /** 取某种节点在数据里的记录 */
 function recordsOfKind(
-  data: ControlPlaneData,
+  data: ConnectorTopologyData,
   kind: CanvasNodeKind,
   fallback: { id: Id }[] = [],
 ): { id: Id }[] {
@@ -624,10 +663,10 @@ function childPositionOf(
   return { x: baseX, y: baseY };
 }
 
-export default function ControlPlanePage() {
+export default function ConnectorTopologyPage() {
   const { message, modal } = AntdApp.useApp();
   const navigate = useNavigate();
-  const state: AsyncState<ControlPlaneData> = useAsync(loadControlPlane, [], EMPTY_DATA);
+  const state: AsyncState<ConnectorTopologyData> = useAsync(loadConnectorTopology, [], EMPTY_DATA);
 
   const [positions, setPositions] = useState<Record<string, Point>>({});
   /** 连线折点：本地即时更新，松手才落库 */
@@ -667,7 +706,7 @@ export default function ControlPlanePage() {
   /** 上游「重新同步」：复用快照弹窗，默认增量、可多选表 */
   const [resyncTarget, setResyncTarget] = useState<DbzSourceConnectorVo | null>(null);
 
-  /** 删除：当前登录用户口令弹窗；校验通过前不动任何数据 */
+  /** 删除：当前登录用户审核口令弹窗；校验通过前不动任何数据 */
   const [deleteTarget, setDeleteTarget] = useState<CanvasNode | null>(null);
   const [deletePassword, setDeletePassword] = useState('');
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -689,6 +728,14 @@ export default function ControlPlanePage() {
   const [importSession, setImportSession] = useState<ImportSession | null>(null);
   const importFileRef = useRef<HTMLInputElement>(null);
   const pendingImportTarget = useRef<CanvasNode | null>(null);
+
+  /** 集群备份：确认导出整个 Kafka 集群 */
+  const [backupTarget, setBackupTarget] = useState<CanvasNode | null>(null);
+  const [backupRunning, setBackupRunning] = useState(false);
+
+  /** 集群恢复：文件、策略与预览/执行结果 */
+  const [restoreSession, setRestoreSession] = useState<RestoreSession | null>(null);
+  const restoreFileRef = useRef<HTMLInputElement>(null);
 
   /** 轻量刷新：只合并状态与死信计数，保留实时明细、布局与选中态 */
   const refreshLight = useCallback(async () => {
@@ -754,7 +801,7 @@ export default function ControlPlanePage() {
 
   const tree = useMemo(
     () =>
-      buildControlPlane(
+      buildConnectorTopology(
         state.data.brokers,
         state.data.connects,
         state.data.sources,
@@ -769,8 +816,8 @@ export default function ControlPlanePage() {
     state.data.deadLetter.get(deadLetterKey(deadLetterTypeOf(kind), id)) ?? 0;
 
   const nodes = useMemo(
-    () => flattenNodes(tree, deadCountOf, state.data.sources),
-    [tree, state.data.deadLetter, state.data.sources],
+    () => flattenNodes(tree, deadCountOf),
+    [tree, state.data.deadLetter],
   );
 
   const edges = useMemo(
@@ -1115,20 +1162,89 @@ export default function ControlPlanePage() {
     state.reload();
   };
 
-  /** Connect 健康检测：可达性 / 版本 / worker */
+  /** Connect 集群检测：可达性 / 版本 / worker / 插件，并同步纳管记录 */
   const checkConnect = async (node: CanvasNode) => {
     const cluster = node.record as DbzKafkaConnectVo;
-    const health = await kafkaConnectApi.health(cluster.id);
-    if (health.reachable) {
-      message.success(
-        `健康检测通过：v${health.version ?? '?'}，${health.workerCount} 个 worker，${health.connectorCount} 个连接器，耗时 ${Math.round(health.elapsedMs)} ms`,
-      );
-    } else {
+    // 健康状态与插件清单一起取：插件缺失是新建连接器失败的常见原因。
+    const [health, plugins] = await Promise.all([
+      kafkaConnectApi.health(cluster.id),
+      kafkaConnectorApi.plugins(cluster.id),
+    ]);
+    if (!health.reachable) {
       modal.warning({
-        title: `Kafka Connect「${cluster.name}」健康检测未通过`,
+        title: `Kafka Connect「${cluster.name}」检测未通过`,
         content: health.message || 'Connect 不可达，请检查地址、网络与服务状态。',
       });
+      return;
     }
+
+    // 可达才同步：以远端为准补录缺失、标记配置不一致、把已消失的置为禁用。
+    const detect = await kafkaConnectApi.detect(cluster.id);
+    const actionLabel: Record<string, string> = {
+      added: '补录',
+      marked: '标记不一致',
+      disabled: '置禁用',
+      cleared: '恢复一致',
+      skipped: '跳过',
+    };
+    const notable = detect.items.filter((item) => item.action !== 'unchanged');
+
+    modal.info({
+      title: `Kafka Connect「${cluster.name}」检测通过`,
+      width: 760,
+      content: (
+        <div className="dbz-connect-detect">
+          <p>
+            v{health.version ?? '?'}，{health.workerCount} 个 worker，{health.connectorCount}{' '}
+            个连接器，已安装 {plugins.length} 个插件，耗时 {Math.round(health.elapsedMs)} ms
+          </p>
+          <p>
+            同步结果：补录 {detect.added}，标记不一致 {detect.marked}，置禁用 {detect.disabled}
+            ，恢复一致 {detect.cleared}，无变化 {detect.unchanged}，跳过 {detect.skipped}
+          </p>
+          {notable.length > 0 && (
+            <div className="dbz-connect-detect-sync">
+              {notable.map((item) => (
+                <div
+                  className="dbz-connect-detect-sync-row"
+                  key={`${item.connectorType}:${item.connectorName}:${item.action}`}
+                >
+                  <Tag color={item.action === 'skipped' ? 'default' : 'warning'}>
+                    {actionLabel[item.action] ?? item.action}
+                  </Tag>
+                  <span className="dbz-mono" title={item.connectorName}>
+                    {item.connectorName}
+                  </span>
+                  <span className="dbz-connect-detect-sync-msg">{item.message || '—'}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="dbz-connect-detect-plugins">
+            <div className="dbz-connect-detect-head">
+              <span>插件类名</span>
+              <span>方向</span>
+              <span>版本</span>
+            </div>
+            {plugins.length === 0 ? (
+              <div className="dbz-connect-detect-empty">未安装任何连接器插件</div>
+            ) : (
+              <div className="dbz-connect-detect-body">
+                {plugins.map((plugin) => (
+                  <div className="dbz-connect-detect-row" key={`${plugin.class}:${plugin.type}`}>
+                    <span className="dbz-mono" title={plugin.class}>
+                      {plugin.class}
+                    </span>
+                    <span>{plugin.type || '—'}</span>
+                    <span className="dbz-mono">{plugin.version || '—'}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      ),
+    });
     state.reload();
   };
 
@@ -1261,7 +1377,7 @@ export default function ControlPlanePage() {
   /** 删除节点前提示会移除的归属关系 */
   const deleteImpactOf = (node: CanvasNode) => affectedEdgesOf(node, edges);
 
-  /** 打开删除口令弹窗：先确认影响，再要求输入当前登录用户口令 */
+  /** 打开删除口令弹窗：先确认影响，再要求输入当前登录用户审核口令 */
   const openDeleteNode = (node: CanvasNode) => {
     setDeleteTarget(node);
     setDeletePassword('');
@@ -1280,9 +1396,9 @@ export default function ControlPlanePage() {
   /**
    * # 执行删除
    *
-   * 后端先带上当前用户身份转发 adm-rs 校验口令，通过后才删除并写审计；失败时
-   * 一行数据都不动。前端按提示前缀区分「口令错误」与「认证服务不可用」，
-   * 后者不允许删除，也不能提示成口令错。
+   * 后端先带上当前用户身份转发 adm-rs 校验审核口令，通过后才删除并写审计；失败时
+   * 一行数据都不动。前端按提示前缀区分「审核口令错误」「审核口令未设置」与
+   * 「认证服务不可用」，后者不允许删除，也不能提示成口令错。
    */
   const executeDeleteNode = async () => {
     if (!deleteTarget) {
@@ -1290,7 +1406,7 @@ export default function ControlPlanePage() {
     }
     const password = deletePassword.trim();
     if (!password) {
-      setDeleteError('口令错误：请输入当前登录用户的口令');
+      setDeleteError('审核口令错误：请输入当前登录用户的审核口令');
       return;
     }
     setDeleteRunning(true);
@@ -1301,7 +1417,7 @@ export default function ControlPlanePage() {
       await controlPlaneApi.deleteNode({
         nodeType: deleteTarget.kind,
         nodeId: deleteTarget.id,
-        loginPswd: sm3(password),
+        auditPswd: sm3(password),
       });
       message.success(`已删除「${deleteTarget.name}」，删除人与时间已写入审计`);
       setDeleteTarget(null);
@@ -1315,10 +1431,15 @@ export default function ControlPlanePage() {
         // 令牌失效：清会话并回登录页，删除未执行
         notifySessionExpired();
         setDeleteError(`登录状态已失效，删除未执行：${text}`);
-      } else if (text.includes('口令校验过于频繁')) {
+      } else if (text.includes('审核口令未设置')) {
+        // 用户还没设置审核口令：删除无法进行，需要先到用户管理里设置
+        setDeleteError(
+          `审核口令未设置，删除未执行：${text}。请先在用户管理中为当前用户设置审核口令。`,
+        );
+      } else if (text.includes('审核口令校验过于频繁')) {
         // adm 频控响应不返回剩余秒数，只能提示默认窗口，避免编造倒计时
         setDeleteError(
-          `口令校验过于频繁，删除未执行：${text}。认证服务默认 10 分钟内最多允许 5 次错误，请等待窗口结束后重试。`,
+          `审核口令校验过于频繁，删除未执行：${text}。认证服务默认 10 分钟内最多允许 5 次错误，请等待窗口结束后重试。`,
         );
       } else if (text.includes('认证服务不可用')) {
         // 认证服务不可用与口令错误是两回事：前者重试也没用，不能说成口令错
@@ -1420,6 +1541,16 @@ export default function ControlPlanePage() {
         if (importFileRef.current) {
           importFileRef.current.value = '';
           importFileRef.current.click();
+        }
+        break;
+      case 'backup-cluster':
+        setBackupTarget(node);
+        break;
+      case 'restore-cluster':
+        // 恢复以文件里的集群为准，卡片只负责触发文件选择
+        if (restoreFileRef.current) {
+          restoreFileRef.current.value = '';
+          restoreFileRef.current.click();
         }
         break;
       case 'edit':
@@ -1790,6 +1921,345 @@ export default function ControlPlanePage() {
       previous ? { ...previous, phase: 'result', outcomes } : previous,
     );
     state.reload();
+  };
+
+  /** 备份弹窗里的 Connect 数量：当前集群下已纳管的 Kafka Connect */
+  const backupConnectCount = backupTarget
+    ? state.data.connects.filter((item) => item.kafkaBrokerId === backupTarget.id).length
+    : 0;
+
+  /** 备份弹窗里的连接器数量：这些 Connect 下的上游 + 下游 */
+  const backupConnectorCount = backupTarget
+    ? (() => {
+        const connectIds = new Set(
+          state.data.connects
+            .filter((item) => item.kafkaBrokerId === backupTarget.id)
+            .map((item) => item.id),
+        );
+        return (
+          state.data.sources.filter((item) => connectIds.has(item.kafkaConnectId)).length +
+          state.data.sinks.filter((item) => connectIds.has(item.kafkaConnectId)).length
+        );
+      })()
+    : 0;
+
+  /**
+   * # 导出整个 Kafka 集群
+   *
+   * 备份由后端按库内记录生成，前端只负责下载：`sasl_password` 照常导出，界面上必须
+   * 明确提示文件含敏感信息。
+   */
+  const executeBackupCluster = async () => {
+    if (!backupTarget) {
+      return;
+    }
+    const broker = backupTarget.record as DbzKafkaBrokerVo;
+    setBackupRunning(true);
+    try {
+      const file = await backupApi.exportCluster(broker.id);
+      downloadJson(backupFileName(file.broker.name), file);
+      const connectors = file.connects.reduce((sum, item) => sum + item.connectors.length, 0);
+      message.success(
+        `已导出 Kafka 集群「${file.broker.name}」：${file.connects.length} 台 Connect，${connectors} 个连接器（含凭据）`,
+      );
+      setBackupTarget(null);
+    } catch (reason) {
+      message.error(`导出失败：${errorMessage(reason)}`);
+    } finally {
+      setBackupRunning(false);
+    }
+  };
+
+  /**
+   * # 选择恢复文件
+   *
+   * 文件校验与冲突判定都交给后端的预览接口：`dryRun=true` 不写库。校验不通过时按
+   * Connect 导入的方式逐条列出原因，不再本地维护一套格式校验。
+   */
+  const handleRestoreFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const selected = event.target.files?.[0];
+    event.target.value = '';
+    if (!selected) {
+      return;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await selected.text());
+    } catch (reason) {
+      modal.error({
+        title: '读取恢复文件失败',
+        content:
+          reason instanceof SyntaxError
+            ? '文件不是合法的 JSON'
+            : errorMessage(reason),
+      });
+      return;
+    }
+
+    try {
+      const preview = await backupApi.restore(parsed, 'skip', true);
+      if (!preview.valid) {
+        modal.error({
+          title: '备份文件不合法',
+          width: 640,
+          content: (
+            <ul className="dbz-transfer-errors">
+              {preview.errors.map((item) => (
+                <li key={item}>{item}</li>
+              ))}
+            </ul>
+          ),
+        });
+        return;
+      }
+      setRestoreSession({
+        fileName: selected.name,
+        file: parsed,
+        strategy: 'skip',
+        phase: 'preview',
+        loadingPreview: false,
+        preview,
+        result: null,
+      });
+    } catch (reason) {
+      modal.error({
+        title: '读取备份文件失败',
+        content: errorMessage(reason),
+      });
+    }
+  };
+
+  /** 切换恢复策略：重新取一次预览，保证计数与实际执行一致 */
+  const changeRestoreStrategy = async (next: BackupRestoreStrategy) => {
+    const session = restoreSession;
+    if (
+      !session ||
+      session.loadingPreview ||
+      session.phase === 'running' ||
+      session.strategy === next
+    ) {
+      return;
+    }
+    setRestoreSession({ ...session, strategy: next, loadingPreview: true });
+    try {
+      const preview = await backupApi.restore(session.file, next, true);
+      if (!preview.valid) {
+        message.error(preview.errors.join('；') || '恢复预览失败');
+        setRestoreSession((previous) =>
+          previous && previous.fileName === session.fileName
+            ? { ...previous, strategy: session.strategy, loadingPreview: false }
+            : previous,
+        );
+        return;
+      }
+      setRestoreSession((previous) =>
+        previous && previous.fileName === session.fileName
+          ? { ...previous, preview, loadingPreview: false }
+          : previous,
+      );
+    } catch (reason) {
+      setRestoreSession((previous) =>
+        previous && previous.fileName === session.fileName
+          ? { ...previous, strategy: session.strategy, loadingPreview: false }
+          : previous,
+      );
+      message.error(`恢复预览失败：${errorMessage(reason)}`);
+    }
+  };
+
+  /**
+   * # 执行恢复
+   *
+   * 保留二次确认、不做审核口令校验。恢复只写库内纳管记录，不向远端注册或删除
+   * 连接器；执行成功与否都以后端返回的同一套判定为准。
+   */
+  const executeRestore = () => {
+    const session = restoreSession;
+    if (!session) {
+      return;
+    }
+    const preview = session.preview;
+    const overwrite = session.strategy === 'overwrite';
+    modal.confirm({
+      title: overwrite ? '覆盖已存在的纳管记录？' : '仅补齐缺失的纳管记录？',
+      width: 560,
+      content: [
+        `将写库 ${preview.created + preview.overwritten} 条：新增 ${preview.created}，覆盖 ${preview.overwritten}，跳过 ${preview.skipped}。`,
+        '恢复只写库内纳管记录，不会在远端注册或删除连接器；需要后续启用/检测才会下发。',
+      ].join('\n'),
+      okText: '执行恢复',
+      cancelText: '取消',
+      onOk: async () => {
+        setRestoreSession((previous) =>
+          previous ? { ...previous, phase: 'running' } : previous,
+        );
+        try {
+          const result = await backupApi.restore(session.file, session.strategy, false);
+          setRestoreSession((previous) =>
+            previous && previous.fileName === session.fileName
+              ? { ...previous, phase: 'result', result }
+              : previous,
+          );
+          const summary = `新增 ${result.created}，覆盖 ${result.overwritten}，跳过 ${result.skipped}，失败 ${result.failed}`;
+          if (result.failed > 0) {
+            message.warning(`恢复完成：${summary}`);
+          } else {
+            message.success(`恢复完成：${summary}`);
+          }
+          await state.reload();
+        } catch (reason) {
+          setRestoreSession((previous) =>
+            previous ? { ...previous, phase: 'preview' } : previous,
+          );
+          message.error(`恢复失败：${errorMessage(reason)}`);
+        }
+      },
+    });
+  };
+
+  /** 关闭恢复弹窗：执行中不允许关闭 */
+  const closeRestore = () => {
+    if (restoreSession?.phase === 'running') {
+      return;
+    }
+    setRestoreSession(null);
+  };
+
+  /** 恢复弹窗内容：预览阶段展示计划与策略，结果阶段展示同一套明细 */
+  const renderRestoreBody = () => {
+    const session = restoreSession;
+    if (!session) {
+      return null;
+    }
+    const view =
+      session.phase === 'result' && session.result ? session.result : session.preview;
+    const brokerItem = view.items.find((item) => item.level === 'broker');
+    const connectCount = view.items.filter((item) => item.level === 'connect').length;
+    const connectorCount = view.items.filter(
+      (item) => item.level === 'source' || item.level === 'sink',
+    ).length;
+    const isResult = session.phase === 'result' && session.result !== null;
+
+    return (
+      <div className="dbz-transfer-import" data-restore-dialog>
+        <div className="dbz-transfer-file">
+          文件：<span className="dbz-mono">{session.fileName}</span>
+          {brokerItem && (
+            <>
+              {' '}· 集群 <span className="dbz-mono">{brokerItem.name}</span>
+            </>
+          )}
+          {' '}· Connect {connectCount} 台 · 连接器 {connectorCount} 条
+        </div>
+
+        <Alert
+          type="warning"
+          showIcon
+          message="备份文件含 sasl_password 等敏感凭据，恢复后能直接连上原集群；请只在可信环境之间传递并妥善保管。"
+        />
+        <Alert
+          type="info"
+          showIcon
+          message="恢复只写库内纳管记录，不会在远端注册或删除连接器；需要后续启用/检测才会下发到集群。"
+        />
+
+        {!isResult && (
+          <div className="dbz-transfer-bulk" data-restore-strategy>
+            <span>恢复策略：</span>
+            <Radio.Group
+              value={session.strategy}
+              disabled={session.loadingPreview}
+              onChange={(event) =>
+                void changeRestoreStrategy(event.target.value as BackupRestoreStrategy)
+              }
+            >
+              <Radio.Button value="skip">仅补齐缺失（默认）</Radio.Button>
+              <Radio.Button value="overwrite">覆盖已存在</Radio.Button>
+            </Radio.Group>
+          </div>
+        )}
+
+        <div className="dbz-transfer-summary">
+          {isResult ? (
+            <>
+              <Tag color="success">新增 {view.created}</Tag>
+              <Tag color="geekblue">覆盖 {view.overwritten}</Tag>
+              <Tag>跳过 {view.skipped}</Tag>
+              <Tag color="error">失败 {view.failed}</Tag>
+            </>
+          ) : (
+            <>
+              <Tag color="success">将新增 {view.created}</Tag>
+              <Tag color="geekblue">将覆盖 {view.overwritten}</Tag>
+              <Tag>将跳过 {view.skipped}</Tag>
+              <Tag color="error">失败 {view.failed}</Tag>
+            </>
+          )}
+        </div>
+
+        <Table<DbzBackupRestoreItemVo>
+          size="small"
+          rowKey={(item) => `${item.level}:${item.connectorName ?? item.name}`}
+          loading={session.loadingPreview}
+          pagination={false}
+          dataSource={view.items}
+          scroll={{ y: 360 }}
+          columns={[
+            {
+              title: '层级',
+              key: 'level',
+              width: 110,
+              render: (_value: unknown, item: DbzBackupRestoreItemVo) => (
+                <Tag color={RESTORE_LEVEL_COLOR[item.level]}>
+                  {RESTORE_LEVEL_LABEL[item.level]}
+                </Tag>
+              ),
+            },
+            {
+              title: '名称 / connectorName',
+              key: 'name',
+              render: (_value: unknown, item: DbzBackupRestoreItemVo) => (
+                <div>
+                  <div>{item.name}</div>
+                  {item.connectorName && (
+                    <div className="dbz-mono">{item.connectorName}</div>
+                  )}
+                </div>
+              ),
+            },
+            {
+              title: '所属',
+              key: 'parent',
+              width: 160,
+              render: (_value: unknown, item: DbzBackupRestoreItemVo) => item.parent || '--',
+            },
+            {
+              title: '动作',
+              key: 'action',
+              width: 90,
+              render: (_value: unknown, item: DbzBackupRestoreItemVo) => (
+                <Tag color={RESTORE_ACTION_COLOR[item.action]}>
+                  {RESTORE_ACTION_LABEL[item.action]}
+                </Tag>
+              ),
+            },
+            {
+              title: '说明',
+              key: 'message',
+              render: (_value: unknown, item: DbzBackupRestoreItemVo) =>
+                item.message ? (
+                  <Typography.Text type={item.action === 'failed' ? 'danger' : 'secondary'}>
+                    {item.message}
+                  </Typography.Text>
+                ) : (
+                  '--'
+                ),
+            },
+          ]}
+        />
+      </div>
+    );
   };
 
   const renderInspector = () => {
@@ -2205,7 +2675,7 @@ export default function ControlPlanePage() {
     <div className="dbz-canvas-page">
       <div className="dbz-canvas-topbar">
         <div className="dbz-canvas-title">
-          <Typography.Title level={4}>控制面视图</Typography.Title>
+          <Typography.Title level={4}>连接器拓扑</Typography.Title>
           <span className="dbz-canvas-caption">
             状态由健康检查与进入页面刷新回写，卡片只展示一个统一状态
           </span>
@@ -2324,7 +2794,7 @@ export default function ControlPlanePage() {
           type="error"
           showIcon
           closable
-          message={`加载控制面数据失败：${state.error.message}`}
+          message={`加载连接器拓扑数据失败：${state.error.message}`}
           className="dbz-canvas-error"
         />
       )}
@@ -2355,7 +2825,7 @@ export default function ControlPlanePage() {
                 : '--'}
             </span>
           </div>
-          <ControlPlaneCanvas
+          <ConnectorTopologyCanvas
             key={resolvedBrokerId ?? 'all'}
             nodes={scopeNodes}
             edges={scopeEdges}
@@ -2374,7 +2844,6 @@ export default function ControlPlanePage() {
               setSelectedNodeKey(null);
             }}
             onAddChild={handleAddChild}
-            onAddRoot={() => startCreate('broker', null)}
             onNodeAction={handleNodeAction}
             onToggleNode={(node, enabled) => void applyToggle(node, enabled)}
             busyNodeKey={busyNodeKey}
@@ -2397,6 +2866,16 @@ export default function ControlPlanePage() {
         style={{ display: 'none' }}
         data-import-file
         onChange={(event) => void handleImportFileChange(event)}
+      />
+
+      {/* 隐藏文件输入：Kafka 集群卡片上的恢复按钮触发，集群以文件内容为准 */}
+      <input
+        ref={restoreFileRef}
+        type="file"
+        accept=".json,application/json"
+        style={{ display: 'none' }}
+        data-restore-file
+        onChange={(event) => void handleRestoreFileChange(event)}
       />
 
       {/* Connect 导出：默认带凭据，也可显式选择脱敏 */}
@@ -2706,6 +3185,84 @@ export default function ControlPlanePage() {
         )}
       </Modal>
 
+      {/* Kafka 集群备份：确认后由后端导出，前端只负责下载 */}
+      <Modal
+        open={backupTarget !== null}
+        title={backupTarget ? `备份 Kafka 集群「${backupTarget.name}」` : '备份 Kafka 集群'}
+        onCancel={() => {
+          if (!backupRunning) {
+            setBackupTarget(null);
+          }
+        }}
+        maskClosable={!backupRunning}
+        okText="下载备份文件"
+        onOk={() => void executeBackupCluster()}
+        okButtonProps={{ loading: backupRunning }}
+        destroyOnHidden
+      >
+        <div className="dbz-transfer-export" data-backup-dialog>
+          <p>
+            将导出该集群的全部纳管记录：<strong>{backupConnectCount}</strong> 台 Kafka Connect、
+            <strong>{backupConnectorCount}</strong> 个连接器（含上下游），以及集群自身的连接与
+            认证配置。
+          </p>
+          <Alert
+            type="warning"
+            showIcon
+            message="备份文件包含 sasl_password 等敏感凭据，恢复后可直接连上集群；请只在可信环境之间传递，并妥善保管文件。"
+          />
+          {backupConnectCount === 0 && (
+            <Alert
+              type="info"
+              showIcon
+              message="该集群下还没有 Kafka Connect，备份将只包含集群配置。"
+            />
+          )}
+        </div>
+      </Modal>
+
+      {/* Kafka 集群恢复：预览计划 → 选择策略 → 二次确认 → 结果 */}
+      <Modal
+        open={restoreSession !== null}
+        width={900}
+        title="从 JSON 恢复 Kafka 集群"
+        onCancel={closeRestore}
+        maskClosable={restoreSession?.phase !== 'running'}
+        destroyOnHidden
+        footer={
+          !restoreSession
+            ? null
+            : restoreSession.phase === 'result'
+              ? [
+                  <Button key="close" onClick={() => setRestoreSession(null)}>
+                    关闭
+                  </Button>,
+                ]
+              : restoreSession.phase === 'running'
+                ? [
+                    <Button key="running" type="primary" loading disabled>
+                      正在恢复…
+                    </Button>,
+                  ]
+                : [
+                    <Button key="cancel" onClick={() => setRestoreSession(null)}>
+                      取消
+                    </Button>,
+                    <Button
+                      key="ok"
+                      type="primary"
+                      disabled={restoreSession.loadingPreview}
+                      onClick={executeRestore}
+                      data-restore-execute
+                    >
+                      执行恢复
+                    </Button>,
+                  ]
+        }
+      >
+        {renderRestoreBody()}
+      </Modal>
+
       <KafkaBrokerForm
         open={createKind === 'broker' || editTarget?.kind === 'broker'}
         record={editTarget?.kind === 'broker' ? (editTarget.record as DbzKafkaBrokerVo) : null}
@@ -2895,14 +3452,14 @@ export default function ControlPlanePage() {
               description="连接器会同时从 Kafka Connect 注销；需要保留下游连接器，请先改挂到其他 Connect。"
             />
             <div className="dbz-delete-password">
-              <Typography.Text strong>当前登录用户口令</Typography.Text>
+              <Typography.Text strong>审核口令</Typography.Text>
               <Typography.Text type="secondary" style={{ display: 'block', marginBottom: 6 }}>
-                口令在浏览器内先做 SM3 摘要，后端带登录令牌转给认证服务校验；不会累加登录失败次数，也不会锁号。
+                审核口令在浏览器内先做 SM3 摘要，后端带登录令牌转给认证服务校验；未设置审核口令的用户需先在用户管理中设置。
               </Typography.Text>
               <Input.Password
                 autoFocus
                 value={deletePassword}
-                placeholder="请输入当前登录用户的口令"
+                placeholder="请输入当前登录用户的审核口令"
                 data-delete-password
                 onChange={(event) => {
                   setDeletePassword(event.target.value);

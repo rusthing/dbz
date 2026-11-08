@@ -257,9 +257,9 @@ export function buildTransferFile(
   };
 }
 
-/** 文件名：Connect 名称 + 时间戳，非法字符替换成下划线 */
-export function exportFileName(connectName: string, date: Date = new Date()): string {
-  const stamp = [
+/** 文件名用的时间戳：年月日-时分秒 */
+function fileStamp(date: Date): string {
+  return [
     date.getFullYear(),
     String(date.getMonth() + 1).padStart(2, '0'),
     String(date.getDate()).padStart(2, '0'),
@@ -268,8 +268,18 @@ export function exportFileName(connectName: string, date: Date = new Date()): st
     String(date.getMinutes()).padStart(2, '0'),
     String(date.getSeconds()).padStart(2, '0'),
   ].join('');
+}
+
+/** 文件名：Connect 名称 + 时间戳，非法字符替换成下划线 */
+export function exportFileName(connectName: string, date: Date = new Date()): string {
   const safeName = connectName.trim().replace(/[\\/:*?"<>|\s]+/g, '_') || 'connect';
-  return `dbz-connect-${safeName}-${stamp}.json`;
+  return `dbz-connect-${safeName}-${fileStamp(date)}.json`;
+}
+
+/** 文件名：Kafka 集群名称 + 时间戳，与 Connect 导出同一套命名规则 */
+export function backupFileName(brokerName: string, date: Date = new Date()): string {
+  const safeName = brokerName.trim().replace(/[\\/:*?"<>|\s]+/g, '_') || 'cluster';
+  return `dbz-cluster-${safeName}-${fileStamp(date)}.json`;
 }
 
 function isObject(value: unknown): value is Record<string, unknown> {

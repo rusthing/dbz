@@ -75,11 +75,12 @@ export const controlPlaneApi = {
     apiDelete('/dbz/control-plane/edges', { edgeId }),
 
   /**
-   * 校验当前登录用户口令后删除节点
+   * 校验当前登录用户审核口令后删除节点
    *
-   * 前端先对明文做 SM3，后端再带 `Authorization` 转发 adm-rs 校验；通过后才删除
-   * 并写审计。失败提示前缀区分「口令错误」「口令校验过于频繁」「登录状态已失效」
-   * 与「认证服务不可用」。
+   * 前端先对明文做 SM3，后端再带 `Authorization` 转发 adm-rs 的
+   * `POST /adm/auth/verify-audit-password` 校验；通过后才删除并写审计。失败提示
+   * 前缀区分「审核口令错误」「审核口令未设置」「审核口令校验过于频繁」
+   * 「登录状态已失效」与「认证服务不可用」。
    */
   deleteNode: (input: DbzControlPlaneNodeDeleteInput): Promise<void> =>
     apiPost('/dbz/control-plane/node-delete', input),

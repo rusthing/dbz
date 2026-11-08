@@ -8,7 +8,7 @@
  * - 写接口带了 `X-User-Id`、请求体是 camelCase；
  * - 表单默认值、编辑回填、提交后关闭；
  * - 联动字段（broker 选 SASL 才出现认证项）、双模式编辑器（图形化 ⇄ JSON）、
- *   快照弹窗按通道重新预检、远端连接器的停止与重置位点；
+ *   快照弹窗按通道重新预检、连接器拓扑卡片的停止与重置位点；
  * - 悬停状态弹出运行详情：失败原因要真的从 `runMsg` / trace 渲染出来；
  * - 布局体检：顶栏标题不被裁、表格不横向溢出、工具栏不换行。
  *
@@ -560,7 +560,7 @@ const consoleErrors = [];
 const posted = [];
 /** 只读接口单独记录：`posted` 只装写请求，GET 断言不能从它里翻 */
 const getRequests = [];
-/** 控制面画布布局：PUT 落库、GET 读取，用来验证「刷新后位置保持」 */
+/** 连接器拓扑画布布局：PUT 落库、GET 读取，用来验证「刷新后位置保持」 */
 const layoutStore = [];
 let nextBrokerId = 499;
 /** 导入会真的新增连接器：返回带 id 的记录，让下游按上游 id 重挂 */
@@ -568,17 +568,17 @@ let nextSourceId = 601;
 let nextSinkId = 701;
 /** 置 true 让下一次预检失败一次，用完自动复位：用来验证「预检失败能原地重试」 */
 let failNextPreview = false;
-/** 控制面状态刷新次数：验证进入页面、手动刷新与自动刷新都真的回写了状态 */
+/** 连接器拓扑状态刷新次数：验证进入页面、手动刷新与自动刷新都真的回写了状态 */
 let refreshCalls = 0;
 /** 置 true 让下一次重置位点失败：验证弹窗说明停在哪一步 */
 let failNextReset = false;
 /** 置 true 让下一次启用开关失败：验证开关回滚 */
 let failNextSinkToggle = false;
-/** 下一次删除口令校验的失败类型：wrong=口令错误，rate=频控，unavailable=认证服务不可用 */
+/** 下一次删除审核口令校验的失败类型：wrong=口令错误，not-set=未设置，rate=频控，unavailable=认证服务不可用 */
 let failNextDelete = null;
 /** 下一次登录的失败类型：wrong=账号或口令不正确，network=网络错误 */
 let failNextLogin = null;
-/** 置 true 让下一次控制面状态刷新返回 401，验证令牌失效回登录页 */
+/** 置 true 让下一次连接器拓扑状态刷新返回 401，验证令牌失效回登录页 */
 let failNext401 = false;
 /** 401 用例期间忽略浏览器打印的资源加载错误（这是用例主动制造的） */
 let ignore401Console = false;
@@ -832,14 +832,24 @@ await page.route('**/dbz/**', async (route) => {
       edgeBendStore.delete(url.searchParams.get('edgeId'));
       return route.fulfill({ json: { result: 1, msg: '成功', timestamp: Date.now() } });
     }
-    // 删除节点：口令错误 / 频控 / 认证服务不可用返回可区分文案
+    // 删除节点：审核口令错误 / 未设置 / 频控 / 认证服务不可用返回可区分文案
     if (path === '/dbz/control-plane/node-delete' && request.method() === 'POST') {
       if (failNextDelete === 'wrong') {
         failNextDelete = null;
         return route.fulfill({
           json: {
             result: 0,
-            msg: '口令错误：当前登录用户口令不正确',
+            msg: '审核口令错误：当前登录用户的审核口令不正确',
+            timestamp: Date.now(),
+          },
+        });
+      }
+      if (failNextDelete === 'not-set') {
+        failNextDelete = null;
+        return route.fulfill({
+          json: {
+            result: 0,
+            msg: '审核口令未设置：当前用户尚未设置审核口令，请先在用户管理中设置',
             timestamp: Date.now(),
           },
         });
@@ -849,7 +859,7 @@ await page.route('**/dbz/**', async (route) => {
         return route.fulfill({
           json: {
             result: 0,
-            msg: '口令校验过于频繁：短时间内错误尝试过多，请稍后重试',
+            msg: '审核口令校验过于频繁：短时间内错误尝试过多，请稍后重试',
             timestamp: Date.now(),
           },
         });
@@ -944,6 +954,31 @@ await page.route('**/dbz/**', async (route) => {
       brokers.push(record);
       return route.fulfill({ json: ro(record) });
     }
+    // Connect 卡片检测：模拟「库内配置与远端不一致」的同步结果，并把标记写回夹具
+    if (path === '/dbz/kafka-connect/detect') {
+      const body = request.postDataJSON();
+      const managed = sources.filter((item) => item.kafkaConnectId === body.kafkaConnectId);
+      const items = [];
+      let marked = 0;
+      let unchanged = 0;
+      for (const item of managed) {
+        if (item.connectorName === 'mysql-orders-source') {
+          item.inconsistent = true;
+          marked += 1;
+          items.push({
+            connectorName: item.connectorName,
+            connectorType: 'source',
+            action: 'marked',
+            message: null,
+          });
+        } else {
+          unchanged += 1;
+        }
+      }
+      return route.fulfill({
+        json: ro({ added: 0, marked, disabled: 0, cleared: 0, unchanged, skipped: 0, items }),
+      });
+    }
     await route.fulfill({ json: { result: 1, msg: '成功', timestamp: Date.now() } });
     return;
   }
@@ -1037,21 +1072,23 @@ await page.route('**/dbz/**', async (route) => {
 });
 
 try {
-  /* 1. 菜单与旧地址：左侧只剩控制面与死信，旧 CRUD 地址重定向到控制面 */
+  /* 1. 菜单与旧地址：左侧只剩连接器拓扑与死信，旧 CRUD 地址重定向到连接器拓扑 */
   await page.goto(`${base}/`, { waitUntil: 'networkidle' });
   await page.waitForSelector('.dbz-graph-node');
-  check('根地址重定向到控制面', page.url().includes('/control-plane'), page.url());
+  check('根地址重定向到连接器拓扑', page.url().includes('/connector-topology'), page.url());
   const menuTexts = (await page.locator('.ant-menu-item').allInnerTexts()).map((text) =>
     text.replace(/\s+/g, ''),
   );
   check(
-    '左侧菜单只剩控制面与死信',
-    menuTexts.length === 2 &&
-      menuTexts.some((text) => text.includes('控制面')) &&
+    '左侧菜单为连接器拓扑、集群连接器与死信',
+    menuTexts.length === 3 &&
+      menuTexts.some((text) => text.includes('连接器拓扑')) &&
+      menuTexts.some((text) => text.includes('集群连接器')) &&
       menuTexts.some((text) => text.includes('死信')),
     menuTexts.join(','),
   );
   for (const oldPath of [
+    'control-plane',
     'kafka-broker',
     'kafka-connect',
     'source-connector',
@@ -1062,14 +1099,14 @@ try {
     await page.goto(`${base}/${oldPath}`, { waitUntil: 'networkidle' });
     // `<Navigate>` 是 React 渲染后才执行的：networkidle 只说明资源加载完，
     // 这里要等路由真的换掉，否则会把「还没重定向」误判成失败
-    await page.waitForURL('**/control-plane', { timeout: 5000 }).catch(() => {});
+    await page.waitForURL('**/connector-topology', { timeout: 5000 }).catch(() => {});
     check(
-      `旧地址 /${oldPath} 重定向到控制面`,
-      page.url().includes('/control-plane'),
+      `旧地址 /${oldPath} 重定向到连接器拓扑`,
+      page.url().includes('/connector-topology'),
       page.url(),
     );
   }
-  await page.goto(`${base}/control-plane`, { waitUntil: 'networkidle' });
+  await page.goto(`${base}/connector-topology`, { waitUntil: 'networkidle' });
   await page.waitForSelector('.dbz-graph-node');
   check(
     '画布没有指向已删页面的按钮或链接',
@@ -1077,7 +1114,7 @@ try {
       !(await page.locator('.dbz-canvas-page').innerText()).includes('打开明细页'),
   );
 
-  /* 1a. 控制面视图：统一状态、统一卡片、+ 新增、只读归属线、自动刷新与重置位点 */
+  /* 1a. 连接器拓扑：统一状态、统一卡片、+ 新增、只读归属线、自动刷新与重置位点 */
   // 临时补三条下游，凑齐六种统一状态；用完移除，后续死信用例仍按原始夹具
   const tempSinks = [
     {
@@ -1132,8 +1169,8 @@ try {
   sinks.push(...tempSinks);
 
   // 临时夹具是在页面首次加载之后才塞进 mock 的，仅点菜单不会重新拉数据；
-  // 重新进入控制面并等节点稳定，避免拿首屏未加载完的计数误判
-  await page.goto(`${base}/control-plane`, { waitUntil: 'networkidle' });
+  // 重新进入连接器拓扑并等节点稳定，避免拿首屏未加载完的计数误判
+  await page.goto(`${base}/connector-topology`, { waitUntil: 'networkidle' });
   await page.waitForSelector('.dbz-graph-node[data-node-key="1:401"]');
   await page
     .waitForFunction(() => document.querySelectorAll('.dbz-graph-node').length === 7, null, {
@@ -1217,13 +1254,10 @@ try {
       }),
   );
   check(
-    '组件面板恢复且只有 Kafka 集群可点击',
-    (await page.locator('.dbz-component-panel').isVisible()) &&
-      (await page.locator('.dbz-component-item[data-component="broker"]').evaluate(
-        (element) => element.tagName === 'BUTTON',
-      )) &&
-      (await page.locator('.dbz-component-item.is-disabled[aria-disabled]').count()) === 3,
-    '面板 1 个可点击 + 3 个禁用',
+    '组件面板已下线，新建根节点只保留顶栏入口',
+    (await page.locator('.dbz-component-panel').count()) === 0 &&
+      (await page.locator('.dbz-canvas-main').count()) === 1 &&
+      (await page.locator('.dbz-canvas-topbar button:has-text("新增 Kafka 集群")').count()) === 1,
   );
   check(
     '缩略图与缩放控件可见',
@@ -1307,9 +1341,12 @@ try {
     connectorStatusCounts.length > 0 && connectorStatusCounts.every((count) => count === 1),
     connectorStatusCounts.join(','),
   );
+  // 用户明确要求重新引入「不一致」：改为后端检测落库标记，前端只展示；
+  // 不再保留旧的 `.dbz-graph-mismatch`（前端自行推断），初始数据一致时也不展示标记。
   check(
-    '原「不一致」标记不再出现',
+    '「不一致」改为检测落库标记，初始数据一致时不展示',
     (await page.locator('.dbz-graph-mismatch').count()) === 0 &&
+      (await page.locator('.dbz-graph-inconsistent-tag').count()) === 0 &&
       !(await page.locator('.dbz-canvas-topbar').innerText()).includes('不一致'),
   );
 
@@ -1619,17 +1656,31 @@ try {
     })
     .catch(() => {});
 
-  // C. Connect 健康检测：可达 / 版本 / worker
+  // C. Connect 检测：可达 / 版本 / worker / 插件，并同步纳管记录（标记不一致）
   await page.locator('.dbz-graph-node[data-node-key="2:101"] [data-node-action="check"]').click();
-  await page.waitForTimeout(400);
-  const healthMessage = await page
-    .locator('.ant-message-notice-content:has-text("健康检测通过")')
-    .last()
-    .innerText();
+  const connectModal = visibleModal().last();
+  await connectModal.waitFor({ state: 'visible' });
+  const connectText = (await connectModal.innerText()).replace(/\s+/g, ' ');
   check(
-    'Connect 健康检测结果包含版本与 worker',
-    healthMessage.includes('v3.7.1') && healthMessage.includes('1 个 worker'),
-    healthMessage,
+    'Connect 检测结果包含版本、worker 与同步结果',
+    connectText.includes('v3.7.1') &&
+      connectText.includes('1 个 worker') &&
+      connectText.includes('同步结果：补录 0') &&
+      connectText.includes('标记不一致 1'),
+    connectText.slice(0, 240),
+  );
+  await connectModal.locator('.ant-modal-confirm-btns .ant-btn-primary').click();
+  await connectModal.waitFor({ state: 'hidden' });
+  await page
+    .waitForSelector('.dbz-graph-node[data-node-key="3:201"] .dbz-graph-inconsistent-tag', {
+      timeout: 5000,
+    })
+    .catch(() => {});
+  check(
+    '检测后连接器卡片展示「不一致」标记',
+    (await page
+      .locator('.dbz-graph-node[data-node-key="3:201"] .dbz-graph-inconsistent-tag')
+      .count()) === 1,
   );
 
   // C. 连接器一致性检测：下游一致 → 成功；上游库内缺字段 → 失败并列出具体原因
@@ -1697,7 +1748,7 @@ try {
     (await connectorInspector.locator('tbody tr.ant-table-row').count()) === 2,
     `实际 ${await connectorInspector.locator('tbody tr.ant-table-row').count()}`,
   );
-  await page.screenshot({ path: `${SHOTS}/01a-control-plane-inspector.png`, fullPage: false });
+  await page.screenshot({ path: `${SHOTS}/01a-connector-topology-inspector.png`, fullPage: false });
 
   // 切到 Connect：属性框内容跟着换
   await selectNode('2:101');
@@ -1774,7 +1825,7 @@ try {
     (await sink303.locator('.dbz-graph-status-tag .ant-tag').innerText()).trim() === '失败',
   );
 
-  // 卡片上的删除：先看影响，再输入当前登录用户口令；失败分「口令错误 / 频控 / 认证服务不可用」
+  // 卡片上的删除：先看影响，再输入当前登录用户审核口令；失败分「审核口令错误 / 未设置 / 频控 / 认证服务不可用」
   await page.locator('.dbz-graph-node[data-node-key="4:301"] [data-node-action="delete"]').click();
   const deleteModal = visibleModal().last();
   await deleteModal.waitFor({ state: 'visible' });
@@ -1790,8 +1841,8 @@ try {
     deleteText.slice(0, 160),
   );
   check(
-    '删除必须输入当前登录用户口令',
-    deleteText.includes('当前登录用户口令') &&
+    '删除必须输入当前登录用户审核口令',
+    deleteText.includes('审核口令') &&
       (await deleteModal.locator('[data-delete-password]').count()) === 1,
   );
   await deleteModal.locator('.ant-modal-footer .ant-btn').first().click();
@@ -1801,7 +1852,7 @@ try {
     !posted.some((item) => item.path === '/dbz/control-plane/node-delete'),
   );
 
-  // 口令错误：弹窗保留并给出可区分的提示
+  // 审核口令错误：弹窗保留并给出可区分的提示
   await page.locator('.dbz-graph-node[data-node-key="4:301"] [data-node-action="delete"]').click();
   const wrongPasswordModal = visibleModal().last();
   await wrongPasswordModal.waitFor({ state: 'visible' });
@@ -1811,8 +1862,8 @@ try {
   await page.waitForTimeout(500);
   const wrongText = (await wrongPasswordModal.innerText()).replace(/\s+/g, ' ');
   check(
-    '口令错误时提示口令错误且弹窗不关闭',
-    (await wrongPasswordModal.isVisible()) && wrongText.includes('口令错误'),
+    '审核口令错误时提示口令错误且弹窗不关闭',
+    (await wrongPasswordModal.isVisible()) && wrongText.includes('审核口令错误'),
     wrongText.slice(0, 200),
   );
 
@@ -1828,11 +1879,24 @@ try {
     }),
   );
   check(
-    '删除请求体只提交 64 位 SM3 摘要，不含明文口令',
-    typeof deleteRequest?.body?.loginPswd === 'string' &&
-      /^[0-9a-f]{64}$/.test(deleteRequest.body.loginPswd) &&
+    '删除请求体只提交审核口令的 64 位 SM3 摘要，不含明文口令',
+    typeof deleteRequest?.body?.auditPswd === 'string' &&
+      /^[0-9a-f]{64}$/.test(deleteRequest.body.auditPswd) &&
       !('password' in (deleteRequest?.body ?? {})),
     JSON.stringify(deleteRequest?.body),
+  );
+
+  // 审核口令未设置：提示先去用户管理设置，删除不执行
+  failNextDelete = 'not-set';
+  await wrongPasswordModal.locator('[data-delete-confirm]').click();
+  await page.waitForTimeout(500);
+  const notSetText = (await wrongPasswordModal.innerText()).replace(/\s+/g, ' ');
+  check(
+    '审核口令未设置时提示先设置且弹窗不关闭',
+    (await wrongPasswordModal.isVisible()) &&
+      notSetText.includes('审核口令未设置') &&
+      notSetText.includes('用户管理'),
+    notSetText.slice(0, 220),
   );
 
   // 频控：提示稍后重试，且说明默认窗口
@@ -1841,9 +1905,9 @@ try {
   await page.waitForTimeout(500);
   const rateText = (await wrongPasswordModal.innerText()).replace(/\s+/g, ' ');
   check(
-    '频控时提示口令校验过于频繁并说明重试窗口',
+    '频控时提示审核口令校验过于频繁并说明重试窗口',
     (await wrongPasswordModal.isVisible()) &&
-      rateText.includes('口令校验过于频繁') &&
+      rateText.includes('审核口令校验过于频繁') &&
       rateText.includes('10 分钟'),
     rateText.slice(0, 220),
   );
@@ -2036,8 +2100,8 @@ try {
     `走线 midY=${persistedMidY}，保存值=${bendPut.body.midY}`,
   );
 
-  // B. 组件面板点击「Kafka 集群」：建根节点 → 打开表单 → 保存布局
-  await page.locator('.dbz-component-item[data-component="broker"]').click();
+  // B. 顶栏「新增 Kafka 集群」：建根节点 → 打开表单 → 保存布局
+  await page.locator('.dbz-canvas-topbar button:has-text("新增 Kafka 集群")').click();
   await page.waitForSelector('.ant-modal-wrap:visible');
   const createModal = visibleModal().last();
   // 新增表单没有回填值可等，等 afterOpenChange 跑完（resetFields + 默认值）再填
@@ -2051,7 +2115,7 @@ try {
     (item) => item.method === 'POST' && item.path === '/dbz/kafka-broker',
   );
   check(
-    '组件面板点击 Kafka 集群调用创建接口',
+    '顶栏新增 Kafka 集群调用创建接口',
     createdBrokerRequest?.body?.name === '冒烟新集群' &&
       createdBrokerRequest?.body?.bootstrapServers === '10.0.9.9:9092',
     JSON.stringify(createdBrokerRequest?.body),
@@ -2114,7 +2178,7 @@ try {
   await refreshInput.press('Tab');
   await page.waitForTimeout(200);
   const storedRefresh = await page.evaluate(() =>
-    JSON.parse(window.localStorage.getItem('dbz.control-plane.refresh') ?? '{}'),
+    JSON.parse(window.localStorage.getItem('dbz.connector-topology.refresh') ?? '{}'),
   );
   check(
     '调整后的秒数写入本地存储',
@@ -2203,7 +2267,7 @@ try {
   await refreshInput.press('Tab');
   await page.waitForTimeout(200);
   const restoredRefresh = await page.evaluate(() =>
-    JSON.parse(window.localStorage.getItem('dbz.control-plane.refresh') ?? '{}'),
+    JSON.parse(window.localStorage.getItem('dbz.connector-topology.refresh') ?? '{}'),
   );
   check(
     '恢复 15 秒并持久化',
@@ -2625,7 +2689,7 @@ try {
 
   // 单集群时不显示 tab 栏；恢复多集群后 tab 栏重新出现
   singleClusterOnly = true;
-  await page.goto(`${base}/control-plane`, { waitUntil: 'networkidle' });
+  await page.goto(`${base}/connector-topology`, { waitUntil: 'networkidle' });
   await page.waitForSelector('.dbz-graph-node[data-node-key="1:401"]');
   await page
     .waitForFunction(() => document.querySelectorAll('.dbz-graph-node').length === 7, null, {
@@ -2639,7 +2703,7 @@ try {
     `节点 ${await page.locator('.dbz-graph-node').count()}`,
   );
   singleClusterOnly = false;
-  await page.goto(`${base}/control-plane`, { waitUntil: 'networkidle' });
+  await page.goto(`${base}/connector-topology`, { waitUntil: 'networkidle' });
   await page
     .waitForFunction(() => document.querySelectorAll('.dbz-graph-node').length === 7, null, {
       timeout: 15000,
@@ -2654,8 +2718,8 @@ try {
   const topologyOverflow = await page.evaluate(
     () => document.documentElement.scrollWidth - document.documentElement.clientWidth,
   );
-  check('控制面页面无横向溢出', topologyOverflow <= 1, `溢出 ${topologyOverflow}px`);
-  await page.screenshot({ path: `${SHOTS}/01a-control-plane.png`, fullPage: true });
+  check('连接器拓扑页面无横向溢出', topologyOverflow <= 1, `溢出 ${topologyOverflow}px`);
+  await page.screenshot({ path: `${SHOTS}/01a-connector-topology.png`, fullPage: true });
 
   // 死信标签：不触发拖动，点击带连接器筛选进死信页
   const sink301Node = page.locator('.dbz-graph-node[data-node-key="4:301"]');
@@ -2671,7 +2735,7 @@ try {
     '死信标签上按下拖动不会移动卡片',
     (await sink301Node.evaluate((element) => element.style.left)) === sinkLeftBeforeDeadDrag,
   );
-  check('拖动死信标签不会误跳转', page.url().includes('/control-plane'));
+  check('拖动死信标签不会误跳转', page.url().includes('/connector-topology'));
 
   await deadTag.click();
   await page.waitForFunction(() => window.location.href.includes('/dead-letter?'));
@@ -3151,10 +3215,10 @@ try {
   check('死信页面无横向溢出', deadLetterOverflow <= 1, `溢出 ${deadLetterOverflow}px`);
   await page.screenshot({ path: `${SHOTS}/01c-dead-letter.png`, fullPage: true });
 
-  /* 1d. 旧 CRUD 页面已删除：未知路由也回落到控制面，不再 404 */
+  /* 1d. 旧 CRUD 页面已删除：未知路由也回落到连接器拓扑，不再 404 */
   await page.goto(`${base}/not-exist`, { waitUntil: 'networkidle' });
   await page.waitForSelector('.dbz-graph-node');
-  check('未知路由回落到控制面', page.url().includes('/control-plane'), page.url());
+  check('未知路由回落到连接器拓扑', page.url().includes('/connector-topology'), page.url());
 
   /* 1e. 登录：未登录跳转、SM3 登录、令牌失效回登录页、退出登录 */
   await page.evaluate(() => {
@@ -3162,7 +3226,7 @@ try {
     // 标记已进入认证用例，后续刷新不再自动注入夹具会话
     sessionStorage.setItem('dbz.smoke.auth-tested', '1');
   });
-  await page.goto(`${base}/control-plane`, { waitUntil: 'networkidle' });
+  await page.goto(`${base}/connector-topology`, { waitUntil: 'networkidle' });
   await page.waitForURL('**/login**', { timeout: 5000 });
   check(
     '未登录访问业务页面跳登录页',
@@ -3195,7 +3259,7 @@ try {
   // 登录成功：保存令牌并回到业务页
   await page.locator('[data-login-password]').fill('right-password');
   await page.locator('[data-login-submit]').click();
-  await page.waitForURL('**/control-plane', { timeout: 5000 });
+  await page.waitForURL('**/connector-topology', { timeout: 5000 });
   await page.waitForSelector('.dbz-graph-node', { timeout: 5000 });
   const savedSession = await page.evaluate(() =>
     JSON.parse(localStorage.getItem('dbz.auth.session') ?? 'null'),
@@ -3204,7 +3268,7 @@ try {
     '登录成功保存令牌并回到业务页',
     savedSession?.token === 'smoke-login-token' &&
       savedSession?.userId === '7' &&
-      page.url().includes('/control-plane'),
+      page.url().includes('/connector-topology'),
     JSON.stringify(savedSession),
   );
   check(
@@ -3220,7 +3284,7 @@ try {
   // 令牌失效（HTTP 401）：清会话回登录页
   failNext401 = true;
   ignore401Console = true;
-  await page.goto(`${base}/control-plane`, { waitUntil: 'domcontentloaded' });
+  await page.goto(`${base}/connector-topology`, { waitUntil: 'domcontentloaded' });
   await page.waitForURL('**/login**', { timeout: 5000 });
   check(
     '令牌失效返回 401 时清掉登录态并回登录页',
@@ -3234,7 +3298,7 @@ try {
   await page.locator('[data-login-account]').fill('smoke-user');
   await page.locator('[data-login-password]').fill('right-password');
   await page.locator('[data-login-submit]').click();
-  await page.waitForURL('**/control-plane', { timeout: 5000 });
+  await page.waitForURL('**/connector-topology', { timeout: 5000 });
   await page.locator('[data-header-user]').click();
   await page.locator('.ant-dropdown-menu-item:has-text("退出登录")').click();
   await page.waitForURL('**/login**', { timeout: 5000 });

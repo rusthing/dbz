@@ -20,8 +20,8 @@ use axum::http::HeaderMap;
 use axum::response::Json;
 use robotech::api::Ro;
 use robotech::macros::log_call;
-use robotech::web::ctrl_utils::get_current_user_id;
 use robotech::web::CtrlError;
+use robotech::web::ctrl_utils::get_current_user_id;
 
 /// 转发给 adm-rs 的认证头（网关注入的原始值）
 fn authorization_of(headers: &HeaderMap) -> Option<&str> {
@@ -78,10 +78,10 @@ pub async fn remove_edge(
     Ok(Json(ro))
 }
 
-/// # 校验口令后删除节点
+/// # 校验审核口令后删除节点
 ///
-/// 校验失败按提示前缀区分「口令错误」「口令校验过于频繁」「登录状态已失效」
-/// 与「认证服务不可用」；除口令通过外都不允许删除，也不会留下半删状态。
+/// 校验失败按提示前缀区分「审核口令错误」「审核口令未设置」「审核口令校验过于频繁」
+/// 「登录状态已失效」与「认证服务不可用」；除口令通过外都不允许删除，也不会留下半删状态。
 #[utoipa::path(
     post,
     path = "/dbz/control-plane/node-delete",

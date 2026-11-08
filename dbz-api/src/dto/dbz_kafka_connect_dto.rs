@@ -20,6 +20,17 @@ pub struct DbzKafkaConnectHealthDto {
     pub kafka_connect_id: U64,
 }
 
+/// # Kafka Connect 检测 DTO
+///
+/// 写接口：以 Kafka Connect 上的实际连接器为准同步库内纳管记录，并回写
+/// `inconsistent` 标记。只比对 `connectorConfig` 与远端是否存在，不看运行状态。
+#[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema, IntoParams)]
+#[serde(default, rename_all = "camelCase")]
+pub struct DbzKafkaConnectDetectDto {
+    /// Kafka Connect ID
+    pub kafka_connect_id: U64,
+}
+
 #[crud_dto]
 pub struct DbzKafkaConnectDto {
     /// 名称

@@ -37,4 +37,7 @@ pub struct DbzSinkConnectorDto {
     /// 启用
     #[db_default]
     pub enabled: bool,
+    /// 检测不一致标记（由 Connect 卡片检测写入，不从编辑表单维护）
+    #[db_default]
+    pub inconsistent: bool,
 }

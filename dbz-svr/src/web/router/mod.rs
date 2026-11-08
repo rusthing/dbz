@@ -1,9 +1,11 @@
+mod dbz_backup_router;
 mod dbz_control_plane_layout_router;
 mod dbz_control_plane_ops_router;
 mod dbz_control_plane_status_router;
 mod dbz_dead_letter_router;
 mod dbz_kafka_broker_check_router;
 mod dbz_kafka_broker_router;
+mod dbz_kafka_connect_detect_router;
 mod dbz_kafka_connect_health_router;
 mod dbz_kafka_connect_router;
 mod dbz_kafka_connector_router;

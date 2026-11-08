@@ -1,5 +1,5 @@
 /**
- * # 控制面画布
+ * # 连接器拓扑画布
  *
  * 交互按「只选上游、其余自动推导」收敛：
  * - 节点可拖、空白可平移、滚轮以指针为中心缩放、缩略图、正交折线箭头；
@@ -89,7 +89,7 @@ interface EdgeGeometry {
   marker: string;
 }
 
-interface ControlPlaneCanvasProps {
+interface ConnectorTopologyCanvasProps {
   nodes: CanvasNode[];
   edges: CanvasEdge[];
   positions: Record<string, Point>;
@@ -105,8 +105,6 @@ interface ControlPlaneCanvasProps {
   onSelectEdge: (id: string | null) => void;
   /** 点击节点底部「+」：父级固定，页面按子类型打开新增表单 */
   onAddChild: (node: CanvasNode) => void;
-  /** 组件面板点击「Kafka 集群」：在空白处建根节点 */
-  onAddRoot: () => void;
   /** 卡片上的重启/编辑/删除/检测/重新同步 */
   onNodeAction: (node: CanvasNode, action: CanvasNodeAction) => void;
   /** 卡片上的启用开关：选中即启用，关闭即停用 */
@@ -313,7 +311,7 @@ interface NodeActionsProps {
   onAction: (node: CanvasNode, action: CanvasNodeAction) => void;
 }
 
-/** 卡片操作行：编辑在最左，右侧依次重启/重置/重新同步/检测，删除隔一道分隔线放最右 */
+/** 卡片操作行：编辑在最左，右侧依次检测/重启/重置/重新同步，删除隔一道分隔线放最右 */
 function NodeActions({
   node,
   busyNodeKey,
@@ -329,6 +327,19 @@ function NodeActions({
     disabled?: boolean;
     loading?: boolean;
   }[] = [];
+
+  // 检测排在最前：只读诊断，放在所有写操作之前
+  rightItems.push({
+    action: 'check',
+    title:
+      node.kind === 'broker'
+        ? '集群检测：检测 Kafka 连通性'
+        : node.kind === 'connect'
+          ? '集群检测：可达性 / 版本 / worker / 插件'
+          : '一致性检测：库内配置与 Connect 实际状态是否一致',
+    icon: <ThunderboltOutlined />,
+    loading: checkingKey === node.key,
+  });
 
   if (node.kind === 'source' || node.kind === 'sink') {
     const record = node.record as ManagedConnectorRecord;
@@ -375,6 +386,20 @@ function NodeActions({
     });
   }
 
+  // Kafka 集群：备份/恢复按整个集群处理，包含其下全部 Connect 与连接器
+  if (node.kind === 'broker') {
+    rightItems.push({
+      action: 'backup-cluster',
+      title: '备份整个 Kafka 集群（含 Connect 与连接器，文件含 sasl_password 等敏感信息）',
+      icon: <DownloadOutlined />,
+    });
+    rightItems.push({
+      action: 'restore-cluster',
+      title: '从备份 JSON 恢复库内纳管记录（不向远端注册或删除连接器）',
+      icon: <UploadOutlined />,
+    });
+  }
+
   // 重新同步只给上游连接器：向下游发增量快照没有「重读源表」这回事
   if (node.kind === 'source') {
     rightItems.push({
@@ -383,18 +408,6 @@ function NodeActions({
       icon: <SyncOutlined />,
     });
   }
-
-  rightItems.push({
-    action: 'check',
-    title:
-      node.kind === 'broker'
-        ? '集群检测：检测 Kafka 连通性'
-        : node.kind === 'connect'
-          ? '健康检测：可达性 / 版本 / worker'
-          : '一致性检测：库内配置与 Connect 实际状态是否一致',
-    icon: <ThunderboltOutlined />,
-    loading: checkingKey === node.key,
-  });
 
   const renderAction = (item: {
     action: CanvasNodeAction;
@@ -430,7 +443,7 @@ function NodeActions({
       data-no-drag
       onPointerDown={(event) => event.stopPropagation()}
     >
-      {/* 编辑靠最左；开关已经移到卡片左上角，这里不再重复 */}
+      {/* 编辑靠最左；开关已经移到卡片右上角，这里不再重复 */}
       {renderAction({ action: 'edit', title: '编辑配置', icon: <EditOutlined /> })}
       <span className="dbz-graph-actions-spacer" />
       {rightItems.map(renderAction)}
@@ -446,7 +459,7 @@ function NodeActions({
   );
 }
 
-/** 卡片头部：启用开关在左上角，后面跟类型标识；开关不参与卡片拖动 */
+/** 卡片头部：类型标识在前，启用开关统一贴右上角；开关不参与卡片拖动 */
 function NodeHead({
   node,
   togglingNodeKey,
@@ -462,6 +475,18 @@ function NodeHead({
   const toggling = togglingNodeKey === node.key;
   return (
     <div className="dbz-graph-node-head">
+      <span
+        className="dbz-graph-node-icon"
+        style={{ backgroundColor: NODE_KIND_COLOR[node.kind] }}
+      >
+        <NodeIcon kind={node.kind} />
+      </span>
+      <span
+        className="dbz-graph-node-type-label"
+        style={{ color: NODE_KIND_COLOR[node.kind] }}
+      >
+        {NODE_KIND_LABEL[node.kind]}
+      </span>
       <Tooltip title={enabled ? '已启用，关闭即停用' : '已停用，打开即启用'}>
         <span className="dbz-graph-switch" data-no-drag>
           <Switch
@@ -479,23 +504,11 @@ function NodeHead({
           />
         </span>
       </Tooltip>
-      <span
-        className="dbz-graph-node-icon"
-        style={{ backgroundColor: NODE_KIND_COLOR[node.kind] }}
-      >
-        <NodeIcon kind={node.kind} />
-      </span>
-      <span
-        className="dbz-graph-node-type-label"
-        style={{ color: NODE_KIND_COLOR[node.kind] }}
-      >
-        {NODE_KIND_LABEL[node.kind]}
-      </span>
     </div>
   );
 }
 
-export default function ControlPlaneCanvas({
+export default function ConnectorTopologyCanvas({
   nodes,
   edges,
   positions,
@@ -507,7 +520,6 @@ export default function ControlPlaneCanvas({
   onSelectNode,
   onSelectEdge,
   onAddChild,
-  onAddRoot,
   onNodeAction,
   onToggleNode,
   busyNodeKey,
@@ -518,7 +530,7 @@ export default function ControlPlaneCanvas({
   activeHitKey,
   focusToken,
   renderInspector,
-}: ControlPlaneCanvasProps) {
+}: ConnectorTopologyCanvasProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<ViewState>({ x: 0, y: 0, scale: 1 });
   const [viewportSize, setViewportSize] = useState({ w: 0, h: 0 });
@@ -814,56 +826,6 @@ export default function ControlPlaneCanvas({
 
   return (
     <div className="dbz-canvas-shell">
-      <aside className="dbz-component-panel" aria-label="组件面板">
-        <div className="dbz-component-panel-title">组件</div>
-        <p className="dbz-component-panel-tip">
-          点击「Kafka 集群」在画布空白处新建根节点；其余组件只能从父节点的「+」创建。
-        </p>
-        <button
-          type="button"
-          className="dbz-component-item"
-          data-component="broker"
-          onClick={onAddRoot}
-        >
-          <span
-            className="dbz-component-icon"
-            style={{ backgroundColor: NODE_KIND_COLOR.broker }}
-          >
-            <DatabaseOutlined />
-          </span>
-          <span className="dbz-component-text">
-            <span className="dbz-component-name">{NODE_KIND_LABEL.broker}</span>
-            <span className="dbz-component-desc">点击新建根节点</span>
-          </span>
-        </button>
-        {(
-          [
-            ['connect', CloudServerOutlined],
-            ['source', ImportOutlined],
-            ['sink', ExportOutlined],
-          ] as const
-        ).map(([kind, Icon]) => (
-          <div
-            key={kind}
-            className="dbz-component-item is-disabled"
-            data-component={kind}
-            aria-disabled
-            title={`${NODE_KIND_LABEL[kind]}只能通过父节点的「+」创建`}
-          >
-            <span
-              className="dbz-component-icon"
-              style={{ backgroundColor: NODE_KIND_COLOR[kind] }}
-            >
-              <Icon />
-            </span>
-            <span className="dbz-component-text">
-              <span className="dbz-component-name">{NODE_KIND_LABEL[kind]}</span>
-              <span className="dbz-component-desc">从父节点的「+」创建</span>
-            </span>
-          </div>
-        ))}
-      </aside>
-
       <div className="dbz-canvas-main">
         <div
           className="dbz-graph-viewport"
@@ -967,6 +929,18 @@ export default function ControlPlaneCanvas({
 
                   <div className="dbz-graph-node-status" data-no-drag>
                     <NodeStatus node={node} />
+                    {(node.kind === 'source' || node.kind === 'sink') &&
+                      (node.record as ManagedConnectorRecord).inconsistent && (
+                        <Tooltip title="库内配置与 Connect 实际不一致，或远端已不存在；点 Connect 卡片的「检测」重新同步">
+                          <Tag
+                            color="warning"
+                            className="dbz-graph-inconsistent-tag"
+                            data-no-drag
+                          >
+                            不一致
+                          </Tag>
+                        </Tooltip>
+                      )}
                     {node.dead > 0 && (
                       <Tooltip title={`待处理死信 ${node.dead} 条，点击进入死信页并按该连接器筛选`}>
                         <Tag

@@ -45,6 +45,7 @@ jobx-api-client = "1.0.0"
 jobx-wkr = "1.0.0"
 alarm-api = "1.0.0"
 alarm-api-client = "1.0.0"
+adm-api-client = "1.0.0"
 
 [patch.crates-io]
 wheel-rs = { path = "../wheel-rs" }
@@ -59,3 +60,5 @@ jobx-api-client = { path = "../jobx/jobx-api-client" }
 jobx-wkr = { path = "../jobx/jobx-wkr" }
 alarm-api = { path = "../alarm/alarm-api" }
 alarm-api-client = { path = "../alarm/alarm-api-client" }
+adm-api = { path = "../adm-rs/adm-api" }
+adm-api-client = { path = "../adm-rs/adm-api-client" }

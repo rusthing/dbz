@@ -1,6 +1,6 @@
 //! # 控制面节点删除服务
 //!
-//! 删除是高风险动作，必须先把当前登录用户的口令摘要连同登录令牌交给 adm-rs
+//! 删除是高风险动作，必须先把当前登录用户**审核口令**的摘要连同登录令牌交给 adm-rs
 //! 校验，通过后才动数据库与远端 Connect；校验失败或认证服务不可用时**整笔操作
 //! 都不执行**，不会留下「删除了一半」的状态。
 //!
@@ -49,8 +49,8 @@ impl DbzControlPlaneDeleteSvc {
             return Err(anyhow!("nodeId 必须为正数").into());
         }
 
-        // 第一道门：口令。失败直接返回，后面的删除一行都不执行
-        DbzDeleteVerifySvc::verify(authorization, &dto.login_pswd).await?;
+        // 第一道门：审核口令。失败直接返回，后面的删除一行都不执行
+        DbzDeleteVerifySvc::verify(authorization, &dto.audit_pswd).await?;
 
         let db = get_db_conn().map_err(|e| anyhow!("获取数据库连接失败: {e}"))?;
         let node_name = Self::name_of(db.as_ref(), &node_type, node_id).await?;

@@ -203,6 +203,35 @@ body {
   max-height: 320px;
 }
 
+/* 单行省略：超长报文/原因只在列表里预览 */
+.dbz-ellipsis {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 列表“失败原因”单元格：文字 + 查看详情图标 */
+.dbz-reason-cell {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+
+.dbz-reason-cell .dbz-ellipsis {
+  flex: 1 1 auto;
+}
+
+/* 详情页小节标题与复制按钮同一行 */
+.dbz-detail-section-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin: 16px 0 8px;
+}
+
 /* 待投报文的编辑审计：编辑人 + 编辑时间 */
 .dbz-payload-meta {
   display: flex;
@@ -706,92 +735,6 @@ body {
   min-width: 0;
 }
 
-/* 左侧组件面板：点击式新增，不做拖拽；禁用项只说明创建路径 */
-.dbz-component-panel {
-  flex: 0 0 172px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px 10px;
-  overflow-y: auto;
-  background: #fbfcfd;
-  border-right: 1px solid #eef0f4;
-}
-
-.dbz-component-panel-title {
-  font-size: 12px;
-  font-weight: 600;
-  color: rgba(0, 0, 0, 0.65);
-}
-
-.dbz-component-panel-tip {
-  margin: 0 0 2px;
-  font-size: 11px;
-  line-height: 1.5;
-  color: rgba(0, 0, 0, 0.45);
-}
-
-.dbz-component-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  padding: 8px;
-  text-align: left;
-  background: #fff;
-  border: 1px solid #eef0f4;
-  border-radius: 8px;
-  cursor: pointer;
-  transition:
-    border-color 0.15s,
-    box-shadow 0.15s;
-}
-
-.dbz-component-item:hover {
-  border-color: #1677ff;
-  box-shadow: 0 2px 8px rgba(22, 119, 255, 0.12);
-}
-
-.dbz-component-item.is-disabled {
-  cursor: not-allowed;
-  opacity: 0.6;
-}
-
-.dbz-component-item.is-disabled:hover {
-  border-color: #eef0f4;
-  box-shadow: none;
-}
-
-.dbz-component-icon {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 24px;
-  width: 24px;
-  height: 24px;
-  border-radius: 6px;
-  color: #fff;
-  font-size: 13px;
-}
-
-.dbz-component-text {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-}
-
-.dbz-component-name {
-  font-size: 12px;
-  color: rgba(0, 0, 0, 0.75);
-}
-
-.dbz-component-desc {
-  font-size: 11px;
-  line-height: 1.4;
-  color: rgba(0, 0, 0, 0.45);
-}
-
 .dbz-graph-viewport {
   position: absolute;
   inset: 0;
@@ -901,7 +844,7 @@ body {
   filter: grayscale(0.4);
 }
 
-/* 四类卡片统一骨架：开关 + 类型标识 → 名称 → 关键字段 → 状态 → 操作行 */
+/* 四类卡片统一骨架：类型标识 + 右上角开关 → 名称 → 关键字段 → 状态 → 操作行 */
 .dbz-graph-node-head {
   display: flex;
   align-items: center;
@@ -945,11 +888,13 @@ body {
   color: rgba(0, 0, 0, 0.88);
 }
 
+/* 状态行上方留出一行空白，标签略微加宽，避免贴在说明行上 */
 .dbz-graph-node-status {
   display: flex;
   gap: 5px;
   align-items: center;
   min-width: 0;
+  margin-top: 14px;
   overflow: hidden;
   white-space: nowrap;
 }
@@ -965,9 +910,12 @@ body {
 }
 
 .dbz-graph-node-status .ant-tag {
+  min-width: 78px;
   margin-inline-end: 0;
+  padding-inline: 10px;
   font-size: 11px;
   line-height: 18px;
+  text-align: center;
   flex-shrink: 0;
 }
 
@@ -995,12 +943,16 @@ body {
   word-break: break-word;
 }
 
+/* 下游连接器需要两行（topic / http.api.url），保留换行并用省略号收尾 */
 .dbz-graph-node-sub {
+  display: -webkit-box;
   overflow: hidden;
   font-size: 11px;
-  line-height: 1.4;
-  white-space: nowrap;
-  text-overflow: ellipsis;
+  line-height: 1.45;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   color: rgba(0, 0, 0, 0.45);
 }
 
@@ -1015,11 +967,12 @@ body {
   border-top: 1px solid #f0f2f7;
 }
 
-/* 左上角启用开关：不参与卡片拖动，也不和操作行混在一起 */
+/* 右上角启用开关：不参与卡片拖动，也不和操作行混在一起 */
 .dbz-graph-switch {
   display: inline-flex;
   align-items: center;
   flex-shrink: 0;
+  margin-left: auto;
 }
 
 .dbz-graph-actions-spacer {
@@ -1027,12 +980,12 @@ body {
   min-width: 4px;
 }
 
-/* 删除与其它动作之间留明显间距 + 分隔线，降低误点 */
+/* 删除与其它动作之间用分隔线隔开，间距收紧让整组更紧凑 */
 .dbz-graph-actions-divider {
   flex: none;
   width: 1px;
   height: 16px;
-  margin: 0 12px;
+  margin: 0 5px;
   background: #f0f2f7;
 }
 
@@ -1309,23 +1262,6 @@ body {
     min-height: 720px;
   }
 
-  .dbz-component-panel {
-    flex: none;
-    flex-direction: row;
-    flex-wrap: wrap;
-    border-right: none;
-    border-bottom: 1px solid #eef0f4;
-  }
-
-  .dbz-component-panel-title,
-  .dbz-component-panel-tip {
-    flex-basis: 100%;
-  }
-
-  .dbz-component-item {
-    flex: 1 1 150px;
-  }
-
   .dbz-graph-inspector {
     width: 100%;
     border-left: none;
@@ -1409,6 +1345,97 @@ body {
 .dbz-consistency-diffs li {
   margin-bottom: 6px;
   word-break: break-all;
+}
+
+/* ---------- Connect 集群检测：插件清单 ---------- */
+.dbz-connect-detect p {
+  margin: 0 0 12px;
+  color: rgba(0, 0, 0, 0.65);
+}
+
+.dbz-connect-detect-plugins {
+  border: 1px solid #eef0f4;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.dbz-connect-detect-head,
+.dbz-connect-detect-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 72px 110px;
+  gap: 12px;
+  padding: 7px 12px;
+  font-size: 12.5px;
+}
+
+.dbz-connect-detect-head {
+  background: #fafbfd;
+  color: rgba(0, 0, 0, 0.45);
+  font-weight: 500;
+}
+
+.dbz-connect-detect-body {
+  max-height: 320px;
+  overflow: auto;
+}
+
+.dbz-connect-detect-row {
+  border-top: 1px solid #f2f4f7;
+}
+
+.dbz-connect-detect-row .dbz-mono {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dbz-connect-detect-empty {
+  padding: 14px 12px;
+  color: rgba(0, 0, 0, 0.45);
+  font-size: 12.5px;
+}
+
+/* 检测同步明细：动作标签 + 连接器名 + 说明 */
+.dbz-connect-detect-sync {
+  max-height: 200px;
+  margin-bottom: 12px;
+  overflow: auto;
+  border: 1px solid #eef0f4;
+  border-radius: 6px;
+}
+
+.dbz-connect-detect-sync-row {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 220px) minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+  padding: 6px 12px;
+  border-top: 1px solid #f2f4f7;
+  font-size: 12.5px;
+}
+
+.dbz-connect-detect-sync-row:first-child {
+  border-top: none;
+}
+
+.dbz-connect-detect-sync-row .dbz-mono {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dbz-connect-detect-sync-msg {
+  min-width: 0;
+  overflow: hidden;
+  color: rgba(0, 0, 0, 0.45);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dbz-graph-inconsistent-tag {
+  margin-inline-start: 4px;
 }
 
 /* ---------- 删除口令弹窗 ---------- */

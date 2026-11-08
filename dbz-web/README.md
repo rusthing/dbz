@@ -196,7 +196,7 @@ src/
 │   ├── kafka-connect.ts # /dbz/kafka-connect
 │   ├── source-connector.ts
 │   ├── sink-connector.ts
-│   ├── kafka-connector.ts  # /dbz/kafka-connector（远端运维）
+│   ├── kafka-connector.ts  # /dbz/kafka-connector（集群连接器/插件查询与远端运维）
 │   └── dead-letter.ts      # /dbz/dead-letter（死信查询、重投、废弃）
 ├── components/          # StatusTag / EnabledSwitch / JsonEditor / ConnectorConfigEditor
 ├── dic/                 # 状态枚举的整数判别式 → 文案/颜色
@@ -204,13 +204,13 @@ src/
 ├── layouts/AppLayout.tsx
 ├── pages/
 │   ├── Dashboard.tsx            # 总览 + 异常清单
-│   ├── control-plane/           # 控制面视图：broker → Connect → 连接器的实时卡片树
+│   ├── connector-topology/      # 连接器拓扑：broker → Connect → 连接器的实时卡片树
 │   ├── dead-letter/             # 死信列表 + 报文详情 + 重投/废弃
 │   ├── kafka-broker/            # 消息集群 CRUD + 连通性检测
 │   ├── kafka-connect/           # 集群 CRUD
 │   ├── source-connector/        # 上游 CRUD + 重新同步
 │   ├── sink-connector/          # 下游 CRUD
-│   └── remote-connector/        # 远端连接器/插件、重启、停止/恢复、重置位点
+│   └── kafka-connector/         # 集群连接器与插件查询（只读）
 └── utils/format.ts
 scripts/smoke.mjs        # 冒烟测试
 ```
@@ -270,7 +270,7 @@ scripts/smoke.mjs        # 冒烟测试
 | `KafkaBrokerStatus` | 消息集群（broker）是否可达 | 是 |
 | `KafkaConnectStatus` | 集群自身是否可达 | 是 |
 | `ConnectorRunStatus` | 检查任务对连接器得出的结论 | 是 |
-| `KafkaConnectorStatus` | 远端连接器此刻的实时状态 | 否（来自 Kafka Connect REST） |
+| `KafkaConnectorStatus` | 集群连接器此刻的实时状态 | 否（来自 Kafka Connect REST） |
 | `DeadLetterStatus` | 死信处理状态：待处理 / 已重投 / 已废弃 / 已人工处理 | 是 |
 | `DeadLetterFailureCategory` | 死信失败分类：确定性 / 传输类 / 响应异常 | 是 |
 | `DeadLetterConnectorType` | 死信所属连接器方向：上游 / 下游 | 是 |
@@ -349,18 +349,18 @@ scripts/smoke.mjs        # 冒烟测试
 | 页面 | 用到的接口 |
 | --- | --- |
 | 总览 | 四张表的 `/list`（含 Kafka 集群），在浏览器里算统计与异常；异常清单里消息集群排在集群之前一起列 |
-| 控制面视图 | 四张表的 `/list` + 每台 Connect 的 `GET /dbz/kafka-connector/list`（实时连接器）、`GET /dbz/kafka-connect/health`（Connect 自身健康）、`GET /dbz/kafka-connector/config`（抽屉里的集群侧配置）；`POST /restart`；上游/下游 `PUT`（启用/停用）；`POST /kafka-broker/check` |
+| 连接器拓扑 | 四张表的 `/list` + 每台 Connect 的 `GET /dbz/kafka-connector/list`（实时连接器）、`GET /dbz/kafka-connect/health`（Connect 自身健康）、`GET /dbz/kafka-connector/config`（属性框里的集群侧配置）；`POST /restart`；上游/下游 `PUT`（启用/停用）；`POST /kafka-broker/check` |
 | Kafka 集群 | `/dbz/kafka-broker` 的 `/page`、`POST`、`PUT`、`DELETE /{id}` + `POST /check` |
 | Kafka Connect | `/dbz/kafka-connect` 的 `/page`、`POST`、`PUT`、`DELETE /{id}` |
 | 上游连接器 | `/dbz/source-connector` 同上 + `GET /snapshot/preview`、`POST /snapshot` |
 | 下游连接器 | `/dbz/sink-connector` 同上 |
-| 远端连接器 | `GET /dbz/kafka-connector/plugins`、`GET /list`、`POST /restart`、`POST /task/restart`、`PUT /stop`、`PUT /resume`、`DELETE /offsets`、`DELETE /dbz/kafka-connector` |
+| 集群连接器 | `GET /dbz/kafka-connector/list`（集群上全部连接器）、`GET /dbz/kafka-connector/plugins`（已安装插件） |
 | 死信 | `GET /dbz/dead-letter/page`（连接器/状态/topic/时间筛选）、`GET /pending-count`（卡片角标）、`POST /retry`、`POST /discard`；`POST /report` 只给 magic 脚本调用 |
 
-## 控制面视图
+## 连接器拓扑
 
-`/control-plane` 把四张表按 **Kafka 集群 → Connect → 上游/下游连接器** 铺成卡片树，原有四个
-CRUD 页保留为「明细维护」入口，从每个节点的「明细」按钮跳过去。
+`/connector-topology` 把四张表按 **Kafka 集群 → Connect → 上游/下游连接器** 铺成卡片树，
+新增下级走节点底部的「+」，新建 Kafka 集群走顶栏入口，不再跳转独立的明细页。
 
 - **状态口径**：连接器状态以每台 Connect 的 `GET /dbz/kafka-connector/list` 实时结果为主，
   库内 `run_status` 只作为「最近一次检查」的对照；两者不一致时节点标黄，顶部汇总。
@@ -370,7 +370,7 @@ CRUD 页保留为「明细维护」入口，从每个节点的「明细」按钮
 - **不一致判定**：只比「是否在运行中」这一层。启用但集群上没部署、禁用却还在跑、
   库内运行中而实时不是（或相反），都会提示；实时查询失败时不参与比对，避免误报。
 - **图上动作**：详情抽屉（集群实时配置、实时任务、异常原因）、启用/停用、重启；未纳管的
-  连接器只列名称并跳转「远端连接器」。
+  连接器不进入画布，统一到「集群连接器」页查看全量列表。
 - **配置来源**：详情抽屉优先展示 `GET /connectors/{name}/config` 的集群侧配置；
   连接器不存在（404）或 Connect 不可达（500）时回落到库内 `connector_config`，并说明原因。
 - **刷新**：刷新按钮会重新拉四张表并对每台 Connect 实时采集 `list` 与 `health`；单台 Connect
@@ -486,7 +486,7 @@ Content-Type: application/json
 | Kafka 集群 | 地址、认证方式（协议 + 机制 + 账号）、结论时间 | `dbz_kafka_broker.run_msg`（检测时写入） |
 | Kafka Connect | 地址、结论时间 | `dbz_kafka_connect.run_msg`（健康检查写入） |
 | 上游 / 下游连接器 | 连接器名、所属集群（下游还有上游）、结论时间 | `dbz_{source,sink}_connector.run_msg`（健康检查写入） |
-| 远端连接器 | 类名、worker、任务清点、停止/暂停说明 | `GET /connectors?expand=status` 带回的 trace，不额外发请求 |
+| 集群连接器 | 类名、worker、任务清点、停止/暂停说明 | `GET /connectors?expand=status` 带回的 trace，不额外发请求 |
 
 `run_msg` 只在**失败时**有值（成功时为空），内容取自真正的原因：探测连不上时是请求错误，
 部署被拒时是 Kafka Connect 的响应体（会指出哪个参数不合法），状态异常时是异常 trace 的
@@ -513,7 +513,7 @@ Content-Type: application/json
 所以「注销」这个动作在前端**没有独立入口**：要让连接器停掉但保留记录，用「禁用」
 （`enabled = false`）；要彻底清理，直接删除。
 
-「远端连接器」页是直接对集群下手的地方，除了重启与删除，还有两个**不改库**的动作：
+连接器拓扑卡片是直接对集群下手的地方，除了重启与删除，还有两个**不改库**的动作：
 
 | 操作 | Kafka Connect 接口 | 影响 |
 | --- | --- | --- |
@@ -526,8 +526,8 @@ Content-Type: application/json
 
 ## 已知限制
 
-- **健康检查周期**：列表页的状态是「上一轮检查的结论」，不是实时探测结果；「控制面视图」和「远端连接器」
-  会实时读取 Kafka Connect，但要把库内 `run_status` 追平仍需等 jobx 回写（Kafka 集群可在控制面视图手动检测）。
+- **健康检查周期**：列表页的状态是「上一轮检查的结论」，不是实时探测结果；「连接器拓扑」和「集群连接器」
+  会实时读取 Kafka Connect，但要把库内 `run_status` 追平仍需等 jobx 回写（Kafka 集群可在连接器拓扑手动检测）。
 - **没有登录鉴权**：`X-User-Id` 由构建期变量写死（默认 `1`），审计字段在接入统一登录前都记成同一个人，
   只适用于内网/开发环境。
 - **子路径靠变量切**：`VITE_PUBLIC_BASE` 一次驱动 `base` / favicon / `basename` 三处；变量和网关前缀不一致就会出现
@@ -535,5 +535,5 @@ Content-Type: application/json
 - **列表暂不支持时间范围筛选**：`#[router(crud)]` 的 QueryDto 只支持字段等值匹配，`updateMs` 只能传精确值，
   所以搜索行没有「更新时间起止」控件。需要后端先在 QueryDto 增加区间参数（如 `updateMsFrom` / `updateMsTo`）
   并在 DAO 拼 `>=` / `<` 条件，前端再补控件；本次未改后端契约。
-- **远端连接器为全量列表**：`GET /dbz/kafka-connector/list` 不带分页，集群上连接器很多时一次拉全量；
+- **集群连接器为全量列表**：`GET /dbz/kafka-connector/list` 不带分页，集群上连接器很多时一次拉全量；
   需要后端加 `/page` 后再改前端。

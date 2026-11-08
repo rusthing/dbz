@@ -1,5 +1,5 @@
 /**
- * # 控制面视图的状态悬停详情
+ * # 连接器拓扑的状态悬停详情
  *
  * 页面和详情抽屉共用这一组构造器，保证同一状态在两处的解释口径一致。
  */
@@ -18,6 +18,27 @@ import {
 } from '../../dic';
 import { formatMs, orDash } from '../../utils/format';
 import { liveFailureReason, taskSummary, type ManagedConnectorRecord } from './model';
+
+/**
+ * 读取连接器配置里的一个字符串项。
+ *
+ * 配置不是 JSON、顶层不是对象或键不存在时统一返回空串，调用方按空值展示占位。
+ */
+export function connectorConfigValueOf(
+  record: { connectorConfig: string },
+  key: string,
+): string {
+  try {
+    const parsed: unknown = JSON.parse(record.connectorConfig);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return '';
+    }
+    const value = (parsed as Record<string, unknown>)[key];
+    return value === null || value === undefined ? '' : String(value).trim();
+  } catch {
+    return '';
+  }
+}
 
 /** 实时连接器状态详情 */
 export function liveDetailOf(live: KafkaConnectorVo): StatusDetail {

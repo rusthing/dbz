@@ -37,6 +37,7 @@ import {
   DeleteOutlined,
   EditOutlined,
   ExportOutlined,
+  InfoCircleOutlined,
   RedoOutlined,
   ReloadOutlined,
   SaveOutlined,
@@ -132,6 +133,11 @@ function csvCell(value: unknown): string {
 /** 把报文对象格式化成编辑框文本 */
 function payloadText(value: unknown): string {
   return JSON.stringify(value ?? null, null, 2) ?? '';
+}
+
+/** 列表里的原始报文只做单行预览，完整内容放详情页，避免超长报文撑开表格 */
+function payloadInline(value: unknown): string {
+  return JSON.stringify(value ?? null) ?? '';
 }
 
 /** 编辑框里的 JSON：只做前端可读校验，字段检查由服务端按连接器配置做 */
@@ -506,6 +512,26 @@ export default function DeadLetterPage() {
   const isManualHandled = (record: DbzDeadLetterVo) =>
     record.status === STATUS_MANUAL_HANDLED;
 
+  /** 复制完整原文：不做任何截断，失败时提示手动选择 */
+  const copyFullText = async (text: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      message.success(`${label}已复制`);
+    } catch {
+      message.error('复制失败，请手动选择文本');
+    }
+  };
+
+  /** 失败详情全文：列表弹层与详情页共用同一套展示与复制 */
+  const failureDetailBlock = (text: string) => (
+    <div className="dbz-failure-detail-popover">
+      <Button size="small" icon={<CopyOutlined />} onClick={() => void copyFullText(text, '失败详情')}>
+        复制
+      </Button>
+      <pre className="dbz-json-view">{text}</pre>
+    </div>
+  );
+
   const columns: ColumnsType<DbzDeadLetterVo> = [
     {
       title: '状态',
@@ -543,51 +569,41 @@ export default function DeadLetterPage() {
       ),
     },
     {
-      title: 'Topic',
-      dataIndex: 'topic',
-      width: 170,
-      ellipsis: true,
-      render: (topic: string) => (
-        <Tooltip title={topic}>
-          <span className="dbz-mono">{orDash(topic)}</span>
-        </Tooltip>
-      ),
-    },
-    {
-      title: '分区',
-      dataIndex: 'partition',
-      width: 72,
-      className: 'dbz-num',
-      render: (value: number | null | undefined) => (value === null || value === undefined ? '—' : value),
-    },
-    {
-      title: 'Offset',
-      dataIndex: 'offset',
-      width: 110,
-      className: 'dbz-num',
-      render: (value: string | null | undefined) => (
-        <span className="dbz-mono">{value === null || value === undefined ? '—' : value}</span>
-      ),
-    },
-    {
-      title: '记录主键',
-      dataIndex: 'recordKey',
-      width: 150,
-      ellipsis: true,
-      render: (recordKey: string) => (
-        <Tooltip title={recordKey}>
-          <span className="dbz-mono">{orDash(recordKey)}</span>
-        </Tooltip>
-      ),
-    },
-    {
       title: '失败原因',
       dataIndex: 'reason',
       ellipsis: true,
-      render: (reason: string) => (
-        <Tooltip title={reason}>
-          <span>{orDash(reason)}</span>
-        </Tooltip>
+      render: (reason: string, record) => (
+        <div className="dbz-reason-cell">
+          <Tooltip title={reason}>
+            <span className="dbz-ellipsis">{orDash(reason)}</span>
+          </Tooltip>
+          {record.failureDetail && (
+            <Popover
+              trigger="click"
+              placement="topLeft"
+              title="失败详情（全文）"
+              content={failureDetailBlock(record.failureDetail)}
+            >
+              <Button
+                type="text"
+                size="small"
+                icon={<InfoCircleOutlined />}
+                aria-label="查看失败详情"
+              />
+            </Popover>
+          )}
+        </div>
+      ),
+    },
+    {
+      title: '原始报文',
+      dataIndex: 'payload',
+      width: 260,
+      ellipsis: true,
+      render: (payload: unknown) => (
+        <span className="dbz-mono dbz-ellipsis" title="完整报文见详情页">
+          {payloadInline(payload)}
+        </span>
       ),
     },
     {
@@ -850,7 +866,7 @@ export default function DeadLetterPage() {
           getCheckboxProps: (record) => ({ disabled: record.status === 1 || record.status === 2 }),
         }}
         locale={{ emptyText: loading ? '加载中…' : '暂无死信记录' }}
-        scroll={{ x: 1900 }}
+        scroll={{ x: 1600 }}
         pagination={{
           current: pageNum,
           pageSize,
@@ -1013,45 +1029,44 @@ export default function DeadLetterPage() {
             )}
 
             <Typography.Title level={5} style={{ marginTop: 16 }}>
-              失败详情
-            </Typography.Title>
-            {detail.failureDetail ? (
-              <Popover
-                trigger="click"
-                placement="topLeft"
-                title="失败详情（全文）"
-                content={
-                  <div className="dbz-failure-detail-popover">
-                    <Button
-                      size="small"
-                      icon={<CopyOutlined />}
-                      onClick={() => {
-                        navigator.clipboard
-                          ?.writeText(detail.failureDetail)
-                          .then(() => message.success('失败详情已复制'))
-                          .catch(() => message.error('复制失败，请手动选择文本'));
-                      }}
-                    >
-                      复制
-                    </Button>
-                    <pre className="dbz-json-view">{detail.failureDetail}</pre>
-                  </div>
-                }
-              >
-                <Typography.Link>查看失败详情全文（可复制）</Typography.Link>
-              </Popover>
-            ) : (
-              <Typography.Text type="secondary">没有失败详情</Typography.Text>
-            )}
-
-            <Typography.Title level={5} style={{ marginTop: 16 }}>
               失败原因
             </Typography.Title>
             <Typography.Text strong>{orDash(detail.reason)}</Typography.Text>
 
+            <div className="dbz-detail-section-head">
+              <Typography.Title level={5} style={{ margin: 0 }}>
+                失败详情
+              </Typography.Title>
+              {detail.failureDetail && (
+                <Button
+                  type="text"
+                  size="small"
+                  icon={<CopyOutlined />}
+                  aria-label="复制失败详情"
+                  onClick={() => void copyFullText(detail.failureDetail, '失败详情')}
+                />
+              )}
+            </div>
+            {detail.failureDetail ? (
+              <pre className="dbz-json-view">{detail.failureDetail}</pre>
+            ) : (
+              <Typography.Text type="secondary">没有失败详情</Typography.Text>
+            )}
+
             <Row gutter={16} style={{ marginTop: 16 }}>
               <Col span={detail.canEditPayload ? 12 : 24}>
-                <Typography.Title level={5}>原始报文（永不覆盖）</Typography.Title>
+                <div className="dbz-detail-section-head">
+                  <Typography.Title level={5} style={{ margin: 0 }}>
+                    原始报文（永不覆盖）
+                  </Typography.Title>
+                  <Button
+                    type="text"
+                    size="small"
+                    icon={<CopyOutlined />}
+                    aria-label="复制原始报文"
+                    onClick={() => void copyFullText(payloadText(detail.payload), '原始报文')}
+                  />
+                </div>
                 <pre className="dbz-json-view">{payloadText(detail.payload)}</pre>
               </Col>
               {detail.canEditPayload && (

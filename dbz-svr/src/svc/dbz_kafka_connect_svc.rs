@@ -14,18 +14,28 @@
 //! 探测连通性 → 检查名下每条已启用上游连接器 → 检查名下每条已启用下游连接器，
 //! 各自回写运行状态、各自告警。
 
+use crate::dao::{DbzSinkConnectorDao, DbzSourceConnectorDao};
 use crate::dic::{ConnectorRunStatus, KafkaConnectStatus, KafkaConnectorStatus};
-use crate::dto::{DbzKafkaConnectHealthDto, DbzSinkConnectorQueryDto, DbzSourceConnectorQueryDto};
+use crate::dto::{
+    DbzKafkaConnectDetectDto, DbzKafkaConnectHealthDto, DbzSinkConnectorQueryDto,
+    DbzSourceConnectorQueryDto,
+};
+use crate::mo::dbz_sink_connector::ActiveModel as SinkActiveModel;
+use crate::mo::dbz_source_connector::ActiveModel as SourceActiveModel;
 use crate::svc::{DbzKafkaBrokerSvc, DbzSinkConnectorSvc, DbzSourceConnectorSvc};
 use crate::utils::{
     ConnectorHealth, DbzAlarmUtils, DbzSignalUtils, KafkaConnectorError, KafkaConnectorUtils,
     RUN_MSG_MAX, normalize_url, one_line,
 };
-use crate::vo::{DbzKafkaConnectHealthVo, DbzSinkConnectorVo, DbzSourceConnectorVo};
+use crate::vo::{
+    DbzConnectorDetectItemVo, DbzKafkaConnectDetectVo, DbzKafkaConnectHealthVo,
+    DbzSinkConnectorVo, DbzSourceConnectorVo,
+};
 use anyhow::anyhow;
 use robotech::db::get_db_conn;
 use robotech::macros::svc;
-use sea_orm::DatabaseConnection;
+use sea_orm::{DatabaseConnection, Set};
+use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
@@ -349,6 +359,302 @@ impl DbzKafkaConnectSvc {
             "连接失败".to_string()
         };
         Ok(Ro::success(msg).extra(Some(result)))
+    }
+
+    /// # 检测并同步 Kafka Connect 上的连接器
+    ///
+    /// 以 Connect 上的实际连接器为准，把差异落到库内纳管记录：
+    ///
+    /// * 远端有、库内没有 → 自动补录（下游连接器按 topic 前缀尽量匹配上游）；
+    /// * 配置与库内不一致 → 标记 `inconsistent=true`；
+    /// * 远端已不存在 → 置为禁用并标记 `inconsistent=true`。
+    ///
+    /// 只比对 `connectorConfig` 内容与远端存在性，**不看运行状态**：运行状态会
+    /// 随任务重启、rebalance 抖动，用它判断会天天误报。配置比较只覆盖库内配置里
+    /// 出现过的键，Connect 自动补的默认值不参与比较。
+    ///
+    /// ## 参数
+    /// * `dto` - Kafka Connect ID
+    ///
+    /// ## 返回值
+    /// * `Ok(Ro<DbzKafkaConnectDetectVo>)` - 补录/标记/禁用/跳过的数量与明细
+    /// * `Err(anyhow::Error)` - 记录不存在、集群已禁用/未配置地址或远端不可达
+    #[log_call]
+    pub async fn detect(
+        dto: DbzKafkaConnectDetectDto,
+    ) -> Result<Ro<DbzKafkaConnectDetectVo>, anyhow::Error> {
+        let connect = Self::get_by_id::<DatabaseConnection>(dto.kafka_connect_id, None)
+            .await?
+            .extra
+            .ok_or_else(|| anyhow!("Kafka Connect<{}>不存在", dto.kafka_connect_id.value()))?;
+
+        if !connect.enabled {
+            return Err(anyhow!("Kafka Connect<{}>已禁用，未发起检测", connect.name));
+        }
+        let url = normalize_url(&connect.url);
+        if url.is_empty() {
+            return Err(anyhow!("Kafka Connect<{}>未配置地址", connect.name));
+        }
+
+        let db = get_db_conn().map_err(|e| anyhow!("获取数据库连接失败: {e}"))?;
+        let remote = KafkaConnectorUtils::list_connectors(&url)
+            .await
+            .map_err(|e| anyhow!("查询 Kafka Connect<{}>连接器列表失败: {e}", connect.name))?;
+        let sources = Self::list_sources_of(connect.id).await?;
+        let sinks = Self::list_sinks_of(connect.id).await?;
+
+        let mut out = DbzKafkaConnectDetectVo::default();
+        let mut remote_names: HashSet<String> = HashSet::new();
+
+        for item in &remote {
+            remote_names.insert(item.name.clone());
+            let connector_type = item.connector_type.to_ascii_lowercase();
+
+            // 配置读不到时不整次失败：已有记录跳过比对，新连接器也无法补录。
+            let remote_config =
+                match KafkaConnectorUtils::fetch_connector_config(&url, &item.name).await {
+                    Ok(value) => Some(value),
+                    Err(e) => {
+                        warn!("检测连接器<{}>：读取远端配置失败: {e}", item.name);
+                        None
+                    }
+                };
+
+            if let Some(local) = sources.iter().find(|s| s.connector_name == item.name) {
+                let Some(remote_config) = remote_config else {
+                    push_detect_item(
+                        &mut out,
+                        &item.name,
+                        "source",
+                        "skipped",
+                        Some("读取远端配置失败，未比对".to_string()),
+                    );
+                    continue;
+                };
+                let mismatch = config_mismatch(&local.connector_config, &remote_config);
+                if mismatch == local.inconsistent {
+                    push_detect_item(&mut out, &item.name, "source", "unchanged", None);
+                    continue;
+                }
+                let mut active = SourceActiveModel {
+                    id: Set(local.id.value() as i64),
+                    ..Default::default()
+                };
+                active.inconsistent = Set(mismatch);
+                active.updater_id = Set(0);
+                DbzSourceConnectorDao::update(active, db.as_ref())
+                    .await
+                    .map_err(|e| anyhow!("回写上游连接器<{}>检测标记失败: {e}", local.name))?;
+                push_detect_item(
+                    &mut out,
+                    &item.name,
+                    "source",
+                    if mismatch { "marked" } else { "cleared" },
+                    None,
+                );
+                continue;
+            }
+
+            if let Some(local) = sinks.iter().find(|s| s.connector_name == item.name) {
+                let Some(remote_config) = remote_config else {
+                    push_detect_item(
+                        &mut out,
+                        &item.name,
+                        "sink",
+                        "skipped",
+                        Some("读取远端配置失败，未比对".to_string()),
+                    );
+                    continue;
+                };
+                let mismatch = config_mismatch(&local.connector_config, &remote_config);
+                if mismatch == local.inconsistent {
+                    push_detect_item(&mut out, &item.name, "sink", "unchanged", None);
+                    continue;
+                }
+                let mut active = SinkActiveModel {
+                    id: Set(local.id.value() as i64),
+                    ..Default::default()
+                };
+                active.inconsistent = Set(mismatch);
+                active.updater_id = Set(0);
+                DbzSinkConnectorDao::update(active, db.as_ref())
+                    .await
+                    .map_err(|e| anyhow!("回写下游连接器<{}>检测标记失败: {e}", local.name))?;
+                push_detect_item(
+                    &mut out,
+                    &item.name,
+                    "sink",
+                    if mismatch { "marked" } else { "cleared" },
+                    None,
+                );
+                continue;
+            }
+
+            // 远端有、库内没有：按远端类型补录。
+            let Some(remote_config) = remote_config else {
+                push_detect_item(
+                    &mut out,
+                    &item.name,
+                    "unknown",
+                    "skipped",
+                    Some("读取远端配置失败，无法补录".to_string()),
+                );
+                continue;
+            };
+            let config_text = serde_json::to_string(&remote_config)
+                .map_err(|e| anyhow!("序列化连接器<{}>配置失败: {e}", item.name))?;
+
+            match connector_type.as_str() {
+                "source" => {
+                    let active = SourceActiveModel {
+                        kafka_connect_id: Set(connect.id.value() as i64),
+                        name: Set(item.name.clone()),
+                        connector_name: Set(item.name.clone()),
+                        connector_config: Set(config_text),
+                        run_status: Set(ConnectorRunStatus::Unknown.value()),
+                        run_msg: Set(None),
+                        remark: Set(Some("检测自动补录".to_string())),
+                        enabled: Set(true),
+                        creater_id: Set(0),
+                        ..Default::default()
+                    };
+                    match DbzSourceConnectorDao::insert(active, db.as_ref()).await {
+                        Ok(model) => {
+                            info!(
+                                "检测补录上游连接器<{}>(id={})到 Kafka Connect<{}>",
+                                model.name,
+                                model.id,
+                                connect.name
+                            );
+                            push_detect_item(&mut out, &item.name, "source", "added", None);
+                        }
+                        Err(e) => push_detect_item(
+                            &mut out,
+                            &item.name,
+                            "source",
+                            "skipped",
+                            Some(format!("补录失败（名称可能已被占用）: {e}")),
+                        ),
+                    }
+                }
+                "sink" => {
+                    let Some(source_id) = resolve_upstream(&remote_config, &sources) else {
+                        push_detect_item(
+                            &mut out,
+                            &item.name,
+                            "sink",
+                            "skipped",
+                            Some("无法确定上游连接器，未自动补录".to_string()),
+                        );
+                        continue;
+                    };
+                    let active = SinkActiveModel {
+                        kafka_connect_id: Set(connect.id.value() as i64),
+                        source_connector_id: Set(source_id),
+                        name: Set(item.name.clone()),
+                        connector_name: Set(item.name.clone()),
+                        connector_config: Set(config_text),
+                        run_status: Set(ConnectorRunStatus::Unknown.value()),
+                        run_msg: Set(None),
+                        remark: Set(Some("检测自动补录".to_string())),
+                        enabled: Set(true),
+                        creater_id: Set(0),
+                        ..Default::default()
+                    };
+                    match DbzSinkConnectorDao::insert(active, db.as_ref()).await {
+                        Ok(model) => {
+                            info!(
+                                "检测补录下游连接器<{}>(id={})到 Kafka Connect<{}>",
+                                model.name,
+                                model.id,
+                                connect.name
+                            );
+                            push_detect_item(&mut out, &item.name, "sink", "added", None);
+                        }
+                        Err(e) => push_detect_item(
+                            &mut out,
+                            &item.name,
+                            "sink",
+                            "skipped",
+                            Some(format!("补录失败（名称可能已被占用）: {e}")),
+                        ),
+                    }
+                }
+                _ => push_detect_item(
+                    &mut out,
+                    &item.name,
+                    "unknown",
+                    "skipped",
+                    Some("Connect 未返回连接器类型，无法自动补录".to_string()),
+                ),
+            }
+        }
+
+        // 库内有、远端没有：置为禁用并标记；不删除记录，保留配置便于人工核对。
+        for source in sources
+            .iter()
+            .filter(|s| !remote_names.contains(&s.connector_name))
+        {
+            let changed = source.enabled || !source.inconsistent;
+            if changed {
+                let mut active = SourceActiveModel {
+                    id: Set(source.id.value() as i64),
+                    ..Default::default()
+                };
+                active.enabled = Set(false);
+                active.inconsistent = Set(true);
+                active.run_status = Set(ConnectorRunStatus::Disabled.value());
+                active.run_msg = Set(Some("检测：Connect 上已不存在该连接器".to_string()));
+                active.updater_id = Set(0);
+                DbzSourceConnectorDao::update(active, db.as_ref())
+                    .await
+                    .map_err(|e| anyhow!("禁用上游连接器<{}>失败: {e}", source.name))?;
+            }
+            push_detect_item(
+                &mut out,
+                &source.connector_name,
+                "source",
+                if changed { "disabled" } else { "unchanged" },
+                None,
+            );
+        }
+        for sink in sinks
+            .iter()
+            .filter(|s| !remote_names.contains(&s.connector_name))
+        {
+            let changed = sink.enabled || !sink.inconsistent;
+            if changed {
+                let mut active = SinkActiveModel {
+                    id: Set(sink.id.value() as i64),
+                    ..Default::default()
+                };
+                active.enabled = Set(false);
+                active.inconsistent = Set(true);
+                active.run_status = Set(ConnectorRunStatus::Disabled.value());
+                active.run_msg = Set(Some("检测：Connect 上已不存在该连接器".to_string()));
+                active.updater_id = Set(0);
+                DbzSinkConnectorDao::update(active, db.as_ref())
+                    .await
+                    .map_err(|e| anyhow!("禁用下游连接器<{}>失败: {e}", sink.name))?;
+            }
+            push_detect_item(
+                &mut out,
+                &sink.connector_name,
+                "sink",
+                if changed { "disabled" } else { "unchanged" },
+                None,
+            );
+        }
+
+        info!(
+            "Kafka Connect<{}>检测完成：补录 {}，标记 {}，禁用 {}，恢复 {}，无变化 {}，跳过 {}",
+            connect.name, out.added, out.marked, out.disabled, out.cleared, out.unchanged, out.skipped
+        );
+        Ok(Ro::success(format!(
+            "检测完成：补录 {}，标记不一致 {}，置禁用 {}，恢复一致 {}，跳过 {}",
+            out.added, out.marked, out.disabled, out.cleared, out.skipped
+        ))
+        .extra(Some(out)))
     }
 
     /// # 定时检查所有 Kafka Connect 与连接器
@@ -715,15 +1021,14 @@ impl DbzKafkaConnectSvc {
                 warn!(
                     "{label}: 配置开了 kafka 信号通道但没有 signal.kafka.bootstrap.servers，跳过部署"
                 );
-                return Err(ConnectorFault::new(
-                    ConnectorRunStatus::Failed,
-                    RepairAction::None,
-                )
-                .with_reason(
-                    "配置启用了 kafka 信号通道，但 signal.kafka.bootstrap.servers 为空：\
+                return Err(
+                    ConnectorFault::new(ConnectorRunStatus::Failed, RepairAction::None)
+                        .with_reason(
+                            "配置启用了 kafka 信号通道，但 signal.kafka.bootstrap.servers 为空：\
                      Debezium 在这个键上没有默认值，留空会让连接器起不来。\
                      在页面上保存一次配置，会自动填成关联 Kafka 集群的地址",
-                ));
+                        ),
+                );
             }
             info!("{label}: 连接器<{connector_name}>不存在，开始部署...");
             KafkaConnectorUtils::deploy_connector(base_url, connector_name, connector_config)
@@ -1028,4 +1333,148 @@ impl DbzKafkaConnectSvc {
                 .unwrap_or_default(),
         )
     }
+}
+
+/// # 比较库内配置与远端配置是否不一致
+///
+/// 只比较库内配置里出现过的键：Connect 会把大量默认值补进 `GET /config` 的返回，
+/// 全量比较会让每条连接器都被判为不一致。`name` 也跳过 —— 库内配置一般不带它，
+/// 而远端一定带。库内配置解析失败时保守判为不一致，交给人工核对。
+///
+/// ## 参数
+/// * `local_config` - 库内保存的配置 JSON 文本
+/// * `remote_config` - Connect 返回的配置 JSON
+///
+/// ## 返回值
+/// * `true` - 存在键缺失或值不同
+/// * `false` - 库内出现的键全部与远端一致
+fn config_mismatch(local_config: &str, remote_config: &Value) -> bool {
+    let Ok(local) = serde_json::from_str::<Value>(local_config) else {
+        return true;
+    };
+    let Some(local_obj) = local.as_object() else {
+        return true;
+    };
+    let Some(remote_obj) = remote_config.as_object() else {
+        return true;
+    };
+    local_obj.iter().any(|(key, local_value)| {
+        if key == "name" {
+            return false;
+        }
+        match remote_obj.get(key) {
+            Some(remote_value) => !json_eq(local_value, remote_value),
+            None => true,
+        }
+    })
+}
+
+/// # 递归比较两个 JSON 值
+///
+/// 对象键顺序无关、数字按数值比较（`1` 与 `1.0` 视为相同），其余按值相等。
+fn json_eq(a: &Value, b: &Value) -> bool {
+    match (a, b) {
+        (Value::Object(x), Value::Object(y)) => {
+            x.len() == y.len()
+                && x.iter()
+                    .all(|(k, v)| y.get(k).map(|w| json_eq(v, w)).unwrap_or(false))
+        }
+        (Value::Array(x), Value::Array(y)) => {
+            x.len() == y.len() && x.iter().zip(y.iter()).all(|(v, w)| json_eq(v, w))
+        }
+        (Value::Number(x), Value::Number(y)) => x.as_f64() == y.as_f64(),
+        _ => a == b,
+    }
+}
+
+/// # 取上游连接器的 topic 前缀
+///
+/// Debezium 新版用 `topic.prefix`，老版用 `database.server.name`；两者取到即用。
+fn source_prefix(connector_config: &str) -> Option<String> {
+    let value: Value = serde_json::from_str(connector_config).ok()?;
+    let obj = value.as_object()?;
+    let prefix = obj
+        .get("topic.prefix")
+        .or_else(|| obj.get("database.server.name"))
+        .and_then(|v| v.as_str())?
+        .trim();
+    if prefix.is_empty() {
+        None
+    } else {
+        Some(prefix.to_string())
+    }
+}
+
+/// # 按下游连接器的 topics 反推上游连接器
+///
+/// 下游配置里的 `topics` 是上游按 `<prefix>.<表名>` 产出的 topic。逐个上游比对
+/// 前缀，**只有唯一命中才自动补录**：命中多个时无法确定归属，留给人工选择。
+///
+/// ## 参数
+/// * `remote_config` - 下游连接器的远端配置
+/// * `sources` - 该集群下已有的上游连接器
+fn resolve_upstream(
+    remote_config: &Value,
+    sources: &[DbzSourceConnectorVo],
+) -> Option<i64> {
+    let obj = remote_config.as_object()?;
+    let topics: Vec<String> = match obj.get("topics") {
+        Some(Value::String(text)) => text
+            .split(',')
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|v| v.as_str())
+            .map(|t| t.trim().to_string())
+            .filter(|t| !t.is_empty())
+            .collect(),
+        _ => return None,
+    };
+    if topics.is_empty() {
+        return None;
+    }
+    let mut matched: Vec<i64> = Vec::new();
+    for source in sources {
+        let Some(prefix) = source_prefix(&source.connector_config) else {
+            continue;
+        };
+        let marker = format!("{prefix}.");
+        if topics.iter().any(|topic| topic.starts_with(&marker)) {
+            let id = source.id.value() as i64;
+            if !matched.contains(&id) {
+                matched.push(id);
+            }
+        }
+    }
+    if matched.len() == 1 {
+        matched.first().copied()
+    } else {
+        None
+    }
+}
+
+/// # 记录一条检测结果并累加计数
+fn push_detect_item(
+    out: &mut DbzKafkaConnectDetectVo,
+    connector_name: &str,
+    connector_type: &str,
+    action: &str,
+    message: Option<String>,
+) {
+    match action {
+        "added" => out.added += 1,
+        "marked" => out.marked += 1,
+        "disabled" => out.disabled += 1,
+        "cleared" => out.cleared += 1,
+        "unchanged" => out.unchanged += 1,
+        _ => out.skipped += 1,
+    }
+    out.items.push(DbzConnectorDetectItemVo {
+        connector_name: connector_name.to_string(),
+        connector_type: connector_type.to_string(),
+        action: action.to_string(),
+        message,
+    });
 }

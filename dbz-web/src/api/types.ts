@@ -73,7 +73,7 @@ export type KafkaConnectStatus = 0 | 1 | 2 | 3;
  */
 export type ConnectorRunStatus = 0 | 1 | 2 | 3 | 4 | 5 | 6;
 
-/** # 远端连接器实时状态（`KafkaConnectorStatus`） */
+/** # 集群连接器实时状态（`KafkaConnectorStatus`） */
 export type KafkaConnectorStatus = 0 | 1 | 2 | 3 | 4 | 5;
 
 /** # Kafka 集群（broker）状态（`KafkaBrokerStatus`） */
@@ -165,6 +165,8 @@ export interface DbzSourceConnectorVo extends AuditFields {
   runMsg?: string | null;
   remark?: string | null;
   enabled: boolean;
+  /** 检测标记：库内配置与 Connect 实际不一致，或远端已不存在（由 Connect 卡片「检测」写入） */
+  inconsistent: boolean;
 }
 
 /** # 下游（sink）连接器 */
@@ -180,6 +182,8 @@ export interface DbzSinkConnectorVo extends AuditFields {
   runMsg?: string | null;
   remark?: string | null;
   enabled: boolean;
+  /** 检测标记：库内配置与 Connect 实际不一致，或远端已不存在（由 Connect 卡片「检测」写入） */
+  inconsistent: boolean;
 }
 
 /** # 新增集群的请求体 */
@@ -304,7 +308,7 @@ export interface KafkaConnectorTaskVo {
   trace?: string | null;
 }
 
-/** # 远端连接器（`GET /connectors?expand=info&expand=status` 的单项） */
+/** # 集群连接器（`GET /connectors?expand=info&expand=status` 的单项） */
 export interface KafkaConnectorVo {
   name: string;
   connectorClass: string;
@@ -352,6 +356,39 @@ export interface DbzKafkaConnectHealthVo {
   message?: string | null;
 }
 
+/**
+ * # Connect 检测：单条连接器的处理结果
+ *
+ * `action` 与后端一致：`added` 补录 / `marked` 标记不一致 / `disabled` 远端已不存在
+ * 置禁用 / `cleared` 恢复一致 / `unchanged` 无变化 / `skipped` 跳过。
+ */
+export interface DbzConnectorDetectItemVo {
+  connectorName: string;
+  /** source / sink / unknown */
+  connectorType: string;
+  /** added / marked / disabled / cleared / unchanged / skipped */
+  action: string;
+  /** 跳过或失败时的原因 */
+  message?: string | null;
+}
+
+/** # Connect 检测：同步结果汇总 */
+export interface DbzKafkaConnectDetectVo {
+  /** 远端有、库内没有，已补录 */
+  added: number;
+  /** 配置不一致，已打标记 */
+  marked: number;
+  /** 远端已不存在，已置禁用并标记 */
+  disabled: number;
+  /** 之前标记过，这次恢复一致 */
+  cleared: number;
+  /** 无变化 */
+  unchanged: number;
+  /** 读取配置失败 / 类型未知 / 无法确定上游等原因跳过 */
+  skipped: number;
+  items: DbzConnectorDetectItemVo[];
+}
+
 /** # 重启连接器的请求体 */
 export interface KafkaConnectorRestartInput {
   kafkaConnectId: Id;
@@ -370,7 +407,7 @@ export interface KafkaConnectorTaskRestartInput {
 }
 
 /**
- * # 删除远端连接器的参数
+ * # 删除集群连接器的参数
  *
  * 走查询参数（DELETE 不带请求体）：只把连接器从集群上注销，不删库里的记录。
  */
@@ -379,10 +416,10 @@ export interface KafkaConnectorDeleteInput {
   connectorName: string;
 }
 
-/** # 停止 / 恢复远端连接器的参数（两者入参同形，都不带请求体） */
+/** # 停止 / 恢复集群连接器的参数（两者入参同形，都不带请求体） */
 export type KafkaConnectorControlInput = KafkaConnectorDeleteInput;
 
-/** # 重置远端连接器位点的参数 */
+/** # 重置集群连接器位点的参数 */
 export interface KafkaConnectorResetOffsetInput extends KafkaConnectorDeleteInput {
   /** 清空位点后是否立即恢复运行；`true` 等于「重做一次全量」 */
   resume?: boolean;
@@ -428,8 +465,8 @@ export interface DbzControlPlaneEdgeBendUpsertInput {
 export interface DbzControlPlaneNodeDeleteInput {
   nodeType: 'broker' | 'connect' | 'source' | 'sink';
   nodeId: Id;
-  /** 当前登录用户口令的 SM3 摘要（64 位小写十六进制），后端转发给 adm-rs 二次确认 */
-  loginPswd: string;
+  /** 当前登录用户审核口令的 SM3 摘要（64 位小写十六进制），后端转发给 adm-rs 二次确认 */
+  auditPswd: string;
 }
 
 /** # 死信连接器类型（`DeadLetterConnectorType`） */
@@ -539,4 +576,80 @@ export interface DbzDeadLetterMarkHandledInput {
 /** # 撤销「已人工处理」请求体 */
 export interface DbzDeadLetterUnmarkHandledInput {
   ids: Id[];
+}
+
+/** # 恢复策略：仅补齐缺失 / 覆盖已存在 */
+export type BackupRestoreStrategy = 'skip' | 'overwrite';
+
+/** # 备份文件里的下游所属上游（`id` 仅用于追溯，恢复按 connectorName 挂载） */
+export interface DbzBackupUpstreamVo {
+  id?: Id | null;
+  name: string;
+  connectorName: string;
+}
+
+/** # 备份文件里的一个连接器（与 Connect 导入导出的连接器条目同构） */
+export interface DbzBackupConnectorVo {
+  direction: 'source' | 'sink';
+  name: string;
+  connectorName: string;
+  connectorConfig: string;
+  remark?: string | null;
+  enabled: boolean;
+  upstream?: DbzBackupUpstreamVo | null;
+  sensitiveConfigKeys: string[];
+}
+
+/** # 备份文件里的一台 Kafka Connect */
+export interface DbzBackupConnectVo {
+  name: string;
+  url: string;
+  remark?: string | null;
+  enabled: boolean;
+  connectors: DbzBackupConnectorVo[];
+}
+
+/** # 备份文件里的 Kafka 集群（含 sasl_password） */
+export interface DbzBackupBrokerVo {
+  name: string;
+  bootstrapServers: string;
+  securityProtocol: KafkaSecurityProtocol;
+  saslMechanism: KafkaSaslMechanism;
+  saslUsername?: string | null;
+  saslPassword?: string | null;
+  remark?: string | null;
+  enabled: boolean;
+}
+
+/** # 导出的备份文件（`GET /dbz/backup/export`） */
+export interface DbzBackupFileVo {
+  format: string;
+  version: number;
+  exportedAt: string;
+  credentialMode: 'included';
+  broker: DbzBackupBrokerVo;
+  connects: DbzBackupConnectVo[];
+}
+
+/** # 恢复计划 / 结果里的一条记录 */
+export interface DbzBackupRestoreItemVo {
+  level: 'broker' | 'connect' | 'source' | 'sink';
+  parent?: string | null;
+  name: string;
+  connectorName?: string | null;
+  action: 'create' | 'overwrite' | 'skip' | 'failed';
+  message?: string | null;
+}
+
+/** # 恢复结果（`POST /dbz/backup/restore`） */
+export interface DbzBackupRestoreVo {
+  valid: boolean;
+  errors: string[];
+  strategy: string;
+  dryRun: boolean;
+  created: number;
+  overwritten: number;
+  skipped: number;
+  failed: number;
+  items: DbzBackupRestoreItemVo[];
 }

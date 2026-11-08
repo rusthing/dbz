@@ -1,7 +1,7 @@
 /**
- * # 控制面画布的数据整理
+ * # 连接器拓扑画布的数据整理
  *
- * 把 `buildControlPlane` 组装出的 broker → connect → connector 树压平成图节点，
+ * 把 `buildConnectorTopology` 组装出的 broker → connect → connector 树压平成图节点，
  * 只按归属关系生成连线：
  *
  * - broker → connect（`kafka_broker_id`）；
@@ -26,7 +26,7 @@ import type {
   DbzSourceConnectorVo,
   Id,
 } from '../../api/types';
-import { authLabelOf, topicInfoOf } from './details';
+import { authLabelOf, connectorConfigValueOf, topicInfoOf } from './details';
 import type {
   BrokerNode,
   ConnectHealth,
@@ -46,6 +46,10 @@ export type CanvasNodeAction =
   | 'export-connectors'
   /** Connect：从 JSON 导入连接器 */
   | 'import-connectors'
+  /** Kafka 集群：导出整个集群（含 Connect 与连接器） */
+  | 'backup-cluster'
+  /** Kafka 集群：从备份 JSON 恢复库内纳管记录 */
+  | 'restore-cluster'
   | 'edit'
   | 'delete'
   | 'check'
@@ -113,10 +117,10 @@ export interface CanvasEdge {
  * 固定宽高让同类卡片高度一致，操作行贴底对齐。
  */
 export const NODE_SIZE: Record<CanvasNodeKind, { w: number; h: number }> = {
-  broker: { w: 240, h: 154 },
-  connect: { w: 240, h: 154 },
-  source: { w: 240, h: 154 },
-  sink: { w: 240, h: 154 },
+  broker: { w: 240, h: 194 },
+  connect: { w: 240, h: 194 },
+  source: { w: 240, h: 194 },
+  sink: { w: 240, h: 194 },
 };
 
 export const NODE_TYPE_OF: Record<CanvasNodeKind, ControlPlaneNodeType> = {
@@ -155,11 +159,11 @@ export function defaultPosition(
     case 'broker':
       return { x: 420 + index * 300, y: 24 };
     case 'connect':
-      return { x: 420 + index * 300, y: 210 };
+      return { x: 420 + index * 300, y: 240 };
     case 'source':
-      return { x: 40 + index * 300, y: 396 };
+      return { x: 40 + index * 300, y: 460 };
     case 'sink':
-      return { x: 40 + (index % 2) * 320, y: 580 + Math.floor(index / 2) * 170 };
+      return { x: 40 + (index % 2) * 320, y: 690 + Math.floor(index / 2) * 210 };
   }
 }
 
@@ -219,14 +223,30 @@ export function nodeTone(node: CanvasNode): NodeTone {
   }
 }
 
-/** 扁平化节点：副标题带出归属对象，归属信息只在卡片与属性框里呈现 */
+/** 上游连接器说明行：用户名@主机:端口号/topic 前缀 */
+function sourceAddressOf(record: DbzSourceConnectorVo): string {
+  const valueOf = (key: string) => connectorConfigValueOf(record, key) || '--';
+  // 老版本 Debezium 没有 topic.prefix 时，用 database.server.name 作为前缀
+  const prefix =
+    connectorConfigValueOf(record, 'topic.prefix') ||
+    connectorConfigValueOf(record, 'database.server.name') ||
+    '--';
+  return `${valueOf('database.user')}@${valueOf('database.hostname')}:${valueOf('database.port')}/${prefix}`;
+}
+
+/** 下游连接器说明行：第一行 topic，第二行 http.api.url */
+function sinkAddressOf(record: DbzSinkConnectorVo): string {
+  const topic = topicInfoOf('sink', record)?.value || '--';
+  const url = connectorConfigValueOf(record, 'http.api.url') || '--';
+  return `${topic}\n${url}`;
+}
+
+/** 扁平化节点：副标题直接展示地址值，归属信息只在属性框里呈现 */
 export function flattenNodes(
   tree: BrokerNode[],
   deadLetterOf: (kind: 'source' | 'sink', id: Id) => number,
-  sources: DbzSourceConnectorVo[],
 ): CanvasNode[] {
   const list: CanvasNode[] = [];
-  const sourceById = new Map(sources.map((source) => [source.id, source]));
 
   for (const brokerNode of tree) {
     const broker = brokerNode.broker;
@@ -261,21 +281,16 @@ export function flattenNodes(
 
       for (const item of [...connect.sources, ...connect.sinks]) {
         const topic = topicInfoOf(item.kind, item.record);
-        // 连接器副标题先带归属对象，再带关键字段：sink 的上游是 source，source 的
-        // 上游是当前 Connect。归属异常统一由后端的 run_status 表达，不再单独标黄。
-        const upstreamName =
-          item.kind === 'sink'
-            ? sourceById.get((item.record as DbzSinkConnectorVo).sourceConnectorId)?.name
-            : cluster.name;
         list.push({
           key: nodeKeyOf(item.kind, item.record.id),
           nodeType: NODE_TYPE_OF[item.kind],
           kind: item.kind,
           id: item.record.id,
           name: item.record.name,
-          sub: [upstreamName ?? '上游缺失', topic ? `${topic.label}: ${topic.value}` : '未配置 topic']
-            .filter(Boolean)
-            .join(' · '),
+          sub:
+            item.kind === 'source'
+              ? sourceAddressOf(item.record as DbzSourceConnectorVo)
+              : sinkAddressOf(item.record as DbzSinkConnectorVo),
           topicLabel: topic?.label,
           record: item.record,
           live: item.live,

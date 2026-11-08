@@ -22,7 +22,7 @@ function safeReturnUrl(raw: string | null): string {
   ) {
     return raw;
   }
-  return '/control-plane';
+  return '/connector-topology';
 }
 
 export default function LoginPage() {

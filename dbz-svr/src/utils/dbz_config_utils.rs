@@ -1,5 +1,5 @@
-use crate::config::{DBZ_CONFIG_KEY, DbzConfig, set_dbz_config};
 use crate::config::DBZ_JOB_GROUP_REMARK;
+use crate::config::{DBZ_CONFIG_KEY, DbzConfig, set_dbz_config};
 use crate::svc::DbzKafkaConnectSvc;
 use anyhow::bail;
 use async_trait::async_trait;
@@ -57,11 +57,8 @@ pub async fn setup_dbz_config(
                     if ro.is_ok() {
                         info!("health check job added successfully");
                     } else if ro.is_warn_code(RO_CODE_WARNING_DUPLICATE_KEY) {
-                        ensure_existing_job_group(
-                            &dbz_config.health_check.job.name,
-                            group_id,
-                        )
-                        .await?;
+                        ensure_existing_job_group(&dbz_config.health_check.job.name, group_id)
+                            .await?;
                         info!("health check job already exists, group confirmed");
                     } else {
                         bail!("health check job added failed: {ro:?}");

@@ -10,6 +10,7 @@ import {
   ApartmentOutlined,
   DownOutlined,
   LogoutOutlined,
+  UnorderedListOutlined,
   UserOutlined,
 } from '@ant-design/icons';
 import { Avatar, Dropdown, Layout, Menu, Typography } from 'antd';
@@ -18,14 +19,21 @@ import { useAuth } from '../auth/AuthContext';
 
 const { Sider, Header, Content } = Layout;
 
-/** 导航项：画布已覆盖集群/Connect/连接器管理，左侧只保留控制面与死信 */
+/** 导航项：连接器拓扑负责管理，集群连接器负责查询集群现状，死信独立成页 */
 const NAV_ITEMS = [
   {
-    path: '/control-plane',
-    label: '控制面视图',
-    title: '控制面视图',
-    desc: 'Kafka 集群 → Connect → 连接器的图形化视图，实时状态、搜索定位与常用操作',
+    path: '/connector-topology',
+    label: '连接器拓扑',
+    title: '连接器拓扑',
+    desc: 'Kafka 集群 → Connect → 连接器的拓扑图，实时状态、搜索定位与常用操作',
     icon: <ApartmentOutlined />,
+  },
+  {
+    path: '/kafka-connector',
+    label: '集群连接器',
+    title: '集群连接器',
+    desc: '查看 Kafka Connect 集群上实际运行的连接器（含未纳管）与已安装插件',
+    icon: <UnorderedListOutlined />,
   },
   {
     path: '/dead-letter',
