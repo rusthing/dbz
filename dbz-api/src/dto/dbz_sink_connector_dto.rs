@@ -40,4 +40,7 @@ pub struct DbzSinkConnectorDto {
     /// 检测不一致标记（由 Connect 卡片检测写入，不从编辑表单维护）
     #[db_default]
     pub inconsistent: bool,
+    /// 检测不一致时的脱敏对比快照（由检测/同步写入，不从编辑表单维护）
+    #[db_default]
+    pub inconsistent_detail: Option<String>,
 }

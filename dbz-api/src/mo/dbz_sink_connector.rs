@@ -25,6 +25,12 @@ pub struct Model {
     ///
     /// 只由 Connect 卡片「检测」写入，不看运行状态，避免状态抖动误报。
     pub inconsistent: bool,
+    /// 检测不一致时的对比快照（脱敏 JSON）：库内/远端逐项配置、差异标记与检测时间。
+    ///
+    /// 只由 Connect 卡片「检测」写入；一致时清空。敏感项（password/secret/token 等）
+    /// 在落库前已脱敏，不存明文。
+    #[sea_orm(column_type = "Text")]
+    pub inconsistent_detail: Option<String>,
     pub creater_id: i64,
     pub create_ms: i64,
     pub updater_id: i64,

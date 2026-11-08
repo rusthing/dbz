@@ -1,4 +1,5 @@
 pub mod dbz_backup_dto;
+pub mod dbz_connector_config_sync_dto;
 pub mod dbz_control_plane_layout_dto;
 pub mod dbz_control_plane_ops_dto;
 pub mod dbz_control_plane_status_dto;
@@ -12,6 +13,7 @@ pub mod dbz_source_connector_snapshot_dto;
 pub mod kafka_connector_dto;
 
 pub use dbz_backup_dto::*;
+pub use dbz_connector_config_sync_dto::*;
 pub use dbz_control_plane_layout_dto::*;
 pub use dbz_control_plane_ops_dto::*;
 pub use dbz_control_plane_status_dto::*;

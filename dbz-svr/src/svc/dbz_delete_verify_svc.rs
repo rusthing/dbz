@@ -81,6 +81,18 @@ impl DbzDeleteVerifySvc {
         authorization: Option<&str>,
         audit_pswd: &str,
     ) -> Result<DbzDeletePswdKind, DbzDeleteVerifyError> {
+        Self::verify_for(authorization, audit_pswd, "删除").await
+    }
+
+    /// # 校验口令（可指定动作名）
+    ///
+    /// 与 [`verify`](Self::verify) 完全相同，只把认证服务不可用时的「删除已被拒绝」
+    /// 换成调用方的动作名（例如「同步」），避免在别的写操作里说成删除。
+    pub async fn verify_for(
+        authorization: Option<&str>,
+        audit_pswd: &str,
+        action: &str,
+    ) -> Result<DbzDeletePswdKind, DbzDeleteVerifyError> {
         let authorization = authorization
             .map(str::trim)
             .filter(|value| !value.is_empty());
@@ -108,7 +120,7 @@ impl DbzDeleteVerifySvc {
         let client = get_adm_api_client().map_err(|error| {
             DbzDeleteVerifyError::new(
                 CODE_VERIFY_UNAVAILABLE,
-                format!("认证服务不可用：未配置 [api.adm] 或客户端未初始化（{error}），删除已被拒绝"),
+                format!("认证服务不可用：未配置 [api.adm] 或客户端未初始化（{error}），{action}已被拒绝"),
             )
         })?;
 
@@ -131,14 +143,14 @@ impl DbzDeleteVerifySvc {
                 Err(DbzDeleteVerifyError::new(
                     CODE_VERIFY_UNAVAILABLE,
                     format!(
-                        "认证服务不可用：认证服务返回异常响应 HTTP {status}，删除已被拒绝"
+                        "认证服务不可用：认证服务返回异常响应 HTTP {status}，{action}已被拒绝"
                     ),
                 ))
             }
             // 网络错误、超时、连接被拒：一律按「认证服务不可用」，不能误报成口令错
             Err(error) => Err(DbzDeleteVerifyError::new(
                 CODE_VERIFY_UNAVAILABLE,
-                format!("认证服务不可用：无法访问认证服务（{error}），删除已被拒绝"),
+                format!("认证服务不可用：无法访问认证服务（{error}），{action}已被拒绝"),
             )),
         }
     }

@@ -74,7 +74,6 @@ import type {
   DbzDeadLetterCountVo,
   DbzKafkaBrokerVo,
   DbzKafkaConnectVo,
-  KafkaConnectorPluginVo,
   DbzSinkConnectorVo,
   DbzSourceConnectorVo,
   DeadLetterConnectorType,
@@ -85,6 +84,11 @@ import { connectorRunStatusDic, kafkaConnectorStatusDic } from '../../dic';
 import { useAsync, type AsyncState } from '../../hooks/useAsync';
 import { errorMessage, formatMs, orDash, prettyJson, truncate } from '../../utils/format';
 import ControlPanelCanvas from './ControlPanelCanvas';
+import DetectResultModal, {
+  DetectResultBrief,
+  type DetectOutcome,
+} from './DetectResultModal';
+import InconsistentDiffModal from './InconsistentDiffModal';
 import {
   backupFileName,
   buildImportRows,
@@ -145,23 +149,7 @@ const CODE_SESSION_INVALID = 'ADM00005';
 /** dbz 自定义：认证服务不可用（网络、超时、5xx、未配置） */
 const CODE_VERIFY_UNAVAILABLE = 'DBZ00001';
 
-/** 一台 Connect 的插件检测结果；停用或查询失败都会给出原因 */
-interface BrokerPluginGroup {
-  connectName: string;
-  items: KafkaConnectorPluginVo[];
-  /** 未检测的原因：Connect 已停用或接口失败 */
-  issue?: string;
-}
-
-/** 一次集群检测：Kafka 侧 topic + 各 Connect 的插件，供属性面板分类展示 */
-interface BrokerCheckOutcome {
-  reachable: boolean;
-  topics: string[];
-  plugins: BrokerPluginGroup[];
-  elapsedMs: number;
-  message?: string | null;
-}
-
+/** 一次集群检测：只有 Kafka 侧的 topic 清单（插件属于 Connect，不在这里查） */
 interface ControlPanelData {
   brokers: DbzKafkaBrokerVo[];
   connects: DbzKafkaConnectVo[];
@@ -714,8 +702,15 @@ export default function ControlPanelPage() {
   const [selectedNodeKey, setSelectedNodeKey] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   const [checkingKey, setCheckingKey] = useState<string | null>(null);
-  /** 集群检测结果：按集群 ID 保留，切 tab 回来还能看到上一次的 topic 与插件 */
-  const [brokerChecks, setBrokerChecks] = useState<Record<string, BrokerCheckOutcome>>({});
+  /**
+   * 最近一次检测结果：按节点 key 保留，属性面板作为事后查看入口
+   *
+   * 四类卡片的「检测」都走同一份 `DetectOutcome`，弹窗与属性面板同源，不会出现
+   * 弹窗说正常、面板说异常这种矛盾。
+   */
+  const [detectResults, setDetectResults] = useState<Record<string, DetectOutcome>>({});
+  /** 当前打开的结果弹窗；一次检测只弹一个 */
+  const [detectModal, setDetectModal] = useState<DetectOutcome | null>(null);
   const [restartingKey, setRestartingKey] = useState<string | null>(null);
   const [busyNodeKey, setBusyNodeKey] = useState<string | null>(null);
   const [togglingNodeKey, setTogglingNodeKey] = useState<string | null>(null);
@@ -753,6 +748,9 @@ export default function ControlPanelPage() {
   const [deletePassword, setDeletePassword] = useState('');
   const [deleteError, setDeleteError] = useState<string | null>(null);
   const [deleteRunning, setDeleteRunning] = useState(false);
+
+  /** 「不一致」对比弹窗：左边库内、右边远端，可编辑并双向同步 */
+  const [inspectTarget, setInspectTarget] = useState<CanvasNode | null>(null);
 
   /** 画布搜索：只定位与高亮，不隐藏节点（搜索范围限定在当前集群 tab） */
   const [searchText, setSearchText] = useState('');
@@ -853,6 +851,20 @@ export default function ControlPanelPage() {
       ),
     [state.data],
   );
+
+  // 对比弹窗每次打开都按最新数据取记录：检测/同步后 state.reload 会替换掉旧对象
+  const inspectRecord = useMemo<ManagedConnectorRecord | null>(() => {
+    if (!inspectTarget) {
+      return null;
+    }
+    if (inspectTarget.kind === 'source') {
+      return state.data.sources.find((item) => item.id === inspectTarget.id) ?? null;
+    }
+    if (inspectTarget.kind === 'sink') {
+      return state.data.sinks.find((item) => item.id === inspectTarget.id) ?? null;
+    }
+    return null;
+  }, [inspectTarget, state.data.sinks, state.data.sources]);
 
   const deadCountOf = (kind: ConnectorKind, id: Id): number =>
     state.data.deadLetter.get(deadLetterKey(deadLetterTypeOf(kind), id)) ?? 0;
@@ -1239,145 +1251,149 @@ export default function ControlPanelPage() {
     state.reload();
   };
 
-  /**
-   * 集群检测：Kafka 连通性 + topic 清单，同时把集群下各 Connect 的插件一起查出来
-   *
-   * 两项并行：Kafka 不通不代表 Connect 也不可达，插件仍能给出结论；结果按 cluster id
-   * 留在本地状态，属性面板按「插件 / topic」两组展示。
-   */
-  const checkBroker = async (broker: DbzKafkaBrokerVo) => {
-    const clusters = state.data.connects.filter((item) => item.kafkaBrokerId === broker.id);
-    const [result, plugins] = await Promise.all([
-      kafkaBrokerApi.check(broker.id),
-      Promise.all(
-        clusters.map(async (cluster): Promise<BrokerPluginGroup> => {
-          if (!cluster.enabled) {
-            return { connectName: cluster.name, items: [], issue: 'Connect 已停用，未发起检测' };
-          }
-          try {
-            const items = await kafkaConnectorApi.plugins(cluster.id);
-            return {
-              connectName: cluster.name,
-              items: [...items].sort((a, b) => a.class.localeCompare(b.class)),
-            };
-          } catch (reason) {
-            return {
-              connectName: cluster.name,
-              items: [],
-              issue: `插件查询失败：${errorMessage(reason)}`,
-            };
-          }
-        }),
-      ),
-    ]);
-    setBrokerChecks((previous) => ({
-      ...previous,
-      [broker.id]: {
-        reachable: result.reachable,
-        topics: result.topics ?? [],
-        plugins,
-        elapsedMs: result.elapsedMs,
-        message: result.message,
-      },
-    }));
-    if (result.reachable) {
-      const pluginTotal = plugins.reduce((sum, group) => sum + group.items.length, 0);
-      message.success(
-        `集群检测通过：topic ${result.topicCount} 个，插件 ${pluginTotal} 个，耗时 ${Math.round(result.elapsedMs)} ms`,
-      );
-    } else {
-      modal.warning({
-        title: `Kafka 集群「${broker.name}」检测未通过`,
-        content: result.message || '无法连接到 Kafka 集群，请检查地址、认证与网络。',
-      });
-    }
-    state.reload();
+  /** 记下最近一次检测结果，供属性面板事后查看；弹窗由调用方决定，避免叠加 */
+  const recordDetect = (outcome: DetectOutcome) => {
+    setDetectResults((previous) => ({ ...previous, [outcome.nodeKey]: outcome }));
   };
 
-  /** Connect 集群检测：可达性 / 版本 / worker / 插件，并同步纳管记录 */
-  const checkConnect = async (node: CanvasNode) => {
+  /**
+   * 集群检测：Kafka 连通性 + topic 清单
+   *
+   * 只看 Kafka 侧（可达性、topic）。连接器插件是 Connect worker 的能力，归属在
+   * Connect 卡片的检测里，这里不遍历名下的 Connect，也不把插件汇总到集群。
+   */
+  const checkBroker = async (node: CanvasNode): Promise<DetectOutcome> => {
+    const broker = node.record as DbzKafkaBrokerVo;
+    const result = await kafkaBrokerApi.check(broker.id);
+    const reachable = result.reachable;
+    const outcome: DetectOutcome = {
+      nodeKey: node.key,
+      kindLabel: kindLabel(node.kind),
+      name: broker.name,
+      elapsedMs: result.elapsedMs,
+      items: [
+        {
+          key: 'reachable',
+          label: 'Kafka 连通性',
+          status: reachable ? 'ok' : 'error',
+          detail: reachable
+            ? `已连上 ${broker.bootstrapServers}`
+            : result.message || '无法连接，请检查地址、认证与网络',
+        },
+        {
+          key: 'topics',
+          label: 'Topic 清单',
+          status: reachable ? 'ok' : 'error',
+          detail: reachable ? `${result.topicCount} 个 topic` : '未获取到 topic 列表',
+        },
+      ],
+      reason: reachable ? undefined : result.message || '无法连接到 Kafka 集群',
+      topics: reachable ? (result.topics ?? []) : [],
+    };
+    recordDetect(outcome);
+    state.reload();
+    return outcome;
+  };
+
+  /**
+   * Connect 检测：可达性 / 版本 / worker / 连接器 / 插件，并同步纳管记录
+   *
+   * 插件是 Connect worker 的能力，只在这里拉取与展示；同一台 Kafka 集群下多台
+   * Connect 各自插件不同，不做跨 Connect 汇总。
+   */
+  const checkConnect = async (node: CanvasNode): Promise<DetectOutcome> => {
     const cluster = node.record as DbzKafkaConnectVo;
-    // 健康状态与插件清单一起取：插件缺失是新建连接器失败的常见原因。
-    const [health, plugins] = await Promise.all([
+    const [healthResult, pluginResult] = await Promise.allSettled([
       kafkaConnectApi.health(cluster.id),
       kafkaConnectorApi.plugins(cluster.id),
     ]);
+    if (healthResult.status === 'rejected') {
+      throw healthResult.reason;
+    }
+    const health = healthResult.value;
+    const plugins = pluginResult.status === 'fulfilled' ? pluginResult.value : [];
+    const pluginIssue =
+      pluginResult.status === 'rejected'
+        ? `插件查询失败：${errorMessage(pluginResult.reason)}`
+        : null;
+
     if (!health.reachable) {
-      modal.warning({
-        title: `Kafka Connect「${cluster.name}」检测未通过`,
-        content: health.message || 'Connect 不可达，请检查地址、网络与服务状态。',
-      });
-      return;
+      const outcome: DetectOutcome = {
+        nodeKey: node.key,
+        kindLabel: kindLabel(node.kind),
+        name: cluster.name,
+        elapsedMs: health.elapsedMs,
+        items: [
+          {
+            key: 'reachable',
+            label: 'Connect 可达性',
+            status: 'error',
+            detail: health.message || 'Connect 不可达，请检查地址、网络与服务状态',
+          },
+          {
+            key: 'sync',
+            label: '纳管记录同步',
+            status: 'warning',
+            detail: 'Connect 不可达，未执行同步',
+          },
+        ],
+        reason: health.message || 'Connect 不可达',
+      };
+      recordDetect(outcome);
+      return outcome;
     }
 
     // 可达才同步：以远端为准补录缺失、标记配置不一致、把已消失的置为禁用。
     const detect = await kafkaConnectApi.detect(cluster.id);
-    const actionLabel: Record<string, string> = {
-      added: '补录',
-      marked: '标记不一致',
-      disabled: '置禁用',
-      cleared: '恢复一致',
-      skipped: '跳过',
+    const outcome: DetectOutcome = {
+      nodeKey: node.key,
+      kindLabel: kindLabel(node.kind),
+      name: cluster.name,
+      elapsedMs: health.elapsedMs,
+      items: [
+        {
+          key: 'reachable',
+          label: 'Connect 可达性',
+          status: 'ok',
+          detail: `已连上 ${cluster.url}`,
+        },
+        {
+          key: 'version',
+          label: 'Connect 版本',
+          status: health.version ? 'ok' : 'warning',
+          detail: health.version ? `v${health.version}` : '版本未知（根路径未返回）',
+        },
+        {
+          key: 'worker',
+          label: 'Worker',
+          status: health.workerCount > 0 ? 'ok' : 'warning',
+          detail: `${health.workerCount} 个 worker`,
+        },
+        {
+          key: 'connectors',
+          label: '连接器',
+          status: 'ok',
+          detail: `${health.connectorCount} 个连接器`,
+        },
+        {
+          key: 'plugins',
+          label: '连接器插件',
+          status: pluginIssue ? 'warning' : 'ok',
+          detail: pluginIssue ?? `已安装 ${plugins.length} 个插件`,
+        },
+        {
+          key: 'sync',
+          label: '纳管记录同步',
+          status: detect.skipped > 0 ? 'warning' : 'ok',
+          detail: `补录 ${detect.added}，标记不一致 ${detect.marked}，置禁用 ${detect.disabled}，恢复一致 ${detect.cleared}，无变化 ${detect.unchanged}，跳过 ${detect.skipped}`,
+        },
+      ],
+      plugins,
+      sync: detect,
     };
-    const notable = detect.items.filter((item) => item.action !== 'unchanged');
-
-    modal.info({
-      title: `Kafka Connect「${cluster.name}」检测通过`,
-      width: 760,
-      content: (
-        <div className="dbz-connect-detect">
-          <p>
-            v{health.version ?? '?'}，{health.workerCount} 个 worker，{health.connectorCount}{' '}
-            个连接器，已安装 {plugins.length} 个插件，耗时 {Math.round(health.elapsedMs)} ms
-          </p>
-          <p>
-            同步结果：补录 {detect.added}，标记不一致 {detect.marked}，置禁用 {detect.disabled}
-            ，恢复一致 {detect.cleared}，无变化 {detect.unchanged}，跳过 {detect.skipped}
-          </p>
-          {notable.length > 0 && (
-            <div className="dbz-connect-detect-sync">
-              {notable.map((item) => (
-                <div
-                  className="dbz-connect-detect-sync-row"
-                  key={`${item.connectorType}:${item.connectorName}:${item.action}`}
-                >
-                  <Tag color={item.action === 'skipped' ? 'default' : 'warning'}>
-                    {actionLabel[item.action] ?? item.action}
-                  </Tag>
-                  <span className="dbz-mono" title={item.connectorName}>
-                    {item.connectorName}
-                  </span>
-                  <span className="dbz-connect-detect-sync-msg">{item.message || '—'}</span>
-                </div>
-              ))}
-            </div>
-          )}
-          <div className="dbz-connect-detect-plugins">
-            <div className="dbz-connect-detect-head">
-              <span>插件类名</span>
-              <span>方向</span>
-              <span>版本</span>
-            </div>
-            {plugins.length === 0 ? (
-              <div className="dbz-connect-detect-empty">未安装任何连接器插件</div>
-            ) : (
-              <div className="dbz-connect-detect-body">
-                {plugins.map((plugin) => (
-                  <div className="dbz-connect-detect-row" key={`${plugin.class}:${plugin.type}`}>
-                    <span className="dbz-mono" title={plugin.class}>
-                      {plugin.class}
-                    </span>
-                    <span>{plugin.type || '—'}</span>
-                    <span className="dbz-mono">{plugin.version || '—'}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </div>
-      ),
-    });
+    recordDetect(outcome);
     state.reload();
+    return outcome;
   };
 
   /**
@@ -1386,15 +1402,29 @@ export default function ControlPanelPage() {
    * 比 `connector.class`、连接信息、topic 范围等关键项；状态只比「启停是否一致」，
    * 不拿库内回写的 run_status 与远端逐状态比对，避免把刷新时序当成不一致。
    */
-  const checkConnectorConsistency = async (node: CanvasNode) => {
+  const checkConnectorConsistency = async (node: CanvasNode): Promise<DetectOutcome> => {
     const record = node.record as ManagedConnectorRecord;
+    const startedAt = performance.now();
     const stored = parseConnectorConfig(record.connectorConfig);
     if (!stored) {
-      modal.warning({
-        title: `一致性检测未通过：${record.name}`,
-        content: '库内 connectorConfig 不是合法的 JSON 对象，无法与 Connect 实际配置比对。请先在编辑表单里修正配置。',
-      });
-      return;
+      const outcome: DetectOutcome = {
+        nodeKey: node.key,
+        kindLabel: kindLabel(node.kind),
+        name: record.name,
+        elapsedMs: performance.now() - startedAt,
+        items: [
+          {
+            key: 'stored',
+            label: '库内配置格式',
+            status: 'error',
+            detail:
+              '库内 connectorConfig 不是合法的 JSON 对象，无法与 Connect 实际配置比对；请先在编辑表单里修正配置',
+          },
+        ],
+        reason: '库内配置不是合法 JSON 对象',
+      };
+      recordDetect(outcome);
+      return outcome;
     }
 
     // 配置与实时列表并行取：任一失败都能给出具体原因
@@ -1405,54 +1435,100 @@ export default function ControlPanelPage() {
 
     const diffs = configDiffOf(stored, actual.config);
     const live = liveList.find((item) => item.name === record.connectorName);
+    let runIssue: string | null = null;
     if (!live) {
-      diffs.unshift('Connect 上不存在该连接器，但库内仍在纳管');
+      runIssue = 'Connect 上不存在该连接器，库内仍在纳管，未比对启停';
     } else if (record.enabled && live.state !== 0) {
       const stateLabel =
-        kafkaConnectorStatusDic.find((dic) => dic.value === live.state)?.label ?? `状态 ${live.state}`;
-      diffs.unshift(`库内为启用，Connect 实际为「${stateLabel}」`);
+        kafkaConnectorStatusDic.find((dic) => dic.value === live.state)?.label ??
+        `状态 ${live.state}`;
+      runIssue = `库内为启用，Connect 实际为「${stateLabel}」`;
     } else if (!record.enabled && live.state === 0) {
-      diffs.unshift('库内为停用，但 Connect 上连接器仍在运行');
+      runIssue = '库内为停用，但 Connect 上连接器仍在运行';
     }
 
-    if (diffs.length === 0) {
-      message.success(
-        `一致性检测通过：${record.name} 的库内配置与 Connect 实际一致（连接器类、关键配置、启停状态）`,
-      );
-    } else {
-      modal.warning({
-        title: `一致性检测未通过：${record.name}`,
-        width: 640,
-        content: (
-          <div className="dbz-consistency-diffs">
-            <p>库内记录与 Connect 实际有 {diffs.length} 处不一致：</p>
-            <ul>
-              {diffs.map((diff) => (
-                <li key={diff}>{diff}</li>
-              ))}
-            </ul>
-          </div>
-        ),
-      });
+    const outcome: DetectOutcome = {
+      nodeKey: node.key,
+      kindLabel: kindLabel(node.kind),
+      name: record.name,
+      elapsedMs: performance.now() - startedAt,
+      items: [
+        {
+          key: 'stored',
+          label: '库内配置格式',
+          status: 'ok',
+          detail: '库内 connectorConfig 可正常解析',
+        },
+        {
+          key: 'exists',
+          label: '远端连接器',
+          status: live ? 'ok' : 'error',
+          detail: live
+            ? `Connect 上存在连接器 ${record.connectorName}`
+            : 'Connect 上不存在该连接器，但库内仍在纳管',
+        },
+        {
+          key: 'config',
+          label: '关键配置比对',
+          status: diffs.length > 0 ? 'error' : 'ok',
+          detail:
+            diffs.length > 0
+              ? `${diffs.length} 处不一致：${diffs.join('；')}`
+              : '连接器类、连接信息、topic 范围等关键项与远端一致',
+        },
+        {
+          key: 'run',
+          label: '启停状态',
+          status: runIssue ? 'warning' : 'ok',
+          detail: runIssue ?? '库内启停与 Connect 实际一致',
+        },
+      ],
+      reason:
+        diffs.length > 0
+          ? `库内记录与 Connect 实际有 ${diffs.length} 处配置不一致`
+          : undefined,
+    };
+    recordDetect(outcome);
+    return outcome;
+  };
+
+  /** 只跑检测、不弹窗（对比弹窗补检测时用） */
+  const runCheck = async (node: CanvasNode): Promise<DetectOutcome> => {
+    try {
+      if (node.kind === 'broker') {
+        return await checkBroker(node);
+      }
+      if (node.kind === 'connect') {
+        return await checkConnect(node);
+      }
+      return await checkConnectorConsistency(node);
+    } catch (reason) {
+      const outcome: DetectOutcome = {
+        nodeKey: node.key,
+        kindLabel: kindLabel(node.kind),
+        name: node.name,
+        elapsedMs: 0,
+        items: [
+          {
+            key: 'request',
+            label: '检测请求',
+            status: 'error',
+            detail: errorMessage(reason),
+          },
+        ],
+        reason: errorMessage(reason),
+      };
+      recordDetect(outcome);
+      return outcome;
     }
   };
 
-  /** 四类卡片共用的「检测」入口 */
+  /** 四类卡片共用的「检测」入口：跑完统一弹结果弹窗，一次检测只弹一个 */
   const checkNode = async (node: CanvasNode) => {
     setCheckingKey(node.key);
     try {
-      if (node.kind === 'broker') {
-        await checkBroker(node.record as DbzKafkaBrokerVo);
-      } else if (node.kind === 'connect') {
-        await checkConnect(node);
-      } else {
-        await checkConnectorConsistency(node);
-      }
-    } catch (reason) {
-      modal.error({
-        title: `检测失败：${node.name}`,
-        content: errorMessage(reason),
-      });
+      const outcome = await runCheck(node);
+      setDetectModal(outcome);
     } finally {
       setCheckingKey(null);
     }
@@ -1698,6 +1774,15 @@ export default function ControlPanelPage() {
         break;
       case 'delete':
         openDeleteNode(node);
+        break;
+      case 'inspect-inconsistent':
+        setInspectTarget(node);
+        // 升级前的不一致标记没有快照：打开即补一次检测，但不弹检测结果弹窗，
+        // 避免两个弹窗叠在一起
+        if (!(node.record as ManagedConnectorRecord).inconsistentDetail) {
+          setCheckingKey(node.key);
+          void runCheck(node).finally(() => setCheckingKey(null));
+        }
         break;
       case 'check':
         void checkNode(node);
@@ -2532,83 +2617,21 @@ export default function ControlPanelPage() {
                 />
               )}
               {(() => {
-                const outcome = brokerChecks[String(broker.id)];
+                const outcome = detectResults[node.key];
                 if (!outcome) {
                   return (
                     <div className="dbz-inspector-check-hint">
-                      点卡片上的「检测」可同时拉取 Kafka topic 与集群下各 Connect 的插件。
+                      点卡片上的「检测」可查看 Kafka 连通性与 topic 清单；连接器插件属于
+                      Connect，请在各 Connect 卡片上检测查看。
                     </div>
                   );
                 }
-                const pluginTotal = outcome.plugins.reduce(
-                  (sum, group) => sum + group.items.length,
-                  0,
-                );
                 return (
                   <>
                     <Typography.Title level={5} className="dbz-inspector-section">
                       检测结果
                     </Typography.Title>
-                    <div className="dbz-inspector-check-group">
-                      <div className="dbz-inspector-check-head">
-                        <span>Topic</span>
-                        <span className="dbz-inspector-check-count">
-                          {outcome.reachable ? `${outcome.topics.length} 个` : '未获取'}
-                        </span>
-                      </div>
-                      {outcome.topics.length > 0 ? (
-                        <div className="dbz-inspector-check-list">
-                          {outcome.topics.map((topic) => (
-                            <Tag key={topic} className="dbz-mono">
-                              {topic}
-                            </Tag>
-                          ))}
-                        </div>
-                      ) : (
-                        <div className="dbz-inspector-check-empty">
-                          {outcome.reachable
-                            ? '该集群上还没有任何 topic'
-                            : 'Kafka 不可达，未获取到 topic 列表'}
-                        </div>
-                      )}
-                    </div>
-                    <div className="dbz-inspector-check-group">
-                      <div className="dbz-inspector-check-head">
-                        <span>插件</span>
-                        <span className="dbz-inspector-check-count">{pluginTotal} 个</span>
-                      </div>
-                      {outcome.plugins.length > 0 ? (
-                        outcome.plugins.map((group) => (
-                          <div key={group.connectName} className="dbz-inspector-plugin-group">
-                            <div className="dbz-inspector-plugin-connect">{group.connectName}</div>
-                            {group.issue ? (
-                              <div className="dbz-inspector-check-empty">{group.issue}</div>
-                            ) : group.items.length > 0 ? (
-                              <div className="dbz-inspector-check-list">
-                                {group.items.map((item) => (
-                                  <Tooltip
-                                    key={item.class}
-                                    title={`${item.class}${item.version ? ` · v${item.version}` : ''}`}
-                                  >
-                                    <Tag className="dbz-mono">
-                                      {item.class.split('.').pop() || item.class}
-                                    </Tag>
-                                  </Tooltip>
-                                ))}
-                              </div>
-                            ) : (
-                              <div className="dbz-inspector-check-empty">
-                                该 Connect 未安装任何插件
-                              </div>
-                            )}
-                          </div>
-                        ))
-                      ) : (
-                        <div className="dbz-inspector-check-empty">
-                          该集群下还没有 Kafka Connect，未获取到插件
-                        </div>
-                      )}
-                    </div>
+                    <DetectResultBrief outcome={outcome} />
                   </>
                 );
               })()}
@@ -2690,6 +2713,16 @@ export default function ControlPanelPage() {
                   message="连接器查询失败"
                   description={node.liveIssue}
                 />
+              )}
+              <Typography.Title level={5} className="dbz-inspector-section">
+                检测结果
+              </Typography.Title>
+              {detectResults[node.key] ? (
+                <DetectResultBrief outcome={detectResults[node.key]} />
+              ) : (
+                <div className="dbz-inspector-check-hint">
+                  点卡片上的「检测」可查看可达性、版本、worker、连接器与插件。
+                </div>
               )}
             </>
           );
@@ -2878,6 +2911,17 @@ export default function ControlPanelPage() {
               )}
               {failure && (
                 <Alert type="error" showIcon message="异常原因" description={failure} />
+              )}
+
+              <Typography.Title level={5} className="dbz-inspector-section">
+                检测结果
+              </Typography.Title>
+              {detectResults[node.key] ? (
+                <DetectResultBrief outcome={detectResults[node.key]} />
+              ) : (
+                <div className="dbz-inspector-check-hint">
+                  点卡片上的「检测」可与 Connect 实际配置逐项比对，并检查启停是否一致。
+                </div>
               )}
             </>
           );
@@ -3704,6 +3748,36 @@ export default function ControlPanelPage() {
           </div>
         )}
       </Modal>
+
+      {/* 四类卡片共用的检测结果弹窗 */}
+      <DetectResultModal
+        open={detectModal !== null}
+        outcome={detectModal}
+        onClose={() => setDetectModal(null)}
+      />
+
+      {/* 「不一致」对比：快照来自检测，敏感项已脱敏；可编辑并双向同步 */}
+      <InconsistentDiffModal
+        open={inspectTarget !== null}
+        target={
+          inspectTarget && (inspectTarget.kind === 'source' || inspectTarget.kind === 'sink')
+            ? {
+                kind: inspectTarget.kind,
+                id: inspectTarget.id,
+                name: inspectTarget.name,
+              }
+            : null
+        }
+        record={inspectRecord}
+        detecting={inspectTarget !== null && checkingKey === inspectTarget.key}
+        onClose={() => setInspectTarget(null)}
+        onDetect={() => {
+          if (inspectTarget) {
+            void checkNode(inspectTarget);
+          }
+        }}
+        onSynced={() => state.reload()}
+      />
     </div>
   );
 }

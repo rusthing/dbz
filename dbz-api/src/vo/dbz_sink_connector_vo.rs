@@ -25,6 +25,8 @@ pub struct DbzSinkConnectorVo {
     pub enabled: bool,
     /// 检测标记：库内配置与 Connect 实际不一致（或远端已不存在）
     pub inconsistent: bool,
+    /// 检测不一致时的对比快照（脱敏 JSON 文本，前端解析）；一致或未检测时为空
+    pub inconsistent_detail: Option<String>,
     /// 创建者ID
     pub creater_id: u64,
     /// 创建时间

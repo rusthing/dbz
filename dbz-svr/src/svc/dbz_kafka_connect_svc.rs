@@ -28,8 +28,8 @@ use crate::utils::{
     RUN_MSG_MAX, normalize_url, one_line,
 };
 use crate::vo::{
-    DbzConnectorDetectItemVo, DbzKafkaConnectDetectVo, DbzKafkaConnectHealthVo,
-    DbzSinkConnectorVo, DbzSourceConnectorVo,
+    DbzConnectorCompareDetail, DbzConnectorCompareRow, DbzConnectorDetectItemVo,
+    DbzKafkaConnectDetectVo, DbzKafkaConnectHealthVo, DbzSinkConnectorVo, DbzSourceConnectorVo,
 };
 use anyhow::anyhow;
 use robotech::db::get_db_conn;
@@ -432,7 +432,17 @@ impl DbzKafkaConnectSvc {
                     continue;
                 };
                 let mismatch = config_mismatch(&local.connector_config, &remote_config);
-                if mismatch == local.inconsistent {
+                let detail_text = compare_detail_text(
+                    &local.connector_config,
+                    &remote_config,
+                    mismatch,
+                    now_ms(),
+                    &local.name,
+                )?;
+                let flag_changed = mismatch != local.inconsistent;
+                let snapshot_changed =
+                    local.inconsistent_detail.as_deref() != detail_text.as_deref();
+                if !flag_changed && !snapshot_changed {
                     push_detect_item(&mut out, &item.name, "source", "unchanged", None);
                     continue;
                 }
@@ -440,7 +450,10 @@ impl DbzKafkaConnectSvc {
                     id: Set(local.id.value() as i64),
                     ..Default::default()
                 };
-                active.inconsistent = Set(mismatch);
+                if flag_changed {
+                    active.inconsistent = Set(mismatch);
+                }
+                active.inconsistent_detail = Set(detail_text);
                 active.updater_id = Set(0);
                 DbzSourceConnectorDao::update(active, db.as_ref())
                     .await
@@ -449,7 +462,15 @@ impl DbzKafkaConnectSvc {
                     &mut out,
                     &item.name,
                     "source",
-                    if mismatch { "marked" } else { "cleared" },
+                    if flag_changed {
+                        if mismatch {
+                            "marked"
+                        } else {
+                            "cleared"
+                        }
+                    } else {
+                        "unchanged"
+                    },
                     None,
                 );
                 continue;
@@ -467,7 +488,17 @@ impl DbzKafkaConnectSvc {
                     continue;
                 };
                 let mismatch = config_mismatch(&local.connector_config, &remote_config);
-                if mismatch == local.inconsistent {
+                let detail_text = compare_detail_text(
+                    &local.connector_config,
+                    &remote_config,
+                    mismatch,
+                    now_ms(),
+                    &local.name,
+                )?;
+                let flag_changed = mismatch != local.inconsistent;
+                let snapshot_changed =
+                    local.inconsistent_detail.as_deref() != detail_text.as_deref();
+                if !flag_changed && !snapshot_changed {
                     push_detect_item(&mut out, &item.name, "sink", "unchanged", None);
                     continue;
                 }
@@ -475,7 +506,10 @@ impl DbzKafkaConnectSvc {
                     id: Set(local.id.value() as i64),
                     ..Default::default()
                 };
-                active.inconsistent = Set(mismatch);
+                if flag_changed {
+                    active.inconsistent = Set(mismatch);
+                }
+                active.inconsistent_detail = Set(detail_text);
                 active.updater_id = Set(0);
                 DbzSinkConnectorDao::update(active, db.as_ref())
                     .await
@@ -484,7 +518,15 @@ impl DbzKafkaConnectSvc {
                     &mut out,
                     &item.name,
                     "sink",
-                    if mismatch { "marked" } else { "cleared" },
+                    if flag_changed {
+                        if mismatch {
+                            "marked"
+                        } else {
+                            "cleared"
+                        }
+                    } else {
+                        "unchanged"
+                    },
                     None,
                 );
                 continue;
@@ -595,8 +637,12 @@ impl DbzKafkaConnectSvc {
             .iter()
             .filter(|s| !remote_names.contains(&s.connector_name))
         {
-            let changed = source.enabled || !source.inconsistent;
-            if changed {
+            let flag_changed = source.enabled || !source.inconsistent;
+            // 远端不存在时没有逐项配置可比，快照只记录「已不存在」供前端说明
+            let detail_text = missing_detail_text(now_ms(), &source.name)?;
+            let snapshot_changed =
+                source.inconsistent_detail.as_deref() != detail_text.as_deref();
+            if flag_changed || snapshot_changed {
                 let mut active = SourceActiveModel {
                     id: Set(source.id.value() as i64),
                     ..Default::default()
@@ -605,6 +651,7 @@ impl DbzKafkaConnectSvc {
                 active.inconsistent = Set(true);
                 active.run_status = Set(ConnectorRunStatus::Disabled.value());
                 active.run_msg = Set(Some("检测：Connect 上已不存在该连接器".to_string()));
+                active.inconsistent_detail = Set(detail_text);
                 active.updater_id = Set(0);
                 DbzSourceConnectorDao::update(active, db.as_ref())
                     .await
@@ -614,7 +661,7 @@ impl DbzKafkaConnectSvc {
                 &mut out,
                 &source.connector_name,
                 "source",
-                if changed { "disabled" } else { "unchanged" },
+                if flag_changed { "disabled" } else { "unchanged" },
                 None,
             );
         }
@@ -622,8 +669,10 @@ impl DbzKafkaConnectSvc {
             .iter()
             .filter(|s| !remote_names.contains(&s.connector_name))
         {
-            let changed = sink.enabled || !sink.inconsistent;
-            if changed {
+            let flag_changed = sink.enabled || !sink.inconsistent;
+            let detail_text = missing_detail_text(now_ms(), &sink.name)?;
+            let snapshot_changed = sink.inconsistent_detail.as_deref() != detail_text.as_deref();
+            if flag_changed || snapshot_changed {
                 let mut active = SinkActiveModel {
                     id: Set(sink.id.value() as i64),
                     ..Default::default()
@@ -632,6 +681,7 @@ impl DbzKafkaConnectSvc {
                 active.inconsistent = Set(true);
                 active.run_status = Set(ConnectorRunStatus::Disabled.value());
                 active.run_msg = Set(Some("检测：Connect 上已不存在该连接器".to_string()));
+                active.inconsistent_detail = Set(detail_text);
                 active.updater_id = Set(0);
                 DbzSinkConnectorDao::update(active, db.as_ref())
                     .await
@@ -641,7 +691,7 @@ impl DbzKafkaConnectSvc {
                 &mut out,
                 &sink.connector_name,
                 "sink",
-                if changed { "disabled" } else { "unchanged" },
+                if flag_changed { "disabled" } else { "unchanged" },
                 None,
             );
         }
@@ -1335,38 +1385,174 @@ impl DbzKafkaConnectSvc {
     }
 }
 
-/// # 比较库内配置与远端配置是否不一致
-///
-/// 只比较库内配置里出现过的键：Connect 会把大量默认值补进 `GET /config` 的返回，
-/// 全量比较会让每条连接器都被判为不一致。`name` 也跳过 —— 库内配置一般不带它，
-/// 而远端一定带。库内配置解析失败时保守判为不一致，交给人工核对。
-///
-/// ## 参数
-/// * `local_config` - 库内保存的配置 JSON 文本
-/// * `remote_config` - Connect 返回的配置 JSON
-///
-/// ## 返回值
-/// * `true` - 存在键缺失或值不同
-/// * `false` - 库内出现的键全部与远端一致
-fn config_mismatch(local_config: &str, remote_config: &Value) -> bool {
-    let Ok(local) = serde_json::from_str::<Value>(local_config) else {
-        return true;
-    };
-    let Some(local_obj) = local.as_object() else {
-        return true;
-    };
-    let Some(remote_obj) = remote_config.as_object() else {
-        return true;
-    };
-    local_obj.iter().any(|(key, local_value)| {
-        if key == "name" {
-            return false;
-        }
-        match remote_obj.get(key) {
-            Some(remote_value) => !json_eq(local_value, remote_value),
+/// 单个配置项的比对中间结果
+struct ComparedEntry {
+    key: String,
+    local: Value,
+    remote: Option<Value>,
+}
+
+impl ComparedEntry {
+    /// 与 {@link config_mismatch} 完全同源的差异判定：远端缺键或值不同
+    fn changed(&self) -> bool {
+        match &self.remote {
+            Some(remote) => !json_eq(&self.local, remote),
             None => true,
         }
-    })
+    }
+}
+
+/// # 逐项列出参与比对的配置
+///
+/// 口径与检测一致：只看库内配置里出现的键（`name` 属于记录名，不参与比对），
+/// 远端多出来的键不影响结论，也不在对比弹窗里展示，避免出现「检测说一致、
+/// 弹窗却列出一堆差异」的错位。
+///
+/// 库内配置或远端配置不是合法 JSON 对象时返回 `None`（此时检测判定为不一致）。
+fn compare_entries(local_config: &str, remote_config: &Value) -> Option<Vec<ComparedEntry>> {
+    let local = serde_json::from_str::<Value>(local_config).ok()?;
+    let local_obj = local.as_object()?;
+    let remote_obj = remote_config.as_object()?;
+    let mut entries: Vec<ComparedEntry> = local_obj
+        .iter()
+        .filter(|(key, _)| key.as_str() != "name")
+        .map(|(key, local)| ComparedEntry {
+            key: key.clone(),
+            local: local.clone(),
+            remote: remote_obj.get(key).cloned(),
+        })
+        .collect();
+    // 字段顺序稳定：按键名排序，与库内 JSON 的书写顺序无关
+    entries.sort_by(|a, b| a.key.cmp(&b.key));
+    Some(entries)
+}
+
+pub(crate) fn config_mismatch(local_config: &str, remote_config: &Value) -> bool {
+    match compare_entries(local_config, remote_config) {
+        Some(entries) => entries.iter().any(ComparedEntry::changed),
+        None => true,
+    }
+}
+
+/// 敏感配置项：命中的值一律脱敏，不落库明文、不回显
+const SENSITIVE_KEY_PARTS: &[&str] = &[
+    "password",
+    "passwd",
+    "secret",
+    "token",
+    "credential",
+    "passphrase",
+    "private.key",
+    "access.key",
+    "api.key",
+    "apikey",
+    "sasl.jaas.config",
+    "basic.auth.user.info",
+    "ssl.keystore",
+    "ssl.truststore",
+];
+
+/// 脱敏后的占位文案（未变化）
+const MASKED: &str = "***（已脱敏）";
+/// 脱敏且恰好是差异项：既不复述密钥，又能看出「这里变了」
+const MASKED_CHANGED: &str = "***（已变更，已脱敏）";
+
+/// 键名是否属于敏感配置（大小写不敏感，按子串匹配）
+pub(crate) fn is_sensitive_key(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    SENSITIVE_KEY_PARTS.iter().any(|part| key.contains(part))
+}
+
+/// 单值展示：字符串原样，对象/数组按格式化 JSON，其它走紧凑 JSON
+fn json_text(value: &Value) -> String {
+    match value {
+        Value::String(text) => text.clone(),
+        other => serde_json::to_string_pretty(other).unwrap_or_else(|_| other.to_string()),
+    }
+}
+
+/// # 生成不一致对比快照
+///
+/// 与 {@link config_mismatch} 同源，保证「标签说不一致」时弹窗一定能看出差异；
+/// 敏感项值统一脱敏，差异标记只保留「变了/没变」。
+fn build_compare_detail(
+    local_config: &str,
+    remote_config: &Value,
+    checked_at: u64,
+) -> DbzConnectorCompareDetail {
+    let Some(entries) = compare_entries(local_config, remote_config) else {
+        return DbzConnectorCompareDetail {
+            checked_at,
+            remote_exists: true,
+            reason: Some("库内配置或远端配置不是合法 JSON 对象，无法逐项展示".to_string()),
+            rows: Vec::new(),
+        };
+    };
+    let rows = entries
+        .into_iter()
+        .map(|entry| {
+            let changed = entry.changed();
+            let sensitive = is_sensitive_key(&entry.key);
+            let local = if sensitive {
+                if changed { MASKED_CHANGED } else { MASKED }.to_string()
+            } else {
+                json_text(&entry.local)
+            };
+            let remote = entry.remote.as_ref().map(|value| {
+                if sensitive {
+                    if changed { MASKED_CHANGED } else { MASKED }.to_string()
+                } else {
+                    json_text(value)
+                }
+            });
+            DbzConnectorCompareRow {
+                key: entry.key,
+                local,
+                remote,
+                changed,
+                sensitive,
+            }
+        })
+        .collect();
+    DbzConnectorCompareDetail {
+        checked_at,
+        remote_exists: true,
+        reason: None,
+        rows,
+    }
+}
+
+/// 把对比快照序列化进 `inconsistent_detail`；一致时写入 `None` 清空快照
+pub(crate) fn compare_detail_text(
+    local_config: &str,
+    remote_config: &Value,
+    mismatch: bool,
+    checked_at: u64,
+    connector_name: &str,
+) -> Result<Option<String>, anyhow::Error> {
+    if !mismatch {
+        return Ok(None);
+    }
+    let detail = build_compare_detail(local_config, remote_config, checked_at);
+    serde_json::to_string(&detail)
+        .map(Some)
+        .map_err(|e| anyhow!("序列化连接器<{connector_name}>对比快照失败: {e}"))
+}
+
+/// 远端已不存在时的快照：不展示空对比，只说明原因
+fn missing_detail_text(
+    checked_at: u64,
+    connector_name: &str,
+) -> Result<Option<String>, anyhow::Error> {
+    let detail = DbzConnectorCompareDetail {
+        checked_at,
+        remote_exists: false,
+        reason: Some("检测时 Connect 上已不存在该连接器，已自动置为禁用".to_string()),
+        rows: Vec::new(),
+    };
+    serde_json::to_string(&detail)
+        .map(Some)
+        .map_err(|e| anyhow!("序列化连接器<{connector_name}>对比快照失败: {e}"))
 }
 
 /// # 递归比较两个 JSON 值

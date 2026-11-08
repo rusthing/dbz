@@ -8,6 +8,8 @@
 import { apiDelete, apiGet, apiGetList, apiPost, apiPut } from './client';
 import type {
   ControlPlaneNodeType,
+  DbzConnectorConfigSyncInput,
+  DbzConnectorConfigSyncVo,
   DbzControlPlaneEdgeBendUpsertInput,
   DbzControlPlaneEdgeBendVo,
   DbzControlPlaneLayoutUpsertInput,
@@ -87,4 +89,16 @@ export const controlPlaneApi = {
    */
   deleteNode: (input: DbzControlPlaneNodeDeleteInput): Promise<DbzControlPlaneNodeDeleteVo> =>
     apiPost<DbzControlPlaneNodeDeleteVo>('/dbz/control-plane/node-delete', input),
+
+  /**
+   * 在「不一致」对比弹窗里双向同步配置
+   *
+   * `toRemote` 以库内为准下发远端 Connect（`PUT /connectors/{name}/config`，会更新并
+   * 重载连接器），风险与删除相当，需要审核口令摘要；`toLocal` 以远端实际配置为准写回
+   * 库内记录，不校验口令。成功后 `extra` 带重新计算的 `inconsistent` 与脱敏快照。
+   */
+  syncConnectorConfig: (
+    input: DbzConnectorConfigSyncInput,
+  ): Promise<DbzConnectorConfigSyncVo> =>
+    apiPost<DbzConnectorConfigSyncVo>('/dbz/control-plane/connector-config/sync', input),
 };

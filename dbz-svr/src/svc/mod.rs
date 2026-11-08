@@ -1,4 +1,5 @@
 mod dbz_backup_svc;
+mod dbz_connector_config_sync_svc;
 mod dbz_control_plane_delete_svc;
 mod dbz_control_plane_edge_layout_svc;
 mod dbz_control_plane_layout_svc;
@@ -13,6 +14,7 @@ mod dbz_source_connector_svc;
 mod kafka_connector_svc;
 
 pub use dbz_backup_svc::*;
+pub use dbz_connector_config_sync_svc::*;
 pub use dbz_control_plane_delete_svc::*;
 pub use dbz_control_plane_edge_layout_svc::*;
 pub use dbz_control_plane_layout_svc::*;

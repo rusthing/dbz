@@ -1114,7 +1114,7 @@ input[type='color']:not(:disabled) {
   padding-top: 0;
 }
 
-/* 集群检测结果：插件与 topic 各成一组，空组用灰字说明 */
+/* 集群检测结果：只展示 Kafka 侧 topic（插件归属 Connect 检测） */
 .dbz-inspector-check-hint {
   margin-top: 8px;
   padding: 8px 10px;
@@ -1171,17 +1171,6 @@ input[type='color']:not(:disabled) {
   font-size: 12px;
   line-height: 1.5;
   color: rgba(0, 0, 0, 0.4);
-}
-
-.dbz-inspector-plugin-group + .dbz-inspector-plugin-group {
-  margin-top: 8px;
-  padding-top: 8px;
-  border-top: 1px dashed #eef0f4;
-}
-
-.dbz-inspector-plugin-connect {
-  font-size: 12px;
-  color: rgba(0, 0, 0, 0.65);
 }
 
 .dbz-inspector-actions {
@@ -1468,6 +1457,30 @@ input[type='color']:not(:disabled) {
 
 .dbz-delete-error .ant-alert-message {
   word-break: break-all;
+}
+
+/* ---------- 「不一致」对比弹窗 ---------- */
+.dbz-diff-value {
+  margin: 0;
+  max-height: 120px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-all;
+  font-family: var(--dbz-font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.dbz-diff-row-changed > td {
+  background: #fffbe6;
+}
+
+.dbz-diff-row-changed:hover > td {
+  background: #fff1b8 !important;
+}
+
+.dbz-diff-row-changed > td:first-child {
+  box-shadow: inset 3px 0 0 #faad14;
 }
 
 /* ---------- 控制面：按 Kafka 集群分 tab ---------- */

@@ -4,16 +4,21 @@
 //! - `PUT    /dbz/control-plane/edges`：保存一条连线的折点
 //! - `DELETE /dbz/control-plane/edges`：恢复某条连线的默认走线
 //! - `POST   /dbz/control-plane/node-delete`：校验当前用户口令后删除节点
+//! - `POST   /dbz/control-plane/connector-config/sync`：对比弹窗里的双向配置同步
 //!
-//! 删除接口必须带 `Authorization`（口令校验身份）与 `X-User-Id`（审计操作人）；
-//! 口令摘要放在请求体里，服务端不落库、只转发给 adm-rs。
+//! 删除与同步远端都要求口令：必须带 `Authorization`（口令校验身份）与 `X-User-Id`
+//! （审计操作人）；口令摘要放在请求体里，服务端不落库、只转发给 adm-rs。
 
 use crate::dto::{
-    DbzControlPlaneEdgeBendDeleteDto, DbzControlPlaneEdgeBendUpsertDto,
-    DbzControlPlaneNodeDeleteDto,
+    DbzConnectorConfigSyncDto, DbzControlPlaneEdgeBendDeleteDto,
+    DbzControlPlaneEdgeBendUpsertDto, DbzControlPlaneNodeDeleteDto,
 };
-use crate::svc::{DbzControlPlaneDeleteSvc, DbzControlPlaneEdgeLayoutSvc};
-use crate::vo::{DbzControlPlaneEdgeBendVo, DbzControlPlaneNodeDeleteVo};
+use crate::svc::{
+    DbzConnectorConfigSyncSvc, DbzControlPlaneDeleteSvc, DbzControlPlaneEdgeLayoutSvc,
+};
+use crate::vo::{
+    DbzConnectorConfigSyncVo, DbzControlPlaneEdgeBendVo, DbzControlPlaneNodeDeleteVo,
+};
 use axum::debug_handler;
 use axum::extract::Query;
 use axum::http::HeaderMap;
@@ -97,6 +102,35 @@ pub async fn delete_node(
     Json(dto): Json<DbzControlPlaneNodeDeleteDto>,
 ) -> Result<Json<Ro<DbzControlPlaneNodeDeleteVo>>, CtrlError> {
     let ro = DbzControlPlaneDeleteSvc::delete_node(
+        dto,
+        get_current_user_id(&headers)?,
+        authorization_of(&headers),
+    )
+    .await?;
+    Ok(Json(ro))
+}
+
+/// # 双向同步连接器配置
+///
+/// `toRemote`（库内为准下发远端）要求口令，失败时 HTTP 仍是 200，`result` 为 warn
+/// 且带业务码，与删除一致：`ADM00007` 口令不正确、`ADM00008` 过于频繁、
+/// `ADM00009` 账号不可用、`ADM00005` 登录状态已失效、`DBZ00001` 认证服务不可用。
+/// `toLocal`（远端为准写回库内）只写库内记录，不要求口令。
+///
+/// 成功后 `extra` 带重新计算的 `inconsistent` 与脱敏快照，前端无需再猜标记。
+#[utoipa::path(
+    post,
+    path = "/dbz/control-plane/connector-config/sync",
+    request_body = DbzConnectorConfigSyncDto,
+    responses((status = OK, body = Ro<DbzConnectorConfigSyncVo>))
+)]
+#[debug_handler]
+#[log_call]
+pub async fn sync_connector_config(
+    headers: HeaderMap,
+    Json(dto): Json<DbzConnectorConfigSyncDto>,
+) -> Result<Json<Ro<DbzConnectorConfigSyncVo>>, CtrlError> {
+    let ro = DbzConnectorConfigSyncSvc::sync_config(
         dto,
         get_current_user_id(&headers)?,
         authorization_of(&headers),

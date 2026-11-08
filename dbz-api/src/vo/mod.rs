@@ -1,4 +1,6 @@
 pub mod dbz_backup_vo;
+pub mod dbz_connector_compare_vo;
+pub mod dbz_connector_config_sync_vo;
 pub mod dbz_control_plane_delete_vo;
 pub mod dbz_control_plane_edge_layout_vo;
 pub mod dbz_control_plane_layout_vo;
@@ -15,6 +17,8 @@ pub mod dbz_source_connector_vo;
 pub mod kafka_connector_vo;
 
 pub use dbz_backup_vo::*;
+pub use dbz_connector_compare_vo::*;
+pub use dbz_connector_config_sync_vo::*;
 pub use dbz_control_plane_delete_vo::*;
 pub use dbz_control_plane_edge_layout_vo::*;
 pub use dbz_control_plane_layout_vo::*;

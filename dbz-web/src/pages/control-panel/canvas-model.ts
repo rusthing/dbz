@@ -50,6 +50,8 @@ export type CanvasNodeAction =
   | 'backup-cluster'
   /** Kafka 集群：从备份 JSON 恢复库内纳管记录 */
   | 'restore-cluster'
+  /** 连接器：打开「不一致」对比弹窗，查看两边配置并可双向同步 */
+  | 'inspect-inconsistent'
   | 'edit'
   | 'delete'
   | 'check'

@@ -370,9 +370,9 @@ function NodeActions({
     action: 'check',
     title:
       node.kind === 'broker'
-        ? '集群检测：检测 Kafka 连通性'
+        ? '集群检测：Kafka 连通性与 topic 清单'
         : node.kind === 'connect'
-          ? '集群检测：可达性 / 版本 / worker / 插件'
+          ? 'Connect 检测：可达性 / 版本 / worker / 插件'
           : '一致性检测：库内配置与 Connect 实际状态是否一致',
     icon: <ThunderboltOutlined />,
     loading: checkingKey === node.key,
@@ -1062,11 +1062,12 @@ export default function ControlPanelCanvas({
                     <NodeStatus node={node} />
                     {(node.kind === 'source' || node.kind === 'sink') &&
                       (node.record as ManagedConnectorRecord).inconsistent && (
-                        <Tooltip title="库内配置与 Connect 实际不一致，或远端已不存在；点 Connect 卡片的「检测」重新同步">
+                        <Tooltip title="库内配置与 Connect 实际不一致，或远端已不存在；点击查看两边配置并同步">
                           <Tag
                             color="warning"
                             className="dbz-graph-inconsistent-tag"
                             data-no-drag
+                            onClick={() => onNodeAction(node, 'inspect-inconsistent')}
                           >
                             不一致
                           </Tag>

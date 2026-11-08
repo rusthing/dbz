@@ -9,5 +9,6 @@ use robotech::macros::router;
     ("/dbz/control-plane/edges", put(upsert_edge)),
     ("/dbz/control-plane/edges", delete(remove_edge)),
     ("/dbz/control-plane/node-delete", post(delete_node)),
+    ("/dbz/control-plane/connector-config/sync", post(sync_connector_config)),
 ])]
 struct DbzControlPlaneOpsRouter;

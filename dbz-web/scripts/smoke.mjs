@@ -976,6 +976,35 @@ await page.route('**/dbz/**', async (route) => {
       for (const item of managed) {
         if (item.connectorName === 'mysql-orders-source') {
           item.inconsistent = true;
+          // 对比快照与标记同源：标签点开必须能看出具体差异（敏感项已脱敏）
+          item.inconsistentDetail = JSON.stringify({
+            checkedAt: Date.now(),
+            remoteExists: true,
+            reason: null,
+            rows: [
+              {
+                key: 'database.password',
+                local: '***（已变更，已脱敏）',
+                remote: '***（已变更，已脱敏）',
+                changed: true,
+                sensitive: true,
+              },
+              {
+                key: 'snapshot.mode',
+                local: 'when_needed',
+                remote: 'initial',
+                changed: true,
+                sensitive: false,
+              },
+              {
+                key: 'connector.class',
+                local: 'io.debezium.connector.mysql.MySqlConnector',
+                remote: 'io.debezium.connector.mysql.MySqlConnector',
+                changed: false,
+                sensitive: false,
+              },
+            ],
+          });
           marked += 1;
           items.push({
             connectorName: item.connectorName,
@@ -1273,19 +1302,37 @@ try {
       (await page.locator('.dbz-canvas-topbar button:has-text("新增 Kafka 集群")').count()) === 1,
   );
   check(
-    '缩略图与缩放控件可见',
-    (await page.locator('.dbz-graph-minimap').isVisible()) &&
-      (await page.locator('.dbz-graph-controls').isVisible()),
+    '缩放控件可见',
+    await page.locator('.dbz-graph-controls').isVisible(),
   );
-  const legendText = await page.locator('.dbz-graph-legend').innerText();
+  // 整图已完全可见时隐藏缩略图与图例（覆盖层会盖住被适应放大的卡片），放大后才出现
   check(
-    '图例说明端点固定、折点可拖',
-    legendText.includes('归属') &&
+    '整图可见时隐藏缩略图与图例覆盖层',
+    (await page.locator('.dbz-graph-minimap').count()) === 0 &&
+      (await page.locator('.dbz-graph-legend').count()) === 0,
+  );
+  // 放大再适应回原比例，避免影响后续卡片内元素的像素断言
+  const scaleBefore = await page.locator('.dbz-graph-scale').innerText();
+  await page.locator('.dbz-graph-controls button[title="放大"]').click();
+  await page.waitForSelector('.dbz-graph-minimap', { timeout: 5000 }).catch(() => {});
+  const legendText = await page.locator('.dbz-graph-legend').innerText().catch(() => '');
+  check(
+    '放大后缩略图与图例可见，图例说明端点固定、折点可拖',
+    (await page.locator('.dbz-graph-minimap').isVisible()) &&
+      legendText.includes('归属') &&
       legendText.includes('端点固定') &&
       legendText.includes('折点') &&
       !legendText.includes('数据流'),
     legendText,
   );
+  await page.locator('.dbz-graph-controls button[title="适应画布"]').click();
+  await page
+    .waitForFunction(
+      (expected) => document.querySelector('.dbz-graph-scale')?.textContent === expected,
+      scaleBefore,
+      { timeout: 5000 },
+    )
+    .catch(() => {});
   check(
     'tab 栏外汇总 Kafka 集群总数',
     (await page.locator('.dbz-canvas-topbar .ant-tag:has-text("3 个 Kafka 集群")').count()) === 1,
@@ -1644,10 +1691,8 @@ try {
     })
     .catch(() => {});
   await page.locator('.dbz-graph-node[data-node-key="1:402"] [data-node-action="check"]').click();
-  // 检测是异步请求，等提示真的出现再读，避免只看到上一次「修改成功」
-  await page
-    .waitForSelector('.ant-message-notice-content:has-text("集群检测通过")', { timeout: 5000 })
-    .catch(() => {});
+  // 检测完统一弹结果弹窗，等弹窗真出现再读内容
+  await page.waitForSelector('[data-detect-dialog]', { timeout: 5000 }).catch(() => {});
   const checkRequest = posted.findLast(
     (item) => item.method === 'POST' && item.path === '/dbz/kafka-broker/check',
   );
@@ -1656,11 +1701,28 @@ try {
     checkRequest?.body?.id === '402',
     JSON.stringify(checkRequest?.body),
   );
-  const brokerMessages = await page.locator('.ant-message-notice-content').allInnerTexts();
+  const brokerDetectModal = page.locator('.ant-modal:has([data-detect-dialog])').last();
+  const brokerText = (await brokerDetectModal.innerText().catch(() => '')).replace(/\s+/g, ' ');
   check(
-    '集群检测给出成功提示',
-    brokerMessages.some((text) => text.includes('集群检测通过')),
-    brokerMessages.join(' | '),
+    '集群检测弹出统一结果弹窗，只展示 Kafka 侧内容',
+    brokerText.includes('结论') &&
+      brokerText.includes('Kafka 连通性') &&
+      brokerText.includes('Topic') &&
+      !brokerText.includes('连接器插件'),
+    brokerText.slice(0, 220),
+  );
+  await brokerDetectModal.locator('.ant-modal-footer .ant-btn-primary').click();
+  await brokerDetectModal.waitFor({ state: 'hidden' }).catch(() => {});
+  // 弹窗关掉后属性面板保留最近一次结果，且没有「插件」分组
+  await selectNode('1:402');
+  const brokerCheckedText = await page.locator('.dbz-graph-inspector').innerText();
+  check(
+    '集群属性面板保留检测结果且不含插件分组',
+    brokerCheckedText.includes('检测结果') &&
+      brokerCheckedText.includes('Kafka 连通性') &&
+      brokerCheckedText.includes('Topic') &&
+      !brokerCheckedText.includes('插件'),
+    brokerCheckedText.slice(0, 220),
   );
   await page.locator('[data-cluster-tab="401"]').click();
   await page
@@ -1671,18 +1733,21 @@ try {
 
   // C. Connect 检测：可达 / 版本 / worker / 插件，并同步纳管记录（标记不一致）
   await page.locator('.dbz-graph-node[data-node-key="2:101"] [data-node-action="check"]').click();
-  const connectModal = visibleModal().last();
+  await page.waitForSelector('[data-detect-dialog]', { timeout: 5000 }).catch(() => {});
+  const connectModal = page.locator('.ant-modal:has([data-detect-dialog])').last();
   await connectModal.waitFor({ state: 'visible' });
   const connectText = (await connectModal.innerText()).replace(/\s+/g, ' ');
   check(
-    'Connect 检测结果包含版本、worker 与同步结果',
+    'Connect 检测结果弹窗包含版本、worker、插件与同步结果',
     connectText.includes('v3.7.1') &&
       connectText.includes('1 个 worker') &&
-      connectText.includes('同步结果：补录 0') &&
+      connectText.includes('连接器插件') &&
+      connectText.includes('MySqlConnector') &&
+      connectText.includes('补录 0') &&
       connectText.includes('标记不一致 1'),
-    connectText.slice(0, 240),
+    connectText.slice(0, 260),
   );
-  await connectModal.locator('.ant-modal-confirm-btns .ant-btn-primary').click();
+  await connectModal.locator('.ant-modal-footer .ant-btn-primary').click();
   await connectModal.waitFor({ state: 'hidden' });
   await page
     .waitForSelector('.dbz-graph-node[data-node-key="3:201"] .dbz-graph-inconsistent-tag', {
@@ -1696,31 +1761,55 @@ try {
       .count()) === 1,
   );
 
-  // C. 连接器一致性检测：下游一致 → 成功；上游库内缺字段 → 失败并列出具体原因
-  await page.locator('.dbz-graph-node[data-node-key="4:301"] [data-node-action="check"]').click();
-  await page
-    .waitForSelector('.ant-message-notice-content:has-text("一致性检测通过")', { timeout: 5000 })
-    .catch(() => {});
+  // 标签可点击：弹窗并排展示库内 / 远端，差异行高亮；关闭后继续后续断言
+  await page.locator('.dbz-graph-node[data-node-key="3:201"] .dbz-graph-inconsistent-tag').click();
+  await page.waitForSelector('[data-diff-dialog]', { timeout: 5000 }).catch(() => {});
+  const diffModal = page.locator('.ant-modal:has([data-diff-dialog])');
+  const diffHead = await diffModal.locator('.ant-table-thead').innerText().catch(() => '');
   check(
-    '下游一致性检测通过',
-    (await page
-      .locator('.ant-message-notice-content:has-text("一致性检测通过")')
-      .count()) >= 1,
+    '「不一致」弹窗并排展示库内与远端配置，差异项高亮',
+    diffHead.includes('库内配置') &&
+      diffHead.includes('远端 Connect 实际配置') &&
+      (await diffModal.locator('.dbz-diff-row-changed').count()) >= 1,
+    diffHead,
   );
+  // 用关闭按钮（force 绕过卡片上残留的工具提示浮层）；关完确认没有残留弹窗
+  await diffModal.locator('.ant-modal-close').click({ force: true });
+  await diffModal.waitFor({ state: 'hidden' }).catch(() => {});
+  await page
+    .waitForFunction(() => document.querySelectorAll('.ant-modal-wrap:visible').length === 0, null, {
+      timeout: 5000,
+    })
+    .catch(() => {});
+
+  // C. 连接器一致性检测：下游一致 → 结论正常；上游库内缺字段 → 异常并列出具体原因
+  await page.locator('.dbz-graph-node[data-node-key="4:301"] [data-node-action="check"]').click();
+  await page.waitForSelector('[data-detect-dialog]', { timeout: 5000 }).catch(() => {});
+  const okModal = page.locator('.ant-modal:has([data-detect-dialog])').last();
+  const okText = (await okModal.innerText().catch(() => '')).replace(/\s+/g, ' ');
+  check(
+    '下游一致性检测弹出弹窗且结论为正常',
+    okText.includes('正常') &&
+      okText.includes('关键配置比对') &&
+      okText.includes('启停状态'),
+    okText.slice(0, 220),
+  );
+  await okModal.locator('.ant-modal-footer .ant-btn-primary').click();
+  await okModal.waitFor({ state: 'hidden' }).catch(() => {});
 
   await page.locator('.dbz-graph-node[data-node-key="3:201"] [data-node-action="check"]').click();
-  await page.waitForTimeout(600);
-  const consistencyModal = visibleModal().last();
+  await page.waitForSelector('[data-detect-dialog]', { timeout: 5000 }).catch(() => {});
+  const consistencyModal = page.locator('.ant-modal:has([data-detect-dialog])').last();
   await consistencyModal.waitFor({ state: 'visible' });
   const consistencyText = (await consistencyModal.innerText()).replace(/\s+/g, ' ');
   check(
-    '上游一致性检测失败并列出具体差异',
-    consistencyText.includes('一致性检测未通过') &&
+    '上游一致性检测结论为异常并列出具体差异',
+    consistencyText.includes('异常') &&
       consistencyText.includes('database.hostname') &&
       consistencyText.includes('table.include.list'),
     consistencyText.slice(0, 240),
   );
-  await consistencyModal.locator('.ant-modal-confirm-btns .ant-btn-primary').click();
+  await consistencyModal.locator('.ant-modal-footer .ant-btn-primary').click();
   await consistencyModal.waitFor({ state: 'hidden' });
 
   // 卡片上的重启：确认后请求要打到 Connect 的 restart 接口
@@ -1754,6 +1843,13 @@ try {
       connectorText.includes('失败原因') &&
       connectorText.includes('任务与异常') &&
       connectorText.includes('MySqlConnector'),
+    connectorText.slice(0, 160),
+  );
+  check(
+    '属性框保留最近一次检测结果，与检测弹窗同源',
+    connectorText.includes('检测结果') &&
+      connectorText.includes('关键配置比对') &&
+      connectorText.includes('database.hostname'),
     connectorText.slice(0, 160),
   );
   check(
@@ -2072,9 +2168,10 @@ try {
   const brokerBox = await brokerNode.boundingBox();
   await page.mouse.move(brokerBox.x + brokerBox.width / 2, brokerBox.y + brokerBox.height / 2);
   await page.mouse.down();
+  // 向左拖动：向右下拖动会与下方 Connect 卡片重叠，后续点击编辑按钮会被上层卡片拦截
   await page.mouse.move(
-    brokerBox.x + brokerBox.width / 2 + 120,
-    brokerBox.y + brokerBox.height / 2 + 80,
+    brokerBox.x + brokerBox.width / 2 - 120,
+    brokerBox.y + brokerBox.height / 2,
     { steps: 14 },
   );
   await page.mouse.up();

@@ -155,6 +155,56 @@ export interface DbzKafkaConnectVo extends AuditFields {
   enabled: boolean;
 }
 
+/** # 一次配置比对的单行结果 */
+export interface DbzConnectorCompareRow {
+  /** 配置项名（服务端已按字典序排列） */
+  key: string;
+  /** 库内配置的值（敏感项已脱敏） */
+  local: string;
+  /** 远端配置的值；`null` 表示远端缺少该配置项（敏感项已脱敏） */
+  remote?: string | null;
+  /** 是否差异：远端缺键或值不同 */
+  changed: boolean;
+  /** 是否敏感项（值已脱敏，不落明文） */
+  sensitive: boolean;
+}
+
+/** # 检测不一致时的对比快照 */
+export interface DbzConnectorCompareDetail {
+  /** 本次检测时间（毫秒） */
+  checkedAt: number;
+  /** 检测时远端是否还存在该连接器 */
+  remoteExists: boolean;
+  /** 无法逐项展示时的说明（远端不存在、配置不是合法 JSON 等） */
+  reason?: string | null;
+  /** 逐项对比结果；远端不存在或无法解析时为空 */
+  rows: DbzConnectorCompareRow[];
+}
+
+/** # 同步方向：库内为准下发远端 / 远端为准写回库内 */
+export type DbzConnectorSyncDirection = 'toRemote' | 'toLocal';
+
+/** # 同步连接器配置的请求体 */
+export interface DbzConnectorConfigSyncInput {
+  nodeType: 'source' | 'sink';
+  nodeId: Id;
+  direction: DbzConnectorSyncDirection;
+  /** 只提交用户改过的字段；敏感项留空表示保持原值 */
+  patch?: Record<string, unknown>;
+  /** 审核口令的 SM3 摘要；仅 toRemote 需要 */
+  auditPswd?: string;
+}
+
+/** # 同步连接器配置的结果 */
+export interface DbzConnectorConfigSyncVo {
+  /** 本次实际校验的口令类型；toLocal 为空 */
+  pswdKind?: DbzDeletePswdKind | null;
+  /** 同步后重新计算的检测标记 */
+  inconsistent: boolean;
+  /** 同步后重新计算的对比快照（JSON 文本）；一致时为空 */
+  inconsistentDetail?: string | null;
+}
+
 /** # 上游（source）连接器 */
 export interface DbzSourceConnectorVo extends AuditFields {
   id: Id;
@@ -169,6 +219,8 @@ export interface DbzSourceConnectorVo extends AuditFields {
   enabled: boolean;
   /** 检测标记：库内配置与 Connect 实际不一致，或远端已不存在（由 Connect 卡片「检测」写入） */
   inconsistent: boolean;
+  /** 检测不一致时的脱敏对比快照（JSON 文本，由检测/同步写入） */
+  inconsistentDetail?: string | null;
 }
 
 /** # 下游（sink）连接器 */
@@ -186,6 +238,8 @@ export interface DbzSinkConnectorVo extends AuditFields {
   enabled: boolean;
   /** 检测标记：库内配置与 Connect 实际不一致，或远端已不存在（由 Connect 卡片「检测」写入） */
   inconsistent: boolean;
+  /** 检测不一致时的脱敏对比快照（JSON 文本，由检测/同步写入） */
+  inconsistentDetail?: string | null;
 }
 
 /** # 新增集群的请求体 */
