@@ -54,8 +54,8 @@ import {
   type HTMLAttributes,
 } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { notifySessionExpired } from '../../auth/session';
 import { sm3 } from '../../lib/sm3';
+import { ApiError } from '../../api/client';
 import { backupApi } from '../../api/backup';
 import {
   controlPlaneApi,
@@ -136,6 +136,14 @@ import SourceConnectorForm from '../source-connector/SourceConnectorForm';
 
 /** 实时状态查询的最长等待时间：单台 Connect 卡住不能拖死整个视图 */
 const LIVE_TIMEOUT_MS = 15_000;
+
+/** adm-rs 高危操作口令校验业务码 */
+const CODE_PSWD_WRONG = 'ADM00007';
+const CODE_PSWD_RATE_LIMITED = 'ADM00008';
+const CODE_PSWD_USER_UNAVAILABLE = 'ADM00009';
+const CODE_SESSION_INVALID = 'ADM00005';
+/** dbz 自定义：认证服务不可用（网络、超时、5xx、未配置） */
+const CODE_VERIFY_UNAVAILABLE = 'DBZ00001';
 
 /** 一台 Connect 的插件检测结果；停用或查询失败都会给出原因 */
 interface BrokerPluginGroup {
@@ -1520,10 +1528,9 @@ export default function ControlPanelPage() {
   /**
    * # 执行删除
    *
-   * 后端先带上当前用户身份转发 adm-rs 校验审核口令，通过后才删除并写审计；失败时
+   * 后端先带上当前用户身份转发 adm-rs 校验口令，通过后才删除并写审计；失败时
    * 一行数据都不动。是否回退到登录口令完全由后端判定，前端只提交一个口令字段，
-   * 按接口返回的提示区分「口令不正确」「校验过于频繁」「账号不可用」
-   * 「认证服务不可用」，后者不允许删除，也不能提示成口令错。
+   * 失败按 `ApiError.code` 分流，不再依赖提示文案。
    */
   const executeDeleteNode = async () => {
     if (!deleteTarget) {
@@ -1539,41 +1546,46 @@ export default function ControlPanelPage() {
     setDeleteError(null);
     try {
       // 口令明文不出浏览器：先做一次 SM3，后端只转发摘要给 adm-rs
-      await controlPlaneApi.deleteNode({
+      const result = await controlPlaneApi.deleteNode({
         nodeType: deleteTarget.kind,
         nodeId: deleteTarget.id,
         auditPswd: sm3(password),
       });
       message.success(`已删除「${deleteTarget.name}」，删除人与时间已写入审计`);
+      if (result?.pswdKind === 'login') {
+        message.info('当前账号未设置审核口令，已按登录口令校验通过');
+      }
       setDeleteTarget(null);
       setDeletePassword('');
       setSelectedNodeKey(null);
       setSelectedEdgeId(null);
       state.reload();
     } catch (reason) {
+      const code = reason instanceof ApiError ? reason.code : undefined;
       const text = errorMessage(reason);
-      // 顺序有讲究：账号不可用可能被包装成「登录状态已失效：当前用户不可用」，
-      // 必须排在会话失效之前，否则会把「换口令也没用」误判成「重新登录」。
-      if (text.includes('账号不可用') || text.includes('当前用户不可用')) {
-        setDeleteError(`账号不可用，删除未执行：${text}`);
-      } else if (text.includes('认证服务不可用')) {
-        // 认证服务不可用与口令错误是两回事：前者重试也没用，不能说成口令错
-        setDeleteError(`认证服务不可用，删除未执行：${text}`);
-      } else if (text.includes('频繁')) {
-        // adm 频控响应不返回剩余秒数，只能提示默认窗口，避免编造倒计时
-        setDeleteError(
-          `审核口令校验过于频繁，删除未执行：${text}。认证服务默认 10 分钟内最多允许 5 次错误，请等待窗口结束后重试。`,
-        );
-      } else if (text.includes('登录状态已失效')) {
-        // 令牌失效：清会话并回登录页，删除未执行
-        notifySessionExpired();
-        setDeleteError(`登录状态已失效，删除未执行：${text}`);
-      } else if (text.includes('口令不正确') || text.includes('审核口令错误')) {
-        setDeleteError(
-          `审核口令不正确，删除未执行：${text}。未设置审核口令时请输入登录口令。`,
-        );
-      } else {
-        setDeleteError(text);
+      switch (code) {
+        case CODE_SESSION_INVALID:
+          // 令牌失效：请求层已清会话并回登录页，这里只说明删除未执行
+          setDeleteError(`登录状态已失效，删除未执行：${text}`);
+          break;
+        case CODE_PSWD_RATE_LIMITED:
+          // adm 频控响应不返回剩余秒数，只能提示默认窗口，避免编造倒计时
+          setDeleteError(
+            `${text}，删除未执行。认证服务默认 10 分钟内最多允许 5 次错误，请等待窗口结束后重试。`,
+          );
+          break;
+        case CODE_PSWD_USER_UNAVAILABLE:
+          setDeleteError(`${text}，删除未执行`);
+          break;
+        case CODE_VERIFY_UNAVAILABLE:
+          // 认证服务不可用与口令错误是两回事：前者重试也没用，不能说成口令错
+          setDeleteError(`${text}，删除未执行`);
+          break;
+        case CODE_PSWD_WRONG:
+          setDeleteError(`${text}，删除未执行`);
+          break;
+        default:
+          setDeleteError(text);
       }
     } finally {
       setDeleteRunning(false);

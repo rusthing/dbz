@@ -13,7 +13,7 @@ use crate::dto::{
     DbzControlPlaneNodeDeleteDto,
 };
 use crate::svc::{DbzControlPlaneDeleteSvc, DbzControlPlaneEdgeLayoutSvc};
-use crate::vo::DbzControlPlaneEdgeBendVo;
+use crate::vo::{DbzControlPlaneEdgeBendVo, DbzControlPlaneNodeDeleteVo};
 use axum::debug_handler;
 use axum::extract::Query;
 use axum::http::HeaderMap;
@@ -78,22 +78,24 @@ pub async fn remove_edge(
     Ok(Json(ro))
 }
 
-/// # 校验审核口令后删除节点
+/// # 校验口令后删除节点
 ///
-/// 校验失败按提示前缀区分「审核口令错误」「审核口令未设置」「审核口令校验过于频繁」
-/// 「登录状态已失效」与「认证服务不可用」；除口令通过外都不允许删除，也不会留下半删状态。
+/// 口令校验失败时 HTTP 仍是 200，`result` 为 warn 且带业务码：
+/// `ADM00007` 口令不正确、`ADM00008` 过于频繁、`ADM00009` 账号不可用、
+/// `ADM00005` 登录状态已失效、`DBZ00001` 认证服务不可用。成功时 `extra.pswdKind`
+/// 说明本次校验的是审核口令（`audit`）还是登录口令（`login`）。
 #[utoipa::path(
     post,
     path = "/dbz/control-plane/node-delete",
     request_body = DbzControlPlaneNodeDeleteDto,
-    responses((status = OK, description = "已删除"))
+    responses((status = OK, body = Ro<DbzControlPlaneNodeDeleteVo>))
 )]
 #[debug_handler]
 #[log_call]
 pub async fn delete_node(
     headers: HeaderMap,
     Json(dto): Json<DbzControlPlaneNodeDeleteDto>,
-) -> Result<Json<Ro<()>>, CtrlError> {
+) -> Result<Json<Ro<DbzControlPlaneNodeDeleteVo>>, CtrlError> {
     let ro = DbzControlPlaneDeleteSvc::delete_node(
         dto,
         get_current_user_id(&headers)?,

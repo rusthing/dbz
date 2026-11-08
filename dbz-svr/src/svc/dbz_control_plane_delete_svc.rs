@@ -1,8 +1,9 @@
 //! # 控制面节点删除服务
 //!
-//! 删除是高风险动作，必须先把当前登录用户**审核口令**的摘要连同登录令牌交给 adm-rs
-//! 校验，通过后才动数据库与远端 Connect；校验失败或认证服务不可用时**整笔操作
-//! 都不执行**，不会留下「删除了一半」的状态。
+//! 删除是高风险动作，必须先把当前登录用户的**高危操作口令**摘要连同登录令牌交给
+//! adm-rs 校验（审核口令为空时由 adm-rs 回退登录口令），通过后才动数据库与远端
+//! Connect；校验失败或认证服务不可用时**整笔操作都不执行**，不会留下「删除了一半」
+//! 的状态。是否回退完全由 adm-rs 判定，本服务只透传结果里的口令类型。
 //!
 //! 删除成功后写一条不可变审计（操作人、时间、节点类型与名称），因为业务行删掉
 //! 以后原来的 `updater_id` 也一起没了。
@@ -20,6 +21,7 @@ use crate::svc::{
     DbzDeleteVerifySvc, DbzKafkaBrokerSvc, DbzKafkaConnectSvc, DbzSinkConnectorSvc,
     DbzSourceConnectorSvc,
 };
+use crate::vo::DbzControlPlaneNodeDeleteVo;
 use anyhow::anyhow;
 use robotech::api::{Ro, U64};
 use robotech::db::get_db_conn;
@@ -39,7 +41,7 @@ impl DbzControlPlaneDeleteSvc {
         dto: DbzControlPlaneNodeDeleteDto,
         operator_id: U64,
         authorization: Option<&str>,
-    ) -> Result<Ro<()>, SvcError> {
+    ) -> Result<Ro<DbzControlPlaneNodeDeleteVo>, SvcError> {
         let node_type = dto.node_type.trim().to_lowercase();
         if !matches!(node_type.as_str(), "broker" | "connect" | "source" | "sink") {
             return Err(anyhow!("nodeType 只支持 broker / connect / source / sink").into());
@@ -49,8 +51,18 @@ impl DbzControlPlaneDeleteSvc {
             return Err(anyhow!("nodeId 必须为正数").into());
         }
 
-        // 第一道门：审核口令。失败直接返回，后面的删除一行都不执行
-        DbzDeleteVerifySvc::verify(authorization, &dto.audit_pswd).await?;
+        // 第一道门：口令校验。失败按业务码返回（HTTP 200 + warn），前端按码分流；
+        // 后面的删除一行都不执行
+        let pswd_kind = match DbzDeleteVerifySvc::verify(authorization, &dto.audit_pswd).await {
+            Ok(kind) => kind,
+            Err(failure) => {
+                warn!(
+                    "控制面删除口令校验未通过: code={}, msg={}",
+                    failure.code, failure.msg
+                );
+                return Ok(Ro::warn(failure.msg).code(Some(failure.code)));
+            }
+        };
 
         let db = get_db_conn().map_err(|e| anyhow!("获取数据库连接失败: {e}"))?;
         let node_name = Self::name_of(db.as_ref(), &node_type, node_id).await?;
@@ -120,7 +132,10 @@ impl DbzControlPlaneDeleteSvc {
             operator_id.0, node_type, node_id, node_name, now
         );
 
-        Ok(Ro::success(format!("已删除「{node_name}」")))
+        Ok(
+            Ro::success(format!("已删除「{node_name}」"))
+                .extra(Some(DbzControlPlaneNodeDeleteVo { pswd_kind })),
+        )
     }
 
     /// 删除前取到节点名称，用于审计与提示；记录已不存在时返回 NotFound

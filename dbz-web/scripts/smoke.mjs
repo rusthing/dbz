@@ -832,7 +832,7 @@ await page.route('**/dbz/**', async (route) => {
       edgeBendStore.delete(url.searchParams.get('edgeId'));
       return route.fulfill({ json: { result: 1, msg: '成功', timestamp: Date.now() } });
     }
-    // 删除节点：口令不正确 / 频控 / 账号不可用 / 认证服务不可用返回可区分文案
+    // 删除节点：按业务码返回，前端只按 code 分流
     // 未设置审核口令时后端自动改用登录口令，不再有「未设置」这类阻断错误
     if (path === '/dbz/control-plane/node-delete' && request.method() === 'POST') {
       if (failNextDelete === 'wrong') {
@@ -840,7 +840,8 @@ await page.route('**/dbz/**', async (route) => {
         return route.fulfill({
           json: {
             result: 0,
-            msg: '审核口令错误：当前登录用户的口令不正确',
+            code: 'ADM00007',
+            msg: '登录口令不正确',
             timestamp: Date.now(),
           },
         });
@@ -850,7 +851,8 @@ await page.route('**/dbz/**', async (route) => {
         return route.fulfill({
           json: {
             result: 0,
-            msg: '账号不可用：当前用户已停用，请重新登录或联系管理员',
+            code: 'ADM00009',
+            msg: '账号不可用：账号已停用',
             timestamp: Date.now(),
           },
         });
@@ -860,7 +862,8 @@ await page.route('**/dbz/**', async (route) => {
         return route.fulfill({
           json: {
             result: 0,
-            msg: '审核口令校验过于频繁：短时间内错误尝试过多，请稍后重试',
+            code: 'ADM00008',
+            msg: '口令校验失败次数过多，请稍后再试',
             timestamp: Date.now(),
           },
         });
@@ -870,12 +873,20 @@ await page.route('**/dbz/**', async (route) => {
         return route.fulfill({
           json: {
             result: 0,
+            code: 'DBZ00001',
             msg: '认证服务不可用：无法连接认证服务，本次删除未执行',
             timestamp: Date.now(),
           },
         });
       }
-      return route.fulfill({ json: { result: 1, msg: '成功', timestamp: Date.now() } });
+      return route.fulfill({
+        json: {
+          result: 1,
+          msg: '成功',
+          extra: { pswdKind: 'audit' },
+          timestamp: Date.now(),
+        },
+      });
     }
     // 上游重新同步：写入信号表，返回写入结果
     if (path === '/dbz/source-connector/snapshot') {
@@ -1908,9 +1919,9 @@ try {
   await page.waitForTimeout(500);
   const rateText = (await wrongPasswordModal.innerText()).replace(/\s+/g, ' ');
   check(
-    '频控时提示审核口令校验过于频繁并说明重试窗口',
+    '频控时提示次数过多并说明重试窗口',
     (await wrongPasswordModal.isVisible()) &&
-      rateText.includes('审核口令校验过于频繁') &&
+      rateText.includes('次数过多') &&
       rateText.includes('10 分钟'),
     rateText.slice(0, 220),
   );

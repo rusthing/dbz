@@ -481,6 +481,15 @@ export interface DbzControlPlaneNodeDeleteInput {
   auditPswd: string;
 }
 
+/** # 本次删除确认实际校验的口令类型 */
+export type DbzDeletePswdKind = 'audit' | 'login';
+
+/** # 控制面节点删除结果 */
+export interface DbzControlPlaneNodeDeleteVo {
+  /** `audit` = 审核口令；`login` = 未设置审核口令，后端已回退校验登录口令 */
+  pswdKind: DbzDeletePswdKind;
+}
+
 /** # 死信连接器类型（`DeadLetterConnectorType`） */
 export type DeadLetterConnectorType = 1 | 2;
 

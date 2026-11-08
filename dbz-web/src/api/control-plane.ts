@@ -13,6 +13,7 @@ import type {
   DbzControlPlaneLayoutUpsertInput,
   DbzControlPlaneLayoutVo,
   DbzControlPlaneNodeDeleteInput,
+  DbzControlPlaneNodeDeleteVo,
   Id,
 } from './types';
 
@@ -79,10 +80,11 @@ export const controlPlaneApi = {
    *
    * 前端先对明文做 SM3，后端再带 `Authorization` 转发 adm-rs 的
    * `POST /adm/auth/verify-audit-password` 校验；通过后才删除并写审计。
-   * 当前用户未设置审核口令时，由认证服务回退到登录口令比对，前端不参与判断，
-   * 请求体始终只有一个口令摘要。失败提示前缀区分「口令不正确」
-   * 「校验过于频繁」「账号不可用」「登录状态已失效」与「认证服务不可用」。
+   * 是否回退登录口令完全由后端判定，请求体始终只有一个口令摘要；成功时
+   * `extra.pswdKind` 说明本次校验的是审核口令（`audit`）还是登录口令（`login`）。
+   * 失败按 `ApiError.code` 分流：`ADM00007` 口令不正确、`ADM00008` 过于频繁、
+   * `ADM00009` 账号不可用、`ADM00005` 登录状态已失效、`DBZ00001` 认证服务不可用。
    */
-  deleteNode: (input: DbzControlPlaneNodeDeleteInput): Promise<void> =>
-    apiPost('/dbz/control-plane/node-delete', input),
+  deleteNode: (input: DbzControlPlaneNodeDeleteInput): Promise<DbzControlPlaneNodeDeleteVo> =>
+    apiPost<DbzControlPlaneNodeDeleteVo>('/dbz/control-plane/node-delete', input),
 };
