@@ -376,6 +376,13 @@ input[type='color']:not(:disabled) {
   white-space: nowrap;
 }
 
+/* 连接器名称 + 雪花 ID 两行；容器允许收缩，名称才能在列宽内省略 */
+.dbz-connector-cell {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
 /* 雪花 ID 截断后仍要能聚焦查看全量值 */
 .dbz-id {
   color: rgba(0, 0, 0, 0.45);
@@ -679,6 +686,16 @@ input[type='color']:not(:disabled) {
   stroke-width: 1.8;
   pointer-events: none;
   opacity: 0.9;
+}
+
+/* 选中连线的拖拽手柄：盖在节点之上，折点落进卡片范围后仍可拖动 */
+.dbz-graph-handles {
+  position: absolute;
+  left: 0;
+  top: 0;
+  z-index: 4;
+  overflow: visible;
+  pointer-events: none;
 }
 
 .dbz-graph-edge-line.is-selected {

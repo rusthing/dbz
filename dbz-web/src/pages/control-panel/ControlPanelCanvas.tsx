@@ -667,13 +667,10 @@ export default function ControlPanelCanvas({
     }
     const width = Math.max(1, maxX - minX);
     const height = Math.max(1, maxY - minY);
-    // 右下角缩略图、左下角图例是覆盖层：适应画布时给它们留出空间，
-    // 避免节点被压在覆盖层下面点不到
-    const pad = 40;
-    const reservedRight = 210;
-    const reservedBottom = 140;
-    const availableWidth = Math.max(1, viewportSize.w - pad * 2 - reservedRight);
-    const availableHeight = Math.max(1, viewportSize.h - pad * 2 - reservedBottom);
+    // 整图可见时缩略图与图例会隐藏，这里按整个视口计算，不再为覆盖层预留空间
+    const pad = 16;
+    const availableWidth = Math.max(1, viewportSize.w - pad * 2);
+    const availableHeight = Math.max(1, viewportSize.h - pad * 2);
     const scale = clamp(
       Math.min(availableWidth / width, availableHeight / height),
       MIN_SCALE,
@@ -908,6 +905,70 @@ export default function ControlPanelCanvas({
     };
   }, [bounds, view, viewportSize]);
 
+  /** 整图都已可见时隐藏覆盖层，避免缩略图与图例盖住被适应放大的卡片 */
+  const overviewScale = Math.min(
+    viewportSize.w / bounds.width,
+    viewportSize.h / bounds.height,
+  );
+  const hideOverlays = !nodes.length || !viewportSize.w || view.scale <= overviewScale * 1.03;
+
+  /** 选中连线的手柄：单独画在节点之上，折点被拖进卡片范围后仍能再拖出来 */
+  const renderEdgeHandles = (geometry: EdgeGeometry) => (
+    <g key={geometry.edge.id}>
+      <g
+        className="dbz-graph-anchor-handle"
+        data-edge-anchor={`${geometry.edge.id}:start`}
+        transform={`translate(${geometry.start.x}, ${geometry.start.y + 18})`}
+        onPointerDown={(event) => handleAnchorPointerDown(event, geometry, 'start')}
+      >
+        <circle r={11} className="dbz-graph-anchor-hit" />
+        <rect
+          x={-12}
+          y={-6}
+          width={24}
+          height={12}
+          rx={6}
+          className="dbz-graph-anchor-shape"
+        />
+        <title>左右拖动，调整上游连接点位置</title>
+      </g>
+      <g
+        className="dbz-graph-anchor-handle"
+        data-edge-anchor={`${geometry.edge.id}:end`}
+        transform={`translate(${geometry.end.x}, ${geometry.end.y - 18})`}
+        onPointerDown={(event) => handleAnchorPointerDown(event, geometry, 'end')}
+      >
+        <circle r={11} className="dbz-graph-anchor-hit" />
+        <rect
+          x={-12}
+          y={-6}
+          width={24}
+          height={12}
+          rx={6}
+          className="dbz-graph-anchor-shape"
+        />
+        <title>左右拖动，调整下游连接点位置</title>
+      </g>
+      <g
+        className="dbz-graph-bend-handle"
+        data-edge-bend={geometry.edge.id}
+        transform={`translate(${geometry.handle.x}, ${geometry.handle.y})`}
+        onPointerDown={(event) => handleBendPointerDown(event, geometry)}
+      >
+        <circle r={10} className="dbz-graph-bend-hit" />
+        <rect
+          x={-14}
+          y={-4}
+          width={28}
+          height={8}
+          rx={4}
+          className="dbz-graph-bend-shape"
+        />
+        <title>上下拖动这个折点调整走线，避开卡片重叠</title>
+      </g>
+    </g>
+  );
+
   return (
     <div className="dbz-canvas-shell">
       <div className="dbz-canvas-main">
@@ -955,65 +1016,7 @@ export default function ControlPanelCanvas({
                   >
                     <title>选中后可左右拖动两端的连接点、上下拖动中间折点；不能删除</title>
                   </path>
-                  {selectedEdgeId === geometry.edge.id && (
-                    <g>
-                      <g
-                        className="dbz-graph-anchor-handle"
-                        data-edge-anchor={`${geometry.edge.id}:start`}
-                        transform={`translate(${geometry.start.x}, ${geometry.start.y + 18})`}
-                        onPointerDown={(event) =>
-                          handleAnchorPointerDown(event, geometry, 'start')
-                        }
-                      >
-                        <circle r={11} className="dbz-graph-anchor-hit" />
-                        <rect
-                          x={-12}
-                          y={-6}
-                          width={24}
-                          height={12}
-                          rx={6}
-                          className="dbz-graph-anchor-shape"
-                        />
-                        <title>左右拖动，调整上游连接点位置</title>
-                      </g>
-                      <g
-                        className="dbz-graph-anchor-handle"
-                        data-edge-anchor={`${geometry.edge.id}:end`}
-                        transform={`translate(${geometry.end.x}, ${geometry.end.y - 18})`}
-                        onPointerDown={(event) =>
-                          handleAnchorPointerDown(event, geometry, 'end')
-                        }
-                      >
-                        <circle r={11} className="dbz-graph-anchor-hit" />
-                        <rect
-                          x={-12}
-                          y={-6}
-                          width={24}
-                          height={12}
-                          rx={6}
-                          className="dbz-graph-anchor-shape"
-                        />
-                        <title>左右拖动，调整下游连接点位置</title>
-                      </g>
-                      <g
-                        className="dbz-graph-bend-handle"
-                        data-edge-bend={geometry.edge.id}
-                        transform={`translate(${geometry.handle.x}, ${geometry.handle.y})`}
-                        onPointerDown={(event) => handleBendPointerDown(event, geometry)}
-                      >
-                        <circle r={10} className="dbz-graph-bend-hit" />
-                        <rect
-                          x={-14}
-                          y={-4}
-                          width={28}
-                          height={8}
-                          rx={4}
-                          className="dbz-graph-bend-shape"
-                        />
-                        <title>上下拖动这个折点调整走线，避开卡片重叠</title>
-                      </g>
-                    </g>
-                  )}
+                  {/* 连接点与折点手柄在节点之上单独渲染，见下方 .dbz-graph-handles */}
                 </g>
               ))}
             </svg>
@@ -1113,6 +1116,17 @@ export default function ControlPanelCanvas({
                 </div>
               );
             })}
+
+            <svg
+              className="dbz-graph-handles"
+              width={WORLD_WIDTH}
+              height={WORLD_HEIGHT}
+              aria-hidden
+            >
+              {geometries.map((geometry) =>
+                selectedEdgeId === geometry.edge.id ? renderEdgeHandles(geometry) : null,
+              )}
+            </svg>
           </div>
 
           <div className="dbz-graph-controls">
@@ -1128,61 +1142,67 @@ export default function ControlPanelCanvas({
             <span className="dbz-graph-scale">{Math.round(view.scale * 100)}%</span>
           </div>
 
-          <div className="dbz-graph-minimap" title="缩略图：点击可移动视口">
-            <svg
-              viewBox={`${bounds.minX - 20} ${bounds.minY - 20} ${bounds.width + 40} ${bounds.height + 40}`}
-              preserveAspectRatio="xMidYMid meet"
-              onClick={(event) => {
-                const rect = event.currentTarget.getBoundingClientRect();
-                const worldX = bounds.minX + ((event.clientX - rect.left) / rect.width) * bounds.width;
-                const worldY = bounds.minY + ((event.clientY - rect.top) / rect.height) * bounds.height;
-                setView((prev) => ({
-                  ...prev,
-                  x: viewportSize.w / 2 - worldX * prev.scale,
-                  y: viewportSize.h / 2 - worldY * prev.scale,
-                }));
-              }}
-            >
-              {nodes.map((node) => {
-                const pos = positions[node.key] ?? defaultPosition(node.kind, 0);
-                const size = NODE_SIZE[node.kind];
-                return (
+          {!hideOverlays && (
+            <div className="dbz-graph-minimap" title="缩略图：点击可移动视口">
+              <svg
+                viewBox={`${bounds.minX - 20} ${bounds.minY - 20} ${bounds.width + 40} ${bounds.height + 40}`}
+                preserveAspectRatio="xMidYMid meet"
+                onClick={(event) => {
+                  const rect = event.currentTarget.getBoundingClientRect();
+                  const worldX =
+                    bounds.minX + ((event.clientX - rect.left) / rect.width) * bounds.width;
+                  const worldY =
+                    bounds.minY + ((event.clientY - rect.top) / rect.height) * bounds.height;
+                  setView((prev) => ({
+                    ...prev,
+                    x: viewportSize.w / 2 - worldX * prev.scale,
+                    y: viewportSize.h / 2 - worldY * prev.scale,
+                  }));
+                }}
+              >
+                {nodes.map((node) => {
+                  const pos = positions[node.key] ?? defaultPosition(node.kind, 0);
+                  const size = NODE_SIZE[node.kind];
+                  return (
+                    <rect
+                      key={node.key}
+                      x={pos.x}
+                      y={pos.y}
+                      width={size.w}
+                      height={size.h}
+                      rx={8}
+                      fill={
+                        nodeTone(node) === 'success'
+                          ? '#b7eb8f'
+                          : nodeTone(node) === 'error'
+                            ? '#ffa39e'
+                            : nodeTone(node) === 'warning'
+                              ? '#ffe58f'
+                              : '#d9d9d9'
+                      }
+                    />
+                  );
+                })}
+                {minimapViewport && (
                   <rect
-                    key={node.key}
-                    x={pos.x}
-                    y={pos.y}
-                    width={size.w}
-                    height={size.h}
-                    rx={8}
-                    fill={
-                      nodeTone(node) === 'success'
-                        ? '#b7eb8f'
-                        : nodeTone(node) === 'error'
-                          ? '#ffa39e'
-                          : nodeTone(node) === 'warning'
-                            ? '#ffe58f'
-                            : '#d9d9d9'
-                    }
+                    x={bounds.minX + minimapViewport.x * bounds.width}
+                    y={bounds.minY + minimapViewport.y * bounds.height}
+                    width={minimapViewport.w * bounds.width}
+                    height={minimapViewport.h * bounds.height}
+                    fill="rgba(22,119,255,0.12)"
+                    stroke="#1677ff"
+                    strokeWidth={2}
                   />
-                );
-              })}
-              {minimapViewport && (
-                <rect
-                  x={bounds.minX + minimapViewport.x * bounds.width}
-                  y={bounds.minY + minimapViewport.y * bounds.height}
-                  width={minimapViewport.w * bounds.width}
-                  height={minimapViewport.h * bounds.height}
-                  fill="rgba(22,119,255,0.12)"
-                  stroke="#1677ff"
-                  strokeWidth={2}
-                />
-              )}
-            </svg>
-          </div>
+                )}
+              </svg>
+            </div>
+          )}
 
-          <div className="dbz-graph-legend">
-            <span><i className="dbz-legend-line" />归属线（端点固定，选中后可拖折点）</span>
-          </div>
+          {!hideOverlays && (
+            <div className="dbz-graph-legend">
+              <span><i className="dbz-legend-line" />归属线（端点固定，选中后可拖折点）</span>
+            </div>
+          )}
         </div>
       </div>
 

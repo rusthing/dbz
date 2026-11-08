@@ -512,12 +512,26 @@ export default function DeadLetterPage() {
   const isManualHandled = (record: DbzDeadLetterVo) =>
     record.status === STATUS_MANUAL_HANDLED;
 
-  /** 复制完整原文：不做任何截断，失败时提示手动选择 */
+  /** 复制完整原文：不做任何截断；剪贴板权限不可用时退回 execCommand */
   const copyFullText = async (text: string, label: string) => {
     try {
       await navigator.clipboard.writeText(text);
       message.success(`${label}已复制`);
+      return;
     } catch {
+      // 非安全上下文或浏览器未授予剪贴板权限，走临时 textarea 的旧实现
+    }
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    const copied = document.execCommand('copy');
+    textarea.remove();
+    if (copied) {
+      message.success(`${label}已复制`);
+    } else {
       message.error('复制失败，请手动选择文本');
     }
   };
@@ -536,27 +550,27 @@ export default function DeadLetterPage() {
     {
       title: '状态',
       dataIndex: 'status',
-      width: 70,
+      width: 84,
       render: (value: DeadLetterStatus) => <StatusTag dic={deadLetterStatusDic} value={value} />,
     },
     {
       title: '连接器',
       key: 'connector',
-      width: 215,
+      width: 147,
       ellipsis: true,
       render: (_, record) => (
-        <Space direction="vertical" size={0}>
+        <div className="dbz-connector-cell">
           <span className="dbz-ellipsis" title={nameOf(record.connectorId)}>
             {nameOf(record.connectorId)}
           </span>
           <span className="dbz-mono dbz-id">#{shortId(record.connectorId)}</span>
-        </Space>
+        </div>
       ),
     },
     {
       title: '失败分类',
       dataIndex: 'failureCategory',
-      width: 84,
+      width: 92,
       render: (value: DeadLetterFailureCategory, record) => (
         <Space size={4} wrap>
           <StatusTag dic={deadLetterFailureCategoryDic} value={value} />
@@ -571,7 +585,7 @@ export default function DeadLetterPage() {
     {
       title: '失败原因',
       dataIndex: 'reason',
-      width: 125,
+      width: 112,
       ellipsis: true,
       render: (reason: string, record) => (
         <div className="dbz-reason-cell">
@@ -599,11 +613,12 @@ export default function DeadLetterPage() {
     {
       title: '原始报文',
       dataIndex: 'payload',
-      width: 84,
+      width: 78,
       ellipsis: true,
       render: (payload: unknown) => (
         <Tooltip
           placement="topLeft"
+          styles={{ root: { maxWidth: 540 } }}
           title={<span className="dbz-payload-hint">{payloadText(payload)}</span>}
         >
           <span className="dbz-mono dbz-ellipsis">{payloadInline(payload)}</span>
@@ -613,21 +628,21 @@ export default function DeadLetterPage() {
     {
       title: '次数',
       dataIndex: 'retryCount',
-      width: 40,
+      width: 56,
       className: 'dbz-num',
       render: (value: number) => value,
     },
     {
       title: '末次失败',
       dataIndex: 'lastSeenMs',
-      width: 130,
+      width: 134,
       className: 'dbz-num',
       render: (ms: string) => formatMs(ms),
     },
     {
       title: '最近重投',
       key: 'lastRetry',
-      width: 120,
+      width: 180,
       render: (_, record) =>
         record.lastRetryMs ? (
           <Tooltip title={record.lastRetryMessage ?? ''}>
@@ -642,10 +657,10 @@ export default function DeadLetterPage() {
     {
       title: '操作',
       key: 'actions',
-      width: 210,
+      width: 196,
       fixed: 'right',
       render: (_, record) => (
-        <Space size={4}>
+        <Space size={4} wrap>
           <Button type="link" size="small" onClick={() => openDetail(record)}>
             详情
           </Button>

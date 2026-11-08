@@ -2474,12 +2474,11 @@ export default function ControlPanelPage() {
                   },
                   { key: 'auth', label: '认证', children: authLabelOf(broker) },
                   { key: 'enabled', label: '启用', children: broker.enabled ? '是' : '否' },
-                  { key: 'update', label: '最近检查', children: formatMs(broker.updateMs) },
                   { key: 'remark', label: '备注', children: orDash(broker.remark) },
                 ]}
               />
               <Typography.Title level={5} className="dbz-inspector-section">
-                状态
+                运行状态
               </Typography.Title>
               <Descriptions
                 column={1}
@@ -2619,12 +2618,11 @@ export default function ControlPanelPage() {
                   },
                   { key: 'broker', label: 'Kafka 集群', children: node.broker?.name ?? '未知' },
                   { key: 'enabled', label: '启用', children: cluster.enabled ? '是' : '否' },
-                  { key: 'update', label: '最近检查', children: formatMs(cluster.updateMs) },
                   { key: 'remark', label: '备注', children: orDash(cluster.remark) },
                 ]}
               />
               <Typography.Title level={5} className="dbz-inspector-section">
-                状态
+                运行状态
               </Typography.Title>
               <Descriptions
                 column={1}
@@ -3027,7 +3025,9 @@ export default function ControlPanelPage() {
             <span className="dbz-canvas-loaded">
               采集于{' '}
               {state.data.loadedAt
-                ? new Date(state.data.loadedAt).toLocaleTimeString()
+                ? new Date(state.data.loadedAt).toLocaleTimeString('zh-CN', {
+                    hour12: false,
+                  })
                 : '--'}
             </span>
           </div>

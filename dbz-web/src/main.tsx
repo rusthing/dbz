@@ -30,6 +30,7 @@ ReactDOM.createRoot(container).render(
   <React.StrictMode>
     <ConfigProvider
       locale={zhCN}
+      button={{ autoInsertSpace: false }}
       theme={{
         token: {
           colorPrimary: '#1677ff',
