@@ -31,7 +31,7 @@ sqlx migrate add <版本名称> --source migrations/pgsql
 +
 [NOTE]
 ====
-版本名称: 例如 `create-table`、`alter-table`、`init-data`、`update-data`
+版本名称: 例如 `create-table`、`create-index`、`alter-table`、`alert-index`、`init-data`、`update-data`，按规范首次初始化数据库的脚本应该有 3 个文件，分别是 xxx_create-table.sql（PowerDesigner生成的 create-table-xxx.sql文件）、xxx_create-index.sql（创建PowerDesigner不能自动生成的索引，用于特别优化性能）和 xxx_init-data.sql(用于初始化的种子数据)
 ====
 . 上面的命令会在`migrations/[mysql或pgsql]`目录下生成一个文件，文件名格式为 `<版本号>_<版本名称>.sql`，例如 `20220101000000_create-table.sql`
 . 在生成的文件中编写SQL语句，并保存
