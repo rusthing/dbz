@@ -28,7 +28,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { chromium } from 'playwright';
-import { createServer } from 'vite';
+import { createServer, loadEnv } from 'vite';
 
 const SHOTS = join(tmpdir(), 'dbz-web-smoke', 'shots');
 mkdirSync(SHOTS, { recursive: true });
@@ -525,6 +525,9 @@ const server = await createServer({
 });
 await server.listen();
 const base = server.resolvedUrls.local[0].replace(/\/$/, '');
+// 冒烟跑在 Vite 开发模式：`.env.development` 默认关闭登录，接口固定带 `X-User-Id: 0`。
+// 身份头断言按实际认证模式判断，不要为此改环境配置。
+const authDisabled = loadEnv(server.config.mode, process.cwd(), 'VITE_').VITE_AUTH_MODE === 'disabled';
 
 // `SMOKE_CHROME` 可指向已有的 Chromium（例如 CI/本机缓存），省去重复下载；
 // 不设置时走 Playwright 默认安装路径。
@@ -1446,19 +1449,23 @@ try {
     heights.map((list) => list.join('/')).join(' | '),
   );
 
-  // A. 卡片布局：开关在左上，编辑最左，删除隔一道分隔线放最右
+  // A. 卡片布局：开关在头部右侧，编辑最左，删除隔一道分隔线放最右
   const sinkCard = page.locator('.dbz-graph-node[data-node-key="4:301"]');
   const sinkCardBox = await sinkCard.boundingBox();
+  const headBox = await sinkCard.locator('.dbz-graph-node-head').boundingBox();
   const switchBox = await sinkCard.locator('.dbz-graph-node-head .ant-switch').boundingBox();
   const editBox = await sinkCard.locator('[data-node-action="edit"]').boundingBox();
   const deleteBox = await sinkCard.locator('[data-node-action="delete"]').boundingBox();
   const dividerBox = await sinkCard.locator('.dbz-graph-actions-divider').boundingBox();
+  // 画布整体缩放后屏幕坐标会等比缩小，间距断言要换算回设计值
+  const canvasScale = sinkCardBox.width / 360;
   check(
-    '启用开关在卡片左上角',
-    Boolean(switchBox) &&
-      switchBox.x < sinkCardBox.x + 40 &&
-      switchBox.y < sinkCardBox.y + 40,
-    JSON.stringify(switchBox),
+    '启用开关在卡片头部右侧',
+    Boolean(switchBox && headBox) &&
+      switchBox.y + switchBox.height / 2 >= headBox.y &&
+      switchBox.y + switchBox.height / 2 <= headBox.y + headBox.height &&
+      switchBox.x + switchBox.width / 2 > headBox.x + headBox.width / 2,
+    `switch=${JSON.stringify(switchBox)} head=${JSON.stringify(headBox)}`,
   );
   check(
     '操作行没有第二个开关',
@@ -1469,8 +1476,8 @@ try {
     Boolean(editBox && deleteBox && dividerBox) &&
       editBox.x < dividerBox.x &&
       dividerBox.x < deleteBox.x &&
-      deleteBox.x - dividerBox.x >= 6,
-    `edit=${editBox?.x} divider=${dividerBox?.x} delete=${deleteBox?.x}`,
+      deleteBox.x - dividerBox.x >= 5 * canvasScale,
+    `edit=${editBox?.x} divider=${dividerBox?.x} delete=${deleteBox?.x} scale=${canvasScale}`,
   );
   check(
     '下游卡片不再有「查看死信」图标',
@@ -1777,9 +1784,15 @@ try {
   await diffModal.locator('.ant-modal-close').click({ force: true });
   await diffModal.waitFor({ state: 'hidden' }).catch(() => {});
   await page
-    .waitForFunction(() => document.querySelectorAll('.ant-modal-wrap:visible').length === 0, null, {
-      timeout: 5000,
-    })
+    .waitForFunction(
+      () =>
+        Array.from(document.querySelectorAll('.ant-modal-wrap')).every((element) => {
+          const style = window.getComputedStyle(element);
+          return style.display === 'none' || style.visibility === 'hidden';
+        }),
+      null,
+      { timeout: 5000 },
+    )
     .catch(() => {});
 
   // C. 连接器一致性检测：下游一致 → 结论正常；上游库内缺字段 → 异常并列出具体原因
@@ -1977,13 +1990,16 @@ try {
     wrongText.slice(0, 200),
   );
 
-  // 删除请求必须带登录令牌与真实用户ID，口令只以 64 位 SM3 摘要提交
+  // 删除请求的身份头要跟认证模式一致：开发模式（关闭登录）固定 dev 用户，登录模式下必须带令牌与真实用户
   const deleteRequest = posted.find((item) => item.path === '/dbz/control-plane/node-delete');
   check(
-    '删除请求带 Authorization 与真实用户 ID',
-    deleteRequest?.headers.authorization === `Bearer ${seedSession.token}` &&
-      deleteRequest?.headers['x-user-id'] === seedSession.userId,
+    '删除请求的身份头与认证模式一致',
+    authDisabled
+      ? deleteRequest?.headers['x-user-id'] === '0' && !deleteRequest?.headers.authorization
+      : deleteRequest?.headers.authorization === `Bearer ${seedSession.token}` &&
+          deleteRequest?.headers['x-user-id'] === seedSession.userId,
     JSON.stringify({
+      mode: authDisabled ? 'disabled' : 'required',
       authorization: deleteRequest?.headers.authorization,
       userId: deleteRequest?.headers['x-user-id'],
     }),
@@ -2066,11 +2082,11 @@ try {
   await page.waitForSelector('.dbz-graph-inspector .dbz-inspector-panel');
   const edgeInspectorText = await page.locator('.dbz-graph-inspector').innerText();
   check(
-    '选中归属连线后属性框说明端点固定、折点可拖',
+    '选中归属连线后属性框说明连接点与折点可拖、连线不可删',
     edgeInspectorText.includes('归属连线') &&
-      edgeInspectorText.includes('不能拖动') &&
-      edgeInspectorText.includes('不能删除') &&
-      edgeInspectorText.includes('折点'),
+      edgeInspectorText.includes('连接点可左右拖动') &&
+      edgeInspectorText.includes('折点可上下拖动') &&
+      edgeInspectorText.includes('不能删除'),
     edgeInspectorText.slice(0, 160),
   );
   check(
@@ -2910,35 +2926,22 @@ try {
   );
   const deadLetterHeader = await page.locator('.ant-table-thead').innerText();
   check(
-    '死信列表展示 topic、partition、offset',
-    deadLetterHeader.includes('Topic') &&
-      deadLetterHeader.includes('分区') &&
-      deadLetterHeader.includes('Offset'),
+    '死信列表只保留精简列，topic/分区/offset 收到详情',
+    ['状态', '连接器', '失败分类', '失败原因'].every((label) => deadLetterHeader.includes(label)) &&
+      !deadLetterHeader.includes('Topic') &&
+      !deadLetterHeader.includes('分区') &&
+      !deadLetterHeader.includes('Offset'),
     deadLetterHeader.replace(/\s+/g, ' '),
   );
-  const deadLetterBody = await page.locator('.ant-table-tbody').innerText();
-  check(
-    '死信行展示原始消息的分区与 offset',
-    deadLetterBody.includes('1001') &&
-      deadLetterBody.includes('1002') &&
-      deadLetterBody.includes('1003') &&
-      deadLetterBody.includes('dbz.orders'),
-  );
 
-  // 失败分类筛选：请求带上 failureCategory
-  const categorySelect = page
-    .locator('.dbz-toolbar .ant-select')
-    .filter({ hasText: '失败分类' })
-    .first();
+  // 失败分类筛选：固定枚举走按钮组，点选后请求带上 failureCategory
+  const categoryGroup = page.locator('.dbz-toolbar [role="radiogroup"][aria-label="失败分类"]');
   const categoryResponse = page.waitForResponse(
     (response) =>
       response.url().includes('/dbz/dead-letter/page') &&
       response.url().includes('failureCategory=1'),
   );
-  await categorySelect.click();
-  await page
-    .locator('.ant-select-dropdown:visible .ant-select-item-option:has-text("确定性失败")')
-    .click();
+  await categoryGroup.locator('button:has-text("确定性失败")').click();
   await categoryResponse.catch(() => {});
   const categoryRequest = getRequests
     .filter((item) => item.path === '/dbz/dead-letter/page')
@@ -3006,35 +3009,24 @@ try {
   await page.waitForSelector('.ant-drawer-title:has-text("死信详情")');
   const deadLetterDetail = await page.locator('.ant-drawer-body').innerText();
   check(
-    '死信详情把失败原因与失败详情分开呈现，且失败详情在失败原因上方',
-    deadLetterDetail.indexOf('失败详情') < deadLetterDetail.indexOf('失败原因') &&
+    '死信详情把失败原因与失败详情分开呈现，且失败原因在失败详情上方',
+    deadLetterDetail.indexOf('失败原因') < deadLetterDetail.indexOf('失败详情') &&
       deadLetterDetail.includes('字段校验不通过，请核对并修改报文后重投') &&
       deadLetterDetail.includes('SO-20261107-1') &&
       deadLetterDetail.includes('99.5'),
     deadLetterDetail.slice(0, 200),
   );
   check(
-    '失败详情以 hint 形式展示，可点开看全文、可复制',
-    (await page
-      .locator('.ant-drawer-body :text("查看失败详情全文（可复制）")')
-      .count()) === 1 &&
+    '死信详情内联展示完整失败详情、topic 与分区 offset，并带复制入口',
+    (await page.locator('.ant-drawer-body button[aria-label="复制失败详情"]').count()) === 1 &&
+      deadLetterDetail.includes('HTTP 200 result=-2') &&
+      deadLetterDetail.includes('FieldValidator.validate') &&
+      deadLetterDetail.includes('Topic') &&
+      deadLetterDetail.includes('dbz.orders') &&
       deadLetterDetail.includes('分区 / Offset') &&
       deadLetterDetail.includes('0 / 1001'),
+    deadLetterDetail.slice(0, 200),
   );
-  await page.locator('.ant-drawer-body :text("查看失败详情全文（可复制）")').click();
-  await page.waitForSelector('.ant-popover:visible');
-  const failurePopover = page.locator('.ant-popover:visible').last();
-  const popoverText = await failurePopover.innerText();
-  check(
-    '失败详情弹层可看全文且带复制按钮',
-    popoverText.includes('HTTP 200 result=-2') &&
-      popoverText.includes('FieldValidator.validate') &&
-      (await failurePopover.locator('button:has-text("复制")').count()) === 1,
-    popoverText.slice(0, 160),
-  );
-  // 再次点同一链接关闭弹层：Escape 会把整个 Drawer 一起关掉，后面就没法继续操作了
-  await page.locator('.ant-drawer-body :text("查看失败详情全文（可复制）")').click();
-  await page.locator('.ant-popover:visible').last().waitFor({ state: 'hidden' });
   check(
     '失败详情查看后仍可继续操作',
     (await page.locator('.ant-drawer-body button:has-text("保存待投")').count()) === 1,
@@ -3222,18 +3214,12 @@ try {
       detail903.includes('88'),
     detail903.slice(0, 260),
   );
-  // 失败详情入口在失败原因上方，点开才渲染全文（含历史报错）
-  await page.locator('.ant-drawer-body a:has-text("查看失败详情全文")').click();
-  await page.waitForSelector('.dbz-failure-detail-popover');
-  const failureDetailPopover = await page.locator('.dbz-failure-detail-popover').innerText();
+  // 失败详情在抽屉内联展示全文（含历史报错），不再另开弹层
   check(
-    '失败详情可展开全文并保留历史报错',
-    failureDetailPopover.includes('历史记录原始报错') &&
-      failureDetailPopover.includes('FIELD_INVALID'),
-    failureDetailPopover.slice(0, 200),
+    '失败详情内联展示全文并保留历史报错',
+    detail903.includes('历史记录原始报错') && detail903.includes('FIELD_INVALID'),
+    detail903.slice(0, 200),
   );
-  // 再点链接关闭 Popover，不按 Escape，避免把抽屉一起关掉
-  await page.locator('.ant-drawer-body a:has-text("查看失败详情全文")').click();
   await page.locator('.ant-drawer-body button:has-text("改后重投")').click();
   const failRetryConfirm = page.locator('.ant-modal-confirm', { hasText: '用修改后的报文重投' });
   await failRetryConfirm.waitFor();
@@ -3331,7 +3317,25 @@ try {
   await page.waitForSelector('.dbz-graph-node');
   check('未知路由回落到控制面板', page.url().includes('/control-panel'), page.url());
 
-  /* 1e. 登录：未登录跳转、SM3 登录、令牌失效回登录页、退出登录 */
+  /* 1e. 登录：开发模式关闭登录，只校验不拦截；登录模式下走完整认证流程 */
+  if (authDisabled) {
+    await page.evaluate(() => {
+      localStorage.removeItem('dbz.auth.session');
+      sessionStorage.setItem('dbz.smoke.auth-tested', '1');
+    });
+    await page.goto(`${base}/control-panel`, { waitUntil: 'networkidle' });
+    await page.waitForSelector('.dbz-graph-node');
+    const devModeRequest = getRequests.filter((item) => item.path.startsWith('/dbz/')).at(-1);
+    check(
+      '开发模式（关闭登录）不跳登录页，请求固定带 dev 用户',
+      page.url().includes('/control-panel') &&
+        devModeRequest?.headers['x-user-id'] === '0' &&
+        !devModeRequest?.headers.authorization,
+      `${page.url()} ${JSON.stringify(devModeRequest?.headers)}`,
+    );
+  }
+  // 登录 / 令牌失效 / 退出登录用例需要开启登录的环境（VITE_AUTH_MODE=required）
+  if (!authDisabled) {
   await page.evaluate(() => {
     localStorage.removeItem('dbz.auth.session');
     // 标记已进入认证用例，后续刷新不再自动注入夹具会话
@@ -3419,6 +3423,7 @@ try {
       (await page.evaluate(() => localStorage.getItem('dbz.auth.session'))) === null,
     page.url(),
   );
+  }
 } finally {
   await browser.close();
   await server.close();
