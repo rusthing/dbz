@@ -1710,7 +1710,8 @@ export default function ControlPanelPage() {
     setResetRunning(true);
     try {
       const result = await controlPlaneApi.resetOffsets({
-        connectorType: resetTarget.kind === 'source' ? 'source' : 'sink',
+        // 后端 ControlPlaneNodeType 是整数枚举：3=source、4=sink
+        connectorType: resetTarget.kind === 'source' ? 3 : 4,
         connectorId: resetTarget.id,
         resume: resetResume,
         confirmReplay: resetTarget.kind === 'sink' ? resetConfirmed : true,

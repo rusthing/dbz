@@ -113,11 +113,14 @@ async function request<T>(
       // 令牌失效：清本地会话并通知 AuthProvider 回登录页。
       handleUnauthorized();
     }
+    // axum 的 JsonRejection 这类框架级错误是纯文本、不是 Ro 信封；把原文带进
+    // detail，界面上才能直接看到「哪个字段、期望什么类型」，而不是只看到 422。
+    const rawDetail = ro?.detail ?? (payload === undefined ? text.trim() : undefined);
     throw new ApiError(ro?.msg || `HTTP ${response.status} ${response.statusText}`, {
       status: response.status,
       result: ro?.result,
       code: ro?.code,
-      detail: ro?.detail,
+      detail: rawDetail,
     });
   }
   if (!ro || typeof ro.result !== 'number') {

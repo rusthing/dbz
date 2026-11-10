@@ -21,9 +21,15 @@ import type {
 
 const BASE = '/dbz/control-plane/layout';
 
-/** 重置位点输入：节点类型只接受 source / sink */
+/**
+ * 重置位点输入：节点类型用字典整数，3=source、4=sink。
+ *
+ * 后端 `DbzResetConnectorOffsetsDto.connectorType` 是 `#[dic]` 枚举，线格式是 i16
+ * 数字；传 'source' / 'sink' 字符串会在 axum 的 Json 提取器里反序列化失败，直接
+ * 返回 HTTP 422，根本进不到三步编排。
+ */
 export interface DbzResetConnectorOffsetsInput {
-  connectorType: 'source' | 'sink';
+  connectorType: Extract<ControlPlaneNodeType, 3 | 4>;
   connectorId: Id;
   /** 清空后立即恢复运行 */
   resume: boolean;

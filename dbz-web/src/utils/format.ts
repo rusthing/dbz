@@ -125,7 +125,11 @@ export function errorMessage(error: unknown): string {
     }
     const statusHint = error.status ? HTTP_HINTS[error.status] : undefined;
     if (statusHint) {
-      return `${base}（${statusHint}）`;
+      // 422 多来自框架层请求体反序列化：原文里有字段名与期望类型，比笼统提示有用
+      const detail = error.status === 422 && error.detail
+        ? `：${error.detail.slice(0, 180)}`
+        : '';
+      return `${base}（${statusHint}${detail}）`;
     }
     return base;
   }

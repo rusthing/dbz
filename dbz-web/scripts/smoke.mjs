@@ -741,6 +741,19 @@ await page.route('**/dbz/**', async (route) => {
     // 重置位点：按停 → 清 → 恢复三步返回；失败时给出停在哪一步与当前状态
     if (path === '/dbz/control-plane/connector/reset-offsets') {
       const body = request.postDataJSON();
+      // 与后端 DTO 对齐：connectorType 是 #[dic] 整数（3=source、4=sink），
+      // connectorId 是 ID 字符串。传字符串类型会被 axum 的 Json 提取器直接挡下（422），
+      // 这里照实模拟，避免冒烟只跑通 mock、上线才暴露契约漂移。
+      if (
+        (body.connectorType !== 3 && body.connectorType !== 4) ||
+        typeof body.connectorId !== 'string'
+      ) {
+        return route.fulfill({
+          status: 422,
+          contentType: 'text/plain; charset=utf-8',
+          body: 'Failed to deserialize the JSON body into the target type: connectorType: invalid type, expected i16',
+        });
+      }
       if (failNextReset) {
         failNextReset = false;
         return route.fulfill({
@@ -2447,7 +2460,7 @@ try {
   );
   check(
     '重置位点请求带连接器类型、id 与确认项',
-    resetRequest?.body?.connectorType === 'sink' &&
+    resetRequest?.body?.connectorType === 4 &&
       resetRequest?.body?.connectorId === '301' &&
       resetRequest?.body?.resume === true &&
       resetRequest?.body?.confirmReplay === true,
@@ -2484,6 +2497,15 @@ try {
   failNextReset = true;
   await sourceResetModal.locator('.ant-modal-footer .ant-btn-primary').click();
   await page.waitForTimeout(500);
+  const sourceResetRequest = posted.findLast(
+    (item) => item.method === 'POST' && item.path === '/dbz/control-plane/connector/reset-offsets',
+  );
+  check(
+    '上游重置请求带字典整数类型 3 与连接器 id',
+    sourceResetRequest?.body?.connectorType === 3 &&
+      sourceResetRequest?.body?.connectorId === '201',
+    JSON.stringify(sourceResetRequest?.body),
+  );
   sourceResetModal = visibleModal().last();
   const failedResetText = (await sourceResetModal.innerText()).replace(/\s+/g, ' ');
   check(
