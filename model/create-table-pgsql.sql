@@ -1,6 +1,6 @@
 /*==============================================================*/
 /* DBMS name:      PostgreSQL 9.x                               */
-/* Created on:     2026/10/26 22:40:48                          */
+/* Created on:     2026/11/10 22:36:56                          */
 /*==============================================================*/
 
 
@@ -17,18 +17,33 @@ create table dbz_control_plane_edge_layout (
    update_ms            INT8                 not null,
    start_dx             FLOAT8               not null default 0,
    end_dx               FLOAT8               not null default 0,
-   constraint PK_DBZ_CONTROL_PLANE_EDGE_LAYOUT primary key (id),
-   constraint AK_EDGE_DBZ_CONTROL_PLANE_EDGE_LAYOUT unique (edge_id)
+   constraint PK_DBZ_CONTROL_PLANE_EDGE_LAYO primary key (id),
+   constraint AK_EDGE_ID_DBZ_CONTROL_PLANE_EDGE_LAYOUT unique (edge_id)
 );
 
 comment on table dbz_control_plane_edge_layout is
 '控制面画布连线折点';
+
+comment on column dbz_control_plane_edge_layout.id is
+'ID';
 
 comment on column dbz_control_plane_edge_layout.edge_id is
 '连线 ID（由两端节点 key 拼成，如 own:broker:1:connect:2）';
 
 comment on column dbz_control_plane_edge_layout.mid_y is
 '正交走线中间水平段的世界坐标 Y；拖动折点只改这一个值';
+
+comment on column dbz_control_plane_edge_layout.creater_id is
+'创建者ID';
+
+comment on column dbz_control_plane_edge_layout.create_ms is
+'创建时间戳';
+
+comment on column dbz_control_plane_edge_layout.updater_id is
+'更新者ID';
+
+comment on column dbz_control_plane_edge_layout.update_ms is
+'更新时间戳';
 
 comment on column dbz_control_plane_edge_layout.start_dx is
 '上游连接点相对卡片中心的横向偏移，0 表示默认位置';
@@ -37,9 +52,9 @@ comment on column dbz_control_plane_edge_layout.end_dx is
 '下游连接点相对卡片中心的横向偏移，0 表示默认位置';
 
 /*==============================================================*/
-/* Index: dbz_control_plane_edge_layout_PK                      */
+/* Index: dbz_control_plane_edge_layout_P                       */
 /*==============================================================*/
-create unique index dbz_control_plane_edge_layout_PK on dbz_control_plane_edge_layout (
+create unique index dbz_control_plane_edge_layout_P on dbz_control_plane_edge_layout (
 id
 );
 
@@ -57,11 +72,14 @@ create table dbz_control_plane_layout (
    updater_id           INT8                 not null,
    update_ms            INT8                 not null,
    constraint PK_DBZ_CONTROL_PLANE_LAYOUT primary key (id),
-   constraint AK_NODE_DBZ_CONTROL_PLANE_LAYOUT unique (node_type, node_id)
+   constraint AK_NODE_AND_TYPE_DBZ_CONTROL_PLANE_LAYOUT unique (node_type, node_id)
 );
 
 comment on table dbz_control_plane_layout is
 '控制面画布节点位置';
+
+comment on column dbz_control_plane_layout.id is
+'ID';
 
 comment on column dbz_control_plane_layout.node_type is
 '节点类型
@@ -79,6 +97,18 @@ comment on column dbz_control_plane_layout.x is
 
 comment on column dbz_control_plane_layout.y is
 '画布世界坐标 Y';
+
+comment on column dbz_control_plane_layout.creater_id is
+'创建者ID';
+
+comment on column dbz_control_plane_layout.create_ms is
+'创建时间戳';
+
+comment on column dbz_control_plane_layout.updater_id is
+'更新者ID';
+
+comment on column dbz_control_plane_layout.update_ms is
+'更新时间戳';
 
 /*==============================================================*/
 /* Index: dbz_control_plane_layout_PK                           */
@@ -126,6 +156,9 @@ create table dbz_dead_letter (
 comment on table dbz_dead_letter is
 '死信记录（Kafka Connect DLQ 镜像 + 人工处置）；事实来源是 DLQ topic，本表只做页面索引与人工结论';
 
+comment on column dbz_dead_letter.id is
+'ID';
+
 comment on column dbz_dead_letter.connector_type is
 '连接器类型；Connect 的 DLQ 只适用于 sink，故恒为 2
 @enum DeadLetterConnectorType default=Sink
@@ -138,11 +171,11 @@ comment on column dbz_dead_letter.connector_id is
 comment on column dbz_dead_letter.topic is
 '原始消息所在的源 topic（来自 __connect.errors.topic）；与 connector_id/partition/offset 组成幂等键';
 
-comment on column dbz_dead_letter.partition is
-'原始消息所在分区（来自 __connect.errors.partition）；与 connector_id/topic/offset 组成幂等键';
+comment on column dbz_dead_letter.record_key is
+'原始消息的 key（来自 DLQ 记录 key，无 key 时空串）';
 
-comment on column dbz_dead_letter."offset" is
-'原始消息 offset（来自 __connect.errors.offset）；与 connector_id/topic/partition 组成幂等键';
+comment on column dbz_dead_letter.payload is
+'DLQ 记录的原始报文（JSONB）；非 JSON 文本包成 {"__raw_utf8": ...} 保留';
 
 comment on column dbz_dead_letter.failure_category is
 '异常分类，由 DLQ 记录头里的异常类名推导，只用于页面展示，不参与重试决策
@@ -154,6 +187,15 @@ comment on column dbz_dead_letter.failure_category is
 comment on column dbz_dead_letter.failure_detail is
 'DLQ 上下文原文：异常类名、消息、堆栈与 DLQ 坐标，原样保存不截断';
 
+comment on column dbz_dead_letter.retry_count is
+'保留列：Connect 的重试次数不写进 DLQ，故恒为 0';
+
+comment on column dbz_dead_letter.first_seen_ms is
+'Kafka 记录时间戳（毫秒）';
+
+comment on column dbz_dead_letter.last_seen_ms is
+'Kafka 记录时间戳（毫秒），与 first_seen_ms 相同';
+
 comment on column dbz_dead_letter.status is
 '处理状态
 @enum DeadLetterStatus default=Pending
@@ -161,6 +203,27 @@ comment on column dbz_dead_letter.status is
   1=Retried        已重投（报文写回源 topic）
   2=Discarded      已废弃
   3=ManualHandled  已人工处理';
+
+comment on column dbz_dead_letter.handled_by is
+'处理人 ID';
+
+comment on column dbz_dead_letter.handled_ms is
+'处理时间戳（毫秒）';
+
+comment on column dbz_dead_letter.remark is
+'备注';
+
+comment on column dbz_dead_letter.creater_id is
+'创建者ID';
+
+comment on column dbz_dead_letter.create_ms is
+'创建时间戳';
+
+comment on column dbz_dead_letter.updater_id is
+'更新者ID';
+
+comment on column dbz_dead_letter.update_ms is
+'更新时间戳';
 
 comment on column dbz_dead_letter.failure_subtype is
 '异常细分子类，由 DLQ 异常消息推导
@@ -189,14 +252,11 @@ comment on column dbz_dead_letter.last_retry_message is
 comment on column dbz_dead_letter.reason is
 '给人看的一句失败原因，由后端按异常分类统一生成；原始技术内容在 failure_detail';
 
-comment on column dbz_dead_letter.retry_count is
-'保留列：Connect 的重试次数不写进 DLQ，故恒为 0';
+comment on column dbz_dead_letter.partition is
+'原始消息所在分区（来自 __connect.errors.partition）；与 connector_id/topic/offset 组成幂等键';
 
-comment on column dbz_dead_letter.first_seen_ms is
-'Kafka 记录时间戳（毫秒）';
-
-comment on column dbz_dead_letter.last_seen_ms is
-'Kafka 记录时间戳（毫秒），与 first_seen_ms 相同';
+comment on column dbz_dead_letter."offset" is
+'原始消息 offset（来自 __connect.errors.offset）；与 connector_id/topic/partition 组成幂等键';
 
 /*==============================================================*/
 /* Index: dbz_dead_letter_PK                                    */
@@ -231,8 +291,17 @@ create table dbz_delete_audit (
 comment on table dbz_delete_audit is
 '控制面删除审计';
 
+comment on column dbz_delete_audit.id is
+'ID';
+
 comment on column dbz_delete_audit.node_type is
 '节点类型：broker / connect / source / sink';
+
+comment on column dbz_delete_audit.node_id is
+'节点记录 ID';
+
+comment on column dbz_delete_audit.node_name is
+'删除前的节点名称';
 
 comment on column dbz_delete_audit.operator_id is
 '删除人（当前登录用户）';
@@ -267,8 +336,8 @@ create table dbz_kafka_broker (
    updater_id           INT8                 not null,
    update_ms            INT8                 not null,
    constraint PK_DBZ_KAFKA_BROKER primary key (id),
-   constraint AK_BOOTSTRAP_SERVERS_DBZ_KAFKA_BROKER unique (bootstrap_servers),
-   constraint AK_NAME_DBZ_KAFKA_BROKER unique (name)
+   constraint AK_NAME_DBZ_KAFKA_BROKER unique (name),
+   constraint AK_BOOTSTRAP_SERVERS_DBZ_KAFKA_BROKER unique (bootstrap_servers)
 );
 
 comment on table dbz_kafka_broker is
@@ -450,8 +519,8 @@ create table dbz_sink_connector (
    inconsistent         BOOL                 not null default false,
    inconsistent_detail  TEXT                 null,
    constraint PK_DBZ_SINK_CONNECTOR primary key (id),
-   constraint AK_CONNECTOR_NAME_DBZ_SINK_CONNECTOR unique (connector_name),
-   constraint AK_NAME_DBZ_SINK_CONNECTOR unique (name)
+   constraint AK_NAME_DBZ_SINK_CONNECTOR unique (name),
+   constraint AK_CONNECTOR_NAME_DBZ_SINK_CONNECTOR unique (connector_name)
 );
 
 comment on table dbz_sink_connector is
@@ -559,8 +628,8 @@ create table dbz_source_connector (
    inconsistent         BOOL                 not null default false,
    inconsistent_detail  TEXT                 null,
    constraint PK_DBZ_SOURCE_CONNECTOR primary key (id),
-   constraint AK_CONNECTOR_NAME_DBZ_SOURCE_CONNECTOR unique (connector_name),
-   constraint AK_NAME_DBZ_SOURCE_CONNECTOR unique (name)
+   constraint AK_NAME_DBZ_SOURCE_CONNECTOR unique (name),
+   constraint AK_CONNECTOR_NAME_DBZ_SOURCE_CONNECTOR unique (connector_name)
 );
 
 comment on table dbz_source_connector is
@@ -644,13 +713,13 @@ alter table dbz_kafka_connect
       on delete restrict on update restrict;
 
 alter table dbz_sink_connector
-   add constraint fk_kafka_connect_id__from__dbz_kafka_connect foreign key (kafka_connect_id)
-      references dbz_kafka_connect (id)
+   add constraint fk_source_connector_id__from__dbz_source_connector foreign key (source_connector_id)
+      references dbz_source_connector (id)
       on delete restrict on update restrict;
 
 alter table dbz_sink_connector
-   add constraint fk_source_connector_id__from__dbz_source_connector foreign key (source_connector_id)
-      references dbz_source_connector (id)
+   add constraint fk_kafka_connect_id__from__dbz_kafka_connect foreign key (kafka_connect_id)
+      references dbz_kafka_connect (id)
       on delete restrict on update restrict;
 
 alter table dbz_source_connector
