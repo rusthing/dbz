@@ -13,9 +13,14 @@ type = "MicroSvc"
 svc-name = "jobx-svr"
 
 # 认证中心：删除画布节点前校验当前登录用户的审核口令
+#
+# svc-name 必须是 Consul 里的**注册服务名** `adm-rs-svr`（3 个 passing 实例）。
+# 不要写成网关前缀 `/admrs-svr`（Consul 里没有这个服务，发现恒为 0 实例），
+# 也不要写成 `adm-svr`（那是另一套老服务）。
+# 生产以配置中心 KV `dbz-svr.toml` 为准，本文件会被它覆盖，两处要保持一致。
 [api.adm]
 type = "MicroSvc"
-svc-name = "adm-svr"
+svc-name = "adm-rs-svr"
 timeout = "5s"
 
 # 报警中心：连接器异常告警的接收方，报警中心再转给消息中心投递
