@@ -404,11 +404,10 @@ const SINK_GROUPS: FieldGroup[] = [
         key: 'connection.url',
         label: 'JDBC 地址',
         kind: 'text',
-        required: true,
         placeholder: 'jdbc:postgresql://10.0.0.3:5432/dw',
         help: 'PostgreSQL 形如 jdbc:postgresql://host:5432/db；MySQL 形如 jdbc:mysql://host:3306/db。',
       },
-      { key: 'connection.username', label: '用户名', kind: 'text', required: true },
+      { key: 'connection.username', label: '用户名', kind: 'text' },
       { key: 'connection.password', label: '密码', kind: 'password' },
     ],
   },
@@ -977,21 +976,32 @@ export default function ConnectorConfigEditor({
               description={warnings.join('；')}
             />
           )}
-          {visibleGroups.map((group) => (
-            <div key={group.title} className="dbz-config-group">
-              <Typography.Text strong>{group.title}</Typography.Text>
-              {group.desc && (
-                <div>
-                  <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-                    {group.desc}
-                  </Typography.Text>
+          {visibleGroups.map((group) => {
+            // 组内只要有任一必填项，就在标题上标「必填」，避免「整卡都不用填」的错觉
+            const groupRequired = group.fields.some((field) => field.required);
+            return (
+              <div key={group.title} className="dbz-config-group">
+                <Typography.Text strong>
+                  {group.title}
+                  {groupRequired && (
+                    <Typography.Text type="danger" style={{ marginLeft: 6, fontSize: 12 }}>
+                      必填
+                    </Typography.Text>
+                  )}
+                </Typography.Text>
+                {group.desc && (
+                  <div>
+                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      {group.desc}
+                    </Typography.Text>
+                  </div>
+                )}
+                <div style={{ marginTop: 8 }}>
+                  {group.fields.map((field) => renderField(field))}
                 </div>
-              )}
-              <div style={{ marginTop: 8 }}>
-                {group.fields.map((field) => renderField(field))}
               </div>
-            </div>
-          ))}
+            );
+          })}
         </>
       )}
     </Space>

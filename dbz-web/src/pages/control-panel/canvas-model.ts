@@ -242,11 +242,11 @@ function sourceAddressOf(record: DbzSourceConnectorVo): string {
   return `${valueOf('database.user')}@${valueOf('database.hostname')}:${valueOf('database.port')}/${prefix}`;
 }
 
-/** 下游连接器说明行：topic 与 http.api.url 压成一行，完整内容由悬停提示给出 */
+/** 下游连接器说明行：topic 一行、http.api.url 一行，卡片上分成两行展示 */
 function sinkAddressOf(record: DbzSinkConnectorVo): string {
   const topic = topicInfoOf('sink', record)?.value || '--';
   const url = connectorConfigValueOf(record, 'http.api.url') || '--';
-  return `${topic} · ${url}`;
+  return `${topic}\n${url}`;
 }
 
 /** 扁平化节点：副标题直接展示地址值，归属信息只在属性框里呈现 */

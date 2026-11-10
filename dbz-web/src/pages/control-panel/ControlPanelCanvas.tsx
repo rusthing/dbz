@@ -1055,7 +1055,21 @@ export default function ControlPanelCanvas({
                     placement="topLeft"
                     styles={{ root: { maxWidth: 480 } }}
                   >
-                    <div className="dbz-graph-node-sub dbz-mono">{node.sub}</div>
+                    <div
+                      className="dbz-graph-node-sub dbz-mono"
+                      style={
+                        node.kind === 'sink'
+                          ? {
+                              whiteSpace: 'pre-line',
+                              wordBreak: 'break-all',
+                              overflow: 'visible',
+                              textOverflow: 'clip',
+                            }
+                          : undefined
+                      }
+                    >
+                      {node.sub}
+                    </div>
                   </Tooltip>
 
                   <div className="dbz-graph-node-status" data-no-drag>
