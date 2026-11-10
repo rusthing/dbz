@@ -1555,9 +1555,24 @@ fn missing_detail_text(
         .map_err(|e| anyhow!("序列化连接器<{connector_name}>对比快照失败: {e}"))
 }
 
+/// # 文本按数值解析
+///
+/// 连接器配置里同一个端口常常一侧写成字符串、一侧写成数值（库内 `"3306"`、
+/// 远端 `3306`）。能解析成有限数值才参与数值比较，其余（空串、表名、`true`
+/// 之类）保持原样按值比较，不会被误判成相等。
+fn text_number(value: &str) -> Option<f64> {
+    let text = value.trim();
+    if text.is_empty() {
+        return None;
+    }
+    text.parse::<f64>().ok().filter(|item| item.is_finite())
+}
+
 /// # 递归比较两个 JSON 值
 ///
-/// 对象键顺序无关、数字按数值比较（`1` 与 `1.0` 视为相同），其余按值相等。
+/// 对象键顺序无关、数组逐项、数字按数值比较（`1` 与 `1.0` 视为相同）；
+/// 文本与数字能解析成同一数值时也视为相同（`"3306"` 与 `3306`、`"4"` 与 `4`），
+/// 其余按值相等。口径与前端「不一致」标签、对比弹窗完全同源。
 fn json_eq(a: &Value, b: &Value) -> bool {
     match (a, b) {
         (Value::Object(x), Value::Object(y)) => {
@@ -1569,6 +1584,13 @@ fn json_eq(a: &Value, b: &Value) -> bool {
             x.len() == y.len() && x.iter().zip(y.iter()).all(|(v, w)| json_eq(v, w))
         }
         (Value::Number(x), Value::Number(y)) => x.as_f64() == y.as_f64(),
+        // 文本 vs 数字：文本是数字才比较数值，否则类型不同就是不同
+        (Value::String(x), Value::Number(y)) | (Value::Number(y), Value::String(x)) => {
+            match (text_number(x), y.as_f64()) {
+                (Some(left), Some(right)) => left == right,
+                _ => false,
+            }
+        }
         _ => a == b,
     }
 }
@@ -1663,4 +1685,42 @@ fn push_detect_item(
         action: action.to_string(),
         message,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    /// 端口一类配置常被一方写成字符串、另一方写成数值：同一个数不能算差异
+    #[test]
+    fn numeric_text_equals_number() {
+        assert!(json_eq(&json!("3306"), &json!(3306)));
+        assert!(json_eq(&json!(3306), &json!("3306")));
+        assert!(json_eq(&json!(" 3306 "), &json!(3306)));
+        assert!(json_eq(&json!("4"), &json!(4.0)));
+        // 数值后缀的写法同样按数值比较
+        assert!(json_eq(&json!("9092"), &json!(9.092e3)));
+    }
+
+    /// 只有「文本能解析成数字」才走数值比较，其余类型差异仍算不一致
+    #[test]
+    fn non_numeric_text_stays_different() {
+        assert!(!json_eq(&json!("3307"), &json!(3306)));
+        assert!(!json_eq(&json!("orders"), &json!(3306)));
+        assert!(!json_eq(&json!(""), &json!(0)));
+        assert!(!json_eq(&json!("true"), &json!(true)));
+        assert!(!json_eq(&json!("4 "), &json!(4.5)));
+    }
+
+    /// 嵌套结构沿用同一口径：对象键序无关，数组逐项比
+    #[test]
+    fn nested_values_follow_same_rule() {
+        assert!(json_eq(
+            &json!({"database.port": "3306", "tasks.max": 4}),
+            &json!({"tasks.max": "4", "database.port": 3306}),
+        ));
+        assert!(json_eq(&json!(["1", 2]), &json!([1, "2"])));
+        assert!(!json_eq(&json!({"tasks.max": 4}), &json!({"tasks.max": 5})));
+    }
 }

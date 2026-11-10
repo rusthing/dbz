@@ -14,6 +14,10 @@
  *
  * 节点位置按「节点类型 + 记录 ID」存 `dbz_control_plane_layout`，拖动松手即保存，
  * 多人打开同一套连接器看到一致布局。
+ *
+ * 顶层集群有两个入口：顶栏「新增 Kafka 集群」建一条空记录，「导入集群」按备份 JSON
+ * 一次建出集群、Connect 与连接器。导入和集群卡片上的「恢复」是同一套预览/执行流程
+ * （都走 `POST /dbz/backup/restore`），只有入口与措辞不同；导入成功后自动切到新集群 tab。
  */
 
 import {
@@ -22,6 +26,7 @@ import {
   ReloadOutlined,
   SearchOutlined,
   UpOutlined,
+  UploadOutlined,
 } from '@ant-design/icons';
 import {
   Alert,
@@ -225,12 +230,17 @@ const IMPORT_ACTION_COLOR: Record<ImportOutcome['action'], string> = {
 };
 
 /**
- * 一次恢复会话
+ * 一次恢复 / 导入会话
  *
  * 预览与执行都走同一个后端入口：文件内容原样回传，`dryRun` 决定是否写库。
  * 切换策略时重新取一次预览，保证界面上的计数与真正执行时的判定一致。
+ *
+ * 两个入口共用这套状态，只有措辞不同：
+ * - `restore`：Kafka 集群卡片上的「恢复」（往已有集群补记录，也常用于同环境回滚）；
+ * - `import`：顶栏「导入集群」（目标环境还没有这个集群，整颗集群连 Connect 与连接器一起建）。
  */
 interface RestoreSession {
+  mode: RestoreMode;
   fileName: string;
   /** 原始 JSON（已通过格式校验，原样回传后端） */
   file: unknown;
@@ -241,6 +251,45 @@ interface RestoreSession {
   preview: DbzBackupRestoreVo;
   result: DbzBackupRestoreVo | null;
 }
+
+/** 备份文件的两种用法：卡片上「恢复」与顶栏「导入集群」 */
+type RestoreMode = 'restore' | 'import';
+
+/** 集群恢复 / 导入弹窗的标题与说明，按入口分开措辞 */
+const RESTORE_TEXT: Record<
+  RestoreMode,
+  {
+    /** 弹窗标题 */
+    title: string;
+    /** 动作名，用在「恢复后 / 导入失败」这类句子与提示里 */
+    noun: string;
+    okText: string;
+    runningText: string;
+    /** 弹窗里说明这次写库的范围 */
+    scope: string;
+    /** 执行成功提示的前缀 */
+    submit: string;
+  }
+> = {
+  restore: {
+    title: '从 JSON 恢复 Kafka 集群',
+    noun: '恢复',
+    okText: '执行恢复',
+    runningText: '正在恢复…',
+    scope:
+      '恢复只写库内纳管记录，不会在远端注册或删除连接器；需要后续启用/检测才会下发到集群。',
+    submit: '恢复完成',
+  },
+  import: {
+    title: '从 JSON 导入 Kafka 集群',
+    noun: '导入',
+    okText: '执行导入',
+    runningText: '正在导入…',
+    scope:
+      '导入按文件内容建库内记录：集群、Connect 与连接器都会新建或按策略覆盖，不向远端注册或删除任何连接器；导入后在卡片上启用/检测才会下发到集群。',
+    submit: '导入完成',
+  },
+};
 
 /** 恢复明细的层级文案 */
 const RESTORE_LEVEL_LABEL: Record<DbzBackupRestoreItemVo['level'], string> = {
@@ -362,8 +411,8 @@ const CONSISTENCY_CONFIG_KEYS = [
   'snapshot.mode',
 ];
 
-/** 配置值归一化成可比较的字符串：数组/对象按 JSON，标量按字符串 */
-function normalizeConfigValue(value: unknown): string {
+/** 配置值的展示文本：数组/对象按 JSON，标量按字符串 */
+function configValueText(value: unknown): string {
   if (value === null || value === undefined) {
     return '';
   }
@@ -378,6 +427,53 @@ function normalizeConfigValue(value: unknown): string {
   } catch {
     return String(value);
   }
+}
+
+/** 文本能解析成数字时返回数值：`"3306"` 与 `3306` 是同一个端口 */
+function numericText(value: string): number | null {
+  const text = value.trim();
+  if (!text) {
+    return null;
+  }
+  const parsed = Number(text);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function isConfigObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * # 配置值是否相同
+ *
+ * 与后端 `json_eq` 同一套口径，避免「卡片说不一致、这里说一致」：
+ * 对象键序无关、数组逐项、数字按数值比较，**文本与数字能解析成同一数值时也视为
+ * 相同**（库内写 `"3306"`、Connect 返回 `3306`），其余按值严格相等。
+ */
+function configValueEquals(left: unknown, right: unknown): boolean {
+  if (Array.isArray(left) && Array.isArray(right)) {
+    return (
+      left.length === right.length &&
+      left.every((item, index) => configValueEquals(item, right[index]))
+    );
+  }
+  if (isConfigObject(left) && isConfigObject(right)) {
+    const keys = Object.keys(left);
+    return (
+      keys.length === Object.keys(right).length &&
+      keys.every((key) => key in right && configValueEquals(left[key], right[key]))
+    );
+  }
+  if (typeof left === 'number' && typeof right === 'number') {
+    return left === right;
+  }
+  if (typeof left === 'number' && typeof right === 'string') {
+    return left === numericText(right);
+  }
+  if (typeof left === 'string' && typeof right === 'number') {
+    return numericText(left) === right;
+  }
+  return left === right;
 }
 
 /** 解析库内 `connectorConfig`；非法 JSON 返回 null，由调用方给出明确原因 */
@@ -399,16 +495,13 @@ function configDiffOf(
   actual: Record<string, unknown>,
 ): string[] {
   const diffs: string[] = [];
-  const keys = new Set([...CONSISTENCY_CONFIG_KEYS, ...Object.keys(actual)]);
-  for (const key of keys) {
-    if (!CONSISTENCY_CONFIG_KEYS.includes(key)) {
+  for (const key of CONSISTENCY_CONFIG_KEYS) {
+    if (configValueEquals(stored[key], actual[key])) {
       continue;
     }
-    const left = normalizeConfigValue(stored[key]);
-    const right = normalizeConfigValue(actual[key]);
-    if (left !== right) {
-      diffs.push(`${key}：库内「${left || '未配置'}」，Connect 实际「${right || '未配置'}」`);
-    }
+    const left = configValueText(stored[key]);
+    const right = configValueText(actual[key]);
+    diffs.push(`${key}：库内「${left || '未配置'}」，Connect 实际「${right || '未配置'}」`);
   }
   return diffs;
 }
@@ -773,9 +866,13 @@ export default function ControlPanelPage() {
   const [backupTarget, setBackupTarget] = useState<CanvasNode | null>(null);
   const [backupRunning, setBackupRunning] = useState(false);
 
-  /** 集群恢复：文件、策略与预览/执行结果 */
+  /** 集群恢复 / 导入：文件、策略与预览/执行结果 */
   const [restoreSession, setRestoreSession] = useState<RestoreSession | null>(null);
   const restoreFileRef = useRef<HTMLInputElement>(null);
+  /** 顶栏「导入集群」的文件选择框 */
+  const clusterImportFileRef = useRef<HTMLInputElement>(null);
+  /** 导入成功后要切过去的集群名；等刷新到这条记录再切 tab */
+  const [pendingImportedBroker, setPendingImportedBroker] = useState<string | null>(null);
 
   /** 轻量刷新：只合并状态与死信计数，保留实时明细、布局与选中态 */
   const refreshLight = useCallback(async () => {
@@ -1032,6 +1129,29 @@ export default function ControlPanelPage() {
         message.warning(`节点已创建，但布局位置保存失败：${errorMessage(reason)}`);
       });
   }, [message, pendingDrop, state.data]);
+
+  /**
+   * 导入集群成功后切到新集群 tab
+   *
+   * 文件里的集群名就是恢复出来的名称，刷新到这条记录再切：新集群如果落在看不见的
+   * tab 里，用户会以为导入没成功。选中新集群节点，属性检查器直接给出库内配置。
+   */
+  useEffect(() => {
+    if (!pendingImportedBroker) {
+      return;
+    }
+    const imported = state.data.brokers.find((item) => item.name === pendingImportedBroker);
+    if (!imported) {
+      // 数据还没刷新到，等下一轮
+      return;
+    }
+    setActiveBrokerKey(imported.id);
+    setSelectedNodeKey(nodeKeyOf('broker', imported.id));
+    setSelectedEdgeId(null);
+    setSearchText('');
+    setSearchCursor(0);
+    setPendingImportedBroker(null);
+  }, [pendingImportedBroker, state.data.brokers]);
 
   /** 当前 tab 的 Connect 健康汇总：只统计启用中的记录 */
   const healthSummary = useMemo(() => {
@@ -2197,24 +2317,21 @@ export default function ControlPanelPage() {
   };
 
   /**
-   * # 选择恢复文件
+   * # 读文件 → 预览
    *
    * 文件校验与冲突判定都交给后端的预览接口：`dryRun=true` 不写库。校验不通过时按
    * Connect 导入的方式逐条列出原因，不再本地维护一套格式校验。
+   *
+   * 「恢复」与「导入集群」共用这一套流程，只有入口与会话里的 `mode` 不同。
    */
-  const handleRestoreFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
-    const selected = event.target.files?.[0];
-    event.target.value = '';
-    if (!selected) {
-      return;
-    }
-
+  const startRestoreSession = async (selected: File, mode: RestoreMode) => {
     let parsed: unknown;
     try {
       parsed = JSON.parse(await selected.text());
     } catch (reason) {
       modal.error({
-        title: '读取恢复文件失败',
+        title: '读取备份文件失败',
+        width: 640,
         content:
           reason instanceof SyntaxError
             ? '文件不是合法的 JSON'
@@ -2240,6 +2357,7 @@ export default function ControlPanelPage() {
         return;
       }
       setRestoreSession({
+        mode,
         fileName: selected.name,
         file: parsed,
         strategy: 'skip',
@@ -2256,7 +2374,27 @@ export default function ControlPanelPage() {
     }
   };
 
-  /** 切换恢复策略：重新取一次预览，保证计数与实际执行一致 */
+  /** Kafka 集群卡片上的「恢复」：集群以文件内容为准 */
+  const handleRestoreFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const selected = event.target.files?.[0];
+    event.target.value = '';
+    if (!selected) {
+      return;
+    }
+    await startRestoreSession(selected, 'restore');
+  };
+
+  /** 顶栏「导入集群」：目标环境还没有这个集群时，整颗集群一起导入 */
+  const handleClusterImportFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+    const selected = event.target.files?.[0];
+    event.target.value = '';
+    if (!selected) {
+      return;
+    }
+    await startRestoreSession(selected, 'import');
+  };
+
+  /** 切换恢复 / 导入策略：重新取一次预览，保证计数与实际执行一致 */
   const changeRestoreStrategy = async (next: BackupRestoreStrategy) => {
     const session = restoreSession;
     if (
@@ -2267,54 +2405,60 @@ export default function ControlPanelPage() {
     ) {
       return;
     }
+    const noun = RESTORE_TEXT[session.mode].noun;
     setRestoreSession({ ...session, strategy: next, loadingPreview: true });
     try {
       const preview = await backupApi.restore(session.file, next, true);
       if (!preview.valid) {
-        message.error(preview.errors.join('；') || '恢复预览失败');
+        message.error(preview.errors.join('；') || `${noun}预览失败`);
         setRestoreSession((previous) =>
-          previous && previous.fileName === session.fileName
+          previous && previous.mode === session.mode && previous.fileName === session.fileName
             ? { ...previous, strategy: session.strategy, loadingPreview: false }
             : previous,
         );
         return;
       }
       setRestoreSession((previous) =>
-        previous && previous.fileName === session.fileName
+        previous && previous.mode === session.mode && previous.fileName === session.fileName
           ? { ...previous, preview, loadingPreview: false }
           : previous,
       );
     } catch (reason) {
       setRestoreSession((previous) =>
-        previous && previous.fileName === session.fileName
+        previous && previous.mode === session.mode && previous.fileName === session.fileName
           ? { ...previous, strategy: session.strategy, loadingPreview: false }
           : previous,
       );
-      message.error(`恢复预览失败：${errorMessage(reason)}`);
+      message.error(`${noun}预览失败：${errorMessage(reason)}`);
     }
   };
 
   /**
-   * # 执行恢复
+   * # 执行恢复 / 导入
    *
-   * 保留二次确认、不做审核口令校验。恢复只写库内纳管记录，不向远端注册或删除
-   * 连接器；执行成功与否都以后端返回的同一套判定为准。
+   * 保留二次确认、不做审核口令校验。两种入口都只写库内纳管记录，不向远端注册或
+   * 删除连接器；执行成功与否都以后端返回的同一套判定为准。
+   *
+   * 导入成功后记下文件里的集群名，等刷新到这条记录再切到它的 tab：新集群如果建在
+   * 看不见的 tab 里，用户会以为导入没成功。
    */
   const executeRestore = () => {
     const session = restoreSession;
     if (!session) {
       return;
     }
+    const text = RESTORE_TEXT[session.mode];
     const preview = session.preview;
     const overwrite = session.strategy === 'overwrite';
+    const brokerName = preview.items.find((item) => item.level === 'broker')?.name ?? '';
     modal.confirm({
       title: overwrite ? '覆盖已存在的纳管记录？' : '仅补齐缺失的纳管记录？',
       width: 560,
       content: [
         `将写库 ${preview.created + preview.overwritten} 条：新增 ${preview.created}，覆盖 ${preview.overwritten}，跳过 ${preview.skipped}。`,
-        '恢复只写库内纳管记录，不会在远端注册或删除连接器；需要后续启用/检测才会下发。',
+        text.scope,
       ].join('\n'),
-      okText: '执行恢复',
+      okText: text.okText,
       cancelText: '取消',
       onOk: async () => {
         setRestoreSession((previous) =>
@@ -2323,22 +2467,25 @@ export default function ControlPanelPage() {
         try {
           const result = await backupApi.restore(session.file, session.strategy, false);
           setRestoreSession((previous) =>
-            previous && previous.fileName === session.fileName
+            previous && previous.mode === session.mode && previous.fileName === session.fileName
               ? { ...previous, phase: 'result', result }
               : previous,
           );
           const summary = `新增 ${result.created}，覆盖 ${result.overwritten}，跳过 ${result.skipped}，失败 ${result.failed}`;
+          if (session.mode === 'import' && brokerName && result.created > 0) {
+            setPendingImportedBroker(brokerName);
+          }
           if (result.failed > 0) {
-            message.warning(`恢复完成：${summary}`);
+            message.warning(`${text.submit}：${summary}`);
           } else {
-            message.success(`恢复完成：${summary}`);
+            message.success(`${text.submit}：${summary}`);
           }
           await state.reload();
         } catch (reason) {
           setRestoreSession((previous) =>
             previous ? { ...previous, phase: 'preview' } : previous,
           );
-          message.error(`恢复失败：${errorMessage(reason)}`);
+          message.error(`${text.noun}失败：${errorMessage(reason)}`);
         }
       },
     });
@@ -2352,12 +2499,13 @@ export default function ControlPanelPage() {
     setRestoreSession(null);
   };
 
-  /** 恢复弹窗内容：预览阶段展示计划与策略，结果阶段展示同一套明细 */
+  /** 恢复 / 导入弹窗内容：预览阶段展示计划与策略，结果阶段展示同一套明细 */
   const renderRestoreBody = () => {
     const session = restoreSession;
     if (!session) {
       return null;
     }
+    const text = RESTORE_TEXT[session.mode];
     const view =
       session.phase === 'result' && session.result ? session.result : session.preview;
     const brokerItem = view.items.find((item) => item.level === 'broker');
@@ -2368,7 +2516,7 @@ export default function ControlPanelPage() {
     const isResult = session.phase === 'result' && session.result !== null;
 
     return (
-      <div className="dbz-transfer-import" data-restore-dialog>
+      <div className="dbz-transfer-import" data-restore-dialog data-restore-mode={session.mode}>
         <div className="dbz-transfer-file">
           文件：<span className="dbz-mono">{session.fileName}</span>
           {brokerItem && (
@@ -2382,17 +2530,13 @@ export default function ControlPanelPage() {
         <Alert
           type="warning"
           showIcon
-          message="备份文件含 sasl_password 等敏感凭据，恢复后能直接连上原集群；请只在可信环境之间传递并妥善保管。"
+          message={`备份文件含 sasl_password 等敏感凭据，${text.noun}后能直接连上原集群；请只在可信环境之间传递并妥善保管。`}
         />
-        <Alert
-          type="info"
-          showIcon
-          message="恢复只写库内纳管记录，不会在远端注册或删除连接器；需要后续启用/检测才会下发到集群。"
-        />
+        <Alert type="info" showIcon message={text.scope} />
 
         {!isResult && (
           <div className="dbz-transfer-bulk" data-restore-strategy>
-            <span>恢复策略：</span>
+            <span>{text.noun}策略：</span>
             <Radio.Group
               value={session.strategy}
               disabled={session.loadingPreview}
@@ -3020,6 +3164,19 @@ export default function ControlPanelPage() {
             新增 Kafka 集群
           </Button>
           <Button
+            icon={<UploadOutlined />}
+            title="从备份 JSON 导入整颗集群（含 Connect 与连接器），目标环境还没有该集群时用它"
+            data-cluster-import
+            onClick={() => {
+              if (clusterImportFileRef.current) {
+                clusterImportFileRef.current.value = '';
+                clusterImportFileRef.current.click();
+              }
+            }}
+          >
+            导入集群
+          </Button>
+          <Button
             icon={<ReloadOutlined />}
             loading={manualRefreshing}
             onClick={() => void handleManualRefresh()}
@@ -3145,6 +3302,16 @@ export default function ControlPanelPage() {
         style={{ display: 'none' }}
         data-restore-file
         onChange={(event) => void handleRestoreFileChange(event)}
+      />
+
+      {/* 隐藏文件输入：顶栏「导入集群」触发，走同一套预览与执行流程 */}
+      <input
+        ref={clusterImportFileRef}
+        type="file"
+        accept=".json,application/json"
+        style={{ display: 'none' }}
+        data-cluster-import-file
+        onChange={(event) => void handleClusterImportFileChange(event)}
       />
 
       {/* Connect 导出：默认带凭据，也可显式选择脱敏 */}
@@ -3490,11 +3657,11 @@ export default function ControlPanelPage() {
         </div>
       </Modal>
 
-      {/* Kafka 集群恢复：预览计划 → 选择策略 → 二次确认 → 结果 */}
+      {/* Kafka 集群恢复 / 导入：预览计划 → 选择策略 → 二次确认 → 结果 */}
       <Modal
         open={restoreSession !== null}
         width={900}
-        title="从 JSON 恢复 Kafka 集群"
+        title={restoreSession ? RESTORE_TEXT[restoreSession.mode].title : '从 JSON 恢复 Kafka 集群'}
         onCancel={closeRestore}
         maskClosable={restoreSession?.phase !== 'running'}
         destroyOnHidden
@@ -3510,7 +3677,7 @@ export default function ControlPanelPage() {
               : restoreSession.phase === 'running'
                 ? [
                     <Button key="running" type="primary" loading disabled>
-                      正在恢复…
+                      {RESTORE_TEXT[restoreSession.mode].runningText}
                     </Button>,
                   ]
                 : [
@@ -3524,7 +3691,7 @@ export default function ControlPanelPage() {
                       onClick={executeRestore}
                       data-restore-execute
                     >
-                      执行恢复
+                      {RESTORE_TEXT[restoreSession.mode].okText}
                     </Button>,
                   ]
         }

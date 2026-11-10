@@ -1036,6 +1036,41 @@ await page.route('**/dbz/**', async (route) => {
         json: ro({ added: 0, marked, disabled: 0, cleared: 0, unchanged, skipped: 0, items }),
       });
     }
+    // 集群恢复 / 导入的预览与执行：回一份合法计划，集群 → Connect → 连接器三层各一条
+    if (path === '/dbz/backup/restore') {
+      const body = request.postDataJSON();
+      const brokerName = body?.file?.broker?.name ?? '导入测试集群';
+      return route.fulfill({
+        json: ro({
+          valid: true,
+          errors: [],
+          strategy: body?.strategy ?? 'skip',
+          dryRun: Boolean(body?.dryRun),
+          created: 3,
+          overwritten: 0,
+          skipped: 0,
+          failed: 0,
+          items: [
+            { level: 'broker', parent: null, name: brokerName, action: 'create', message: null },
+            {
+              level: 'connect',
+              parent: brokerName,
+              name: '导入 Connect',
+              action: 'create',
+              message: null,
+            },
+            {
+              level: 'source',
+              parent: '导入 Connect',
+              name: '导入上游',
+              connectorName: 'imported-source',
+              action: 'create',
+              message: null,
+            },
+          ],
+        }),
+      });
+    }
     await route.fulfill({ json: { result: 1, msg: '成功', timestamp: Date.now() } });
     return;
   }
@@ -2835,6 +2870,64 @@ try {
   // 导入会写进夹具：恢复原始记录，后面的死信与列表用例继续按原数据断言
   sources.splice(0, sources.length, ...sourcesBeforeTransfer);
   sinks.splice(0, sinks.length, ...sinksBeforeTransfer);
+
+  // 顶栏「导入集群」：目标环境还没有该集群时，整颗集群连 Connect 与连接器一起导入
+  const clusterImportPath = join(SHOTS, 'cluster-import.json');
+  writeFileSync(
+    clusterImportPath,
+    JSON.stringify({
+      version: 1,
+      exportedAt: '2026-11-10T00:00:00.000Z',
+      credentialMode: 'included',
+      broker: {
+        name: '导入测试集群',
+        bootstrapServers: '10.0.9.9:9092',
+        securityProtocol: 0,
+        saslMechanism: 0,
+        enabled: true,
+      },
+      connects: [],
+    }),
+  );
+  const postedBeforeClusterImport = posted.length;
+  const [clusterChooser] = await Promise.all([
+    page.waitForEvent('filechooser'),
+    page.locator('[data-cluster-import]').click(),
+  ]);
+  await clusterChooser.setFiles(clusterImportPath);
+  await page.waitForSelector('[data-restore-dialog]', { timeout: 15000 });
+  const clusterImportDialog = page.locator('[data-restore-dialog]');
+  check(
+    '顶栏导入集群用「导入」措辞，不套用卡片上的「恢复」',
+    (await clusterImportDialog.getAttribute('data-restore-mode')) === 'import' &&
+      (
+        await visibleModal().last().locator('.ant-modal-title').innerText()
+      ).includes('导入 Kafka 集群'),
+  );
+  const clusterImportText = (await clusterImportDialog.innerText()).replace(/\s+/g, ' ');
+  check(
+    '导入预览列出集群 / Connect / 连接器三层计划',
+    clusterImportText.includes('导入测试集群') &&
+      clusterImportText.includes('Kafka 集群') &&
+      clusterImportText.includes('上游连接器'),
+    clusterImportText.slice(0, 200),
+  );
+  const clusterImportPreview = posted
+    .slice(postedBeforeClusterImport)
+    .find((item) => item.method === 'POST' && item.path === '/dbz/backup/restore');
+  check(
+    '导入先取 dryRun 预览、默认只补齐缺失',
+    clusterImportPreview?.body?.dryRun === true &&
+      clusterImportPreview?.body?.strategy === 'skip',
+    JSON.stringify(clusterImportPreview?.body)?.slice(0, 160),
+  );
+  await clusterImportDialog
+    .locator('xpath=ancestor::div[contains(@class,"ant-modal")]')
+    .locator('.ant-modal-footer button:has-text("取消")')
+    .click();
+  await page
+    .waitForSelector('[data-restore-dialog]', { state: 'detached', timeout: 15000 })
+    .catch(() => {});
 
   // 单集群时不显示 tab 栏；恢复多集群后 tab 栏重新出现
   singleClusterOnly = true;

@@ -1435,8 +1435,11 @@ input[type='color']:not(:disabled) {
   white-space: nowrap;
 }
 
-.dbz-graph-inconsistent-tag {
+/* 节点整体是 grab（拖拽），标签点了有动作，光标要单独覆盖成点击手形 */
+.dbz-graph-inconsistent-tag,
+.dbz-graph-dead-tag {
   margin-inline-start: 4px;
+  cursor: pointer;
 }
 
 /* ---------- 删除口令弹窗 ---------- */
