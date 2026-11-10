@@ -4764,30 +4764,6 @@ LABL 0 新宋体,8,N</a:FontList>
 <o:Table Ref="o164"/>
 </c:Object>
 </o:TableSymbol>
-<o:TableSymbol Id="o244">
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:IconMode>-1</a:IconMode>
-<a:Rect>((45000,90000), (51500,98000))</a:Rect>
-<a:LineColor>11881048</a:LineColor>
-<a:FillColor>16759472</a:FillColor>
-<a:ShadowColor>12632256</a:ShadowColor>
-<a:FontList>STRN 0 新宋体,8,N
-DISPNAME 0 新宋体,8,N
-OWNRDISPNAME 0 新宋体,8,N
-Columns 0 新宋体,8,N
-TablePkColumns 0 新宋体,8,U
-TableFkColumns 0 新宋体,8,N
-Keys 0 新宋体,8,N
-Indexes 0 新宋体,8,N
-Triggers 0 新宋体,8,N
-LABL 0 新宋体,8,N</a:FontList>
-<a:BrushStyle>6</a:BrushStyle>
-<a:GradientFillMode>65</a:GradientFillMode>
-<a:GradientEndColor>16777215</a:GradientEndColor>
-<c:Object>
-<o:Table Ref="o202"/>
-</c:Object>
-</o:TableSymbol>
 <o:TableSymbol Id="o245">
 <a:ModificationDate>1794266526</a:ModificationDate>
 <a:IconMode>-1</a:IconMode>
@@ -7060,13 +7036,13 @@ DAT 1794266526</a:History>
 </o:Table>
 <o:Table Id="o164">
 <a:ObjectID>F04D85EA-D58F-4307-8F8A-E99D58860F56</a:ObjectID>
-<a:Name>死信记录（最终处理态，重试耗尽或确定性失败后写入）</a:Name>
+<a:Name>死信记录（Kafka Connect DLQ 镜像 + 人工处置）</a:Name>
 <a:Code>dbz_dead_letter</a:Code>
 <a:CreationDate>1794266526</a:CreationDate>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1794266526</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
-<a:Comment>死信记录（最终处理态，重试耗尽或确定性失败后写入）</a:Comment>
+<a:Comment>死信记录（Kafka Connect DLQ 镜像 + 人工处置）；事实来源是 DLQ topic，本表只做页面索引与人工结论</a:Comment>
 <a:History>ORG {008A46AC-2EC5-40BC-9CB1-19A4A97C52FA}
 DAT 1794266526</a:History>
 <a:GlobalObjectID/>
@@ -7095,9 +7071,9 @@ DAT 1794266526</a:History>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1794266526</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
-<a:Comment>连接器类型
+<a:Comment>连接器类型；Connect 的 DLQ 只适用于 sink，故恒为 2
 @enum DeadLetterConnectorType default=Sink
-  1=Source  上游连接器
+  1=Source  上游连接器（历史取值，不再产生死信）
   2=Sink    下游连接器</a:Comment>
 <a:History>ORG {FE9CC2D4-C0B9-4569-BDFB-A2A3AF0B0BEE}
 DAT 1794266526</a:History>
@@ -7114,7 +7090,7 @@ DAT 1794266526</a:History>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1794266526</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
-<a:Comment>连接器记录 ID（按 connector_type 指向上游或下游表）</a:Comment>
+<a:Comment>下游连接器记录 ID（由 DLQ 上下文头里的连接器名反查，未知为 0）；与 topic/partition/offset 组成幂等键</a:Comment>
 <a:History>ORG {E8559057-C04F-4B05-A6C9-EC406394419E}
 DAT 1794266526</a:History>
 <a:DataType>INT8</a:DataType>
@@ -7130,6 +7106,7 @@ DAT 1794266526</a:History>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1794266526</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
+<a:Comment>原始消息所在的源 topic（来自 __connect.errors.topic）；与 connector_id/partition/offset 组成幂等键</a:Comment>
 <a:History>ORG {98E84684-E58E-47DC-A2B5-8EAD3A3FB682}
 DAT 1794266526</a:History>
 <a:DataType>VARCHAR(255)</a:DataType>
@@ -7175,11 +7152,11 @@ DAT 1794266526</a:History>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1794266526</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
-<a:Comment>失败分类
+<a:Comment>异常分类，由 DLQ 记录头里的异常类名推导，只用于页面展示，不参与重试决策
 @enum DeadLetterFailureCategory default=Deterministic
-  1=Deterministic  确定性失败（参数校验不通过、唯一键冲突、外键缺失等）
-  2=Transient      传输类失败（连接失败、5xx、超时）
-  3=Unknown        响应异常（result 非成功且无法归类、响应无法解析）</a:Comment>
+  1=Deterministic  数据/格式/配置类异常（DataException、序列化失败等）
+  2=Transient      投递类异常（RetriableException、超时、IO、HTTP 错误）
+  3=Unknown        其它无法归类的异常</a:Comment>
 <a:History>ORG {70FACAA9-1E17-48F5-974A-98B2C14C9452}
 DAT 1794266526</a:History>
 <a:DataType>INT2</a:DataType>
@@ -7195,7 +7172,7 @@ DAT 1794266526</a:History>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1794266526</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
-<a:Comment>原始失败详情（HTTP 状态与响应体、校验报错原文、RTW 错误码、异常栈摘要等），原样保存不截断</a:Comment>
+<a:Comment>DLQ 上下文原文：异常类名、消息、堆栈与 DLQ 坐标，原样保存不截断</a:Comment>
 <a:History>ORG {5D20FE73-49B9-4CD0-A7F9-111EE97F2321}
 DAT 1794266526</a:History>
 <a:DefaultValue>''</a:DefaultValue>
@@ -7211,6 +7188,7 @@ DAT 1794266526</a:History>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1794266526</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
+<a:Comment>保留列：Connect 的重试次数不写进 DLQ，故恒为 0</a:Comment>
 <a:History>ORG {88AEDCB4-C07E-421A-B120-E6DC57C7AA1A}
 DAT 1794266526</a:History>
 <a:DefaultValue>0</a:DefaultValue>
@@ -7227,6 +7205,7 @@ DAT 1794266526</a:History>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1794266526</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
+<a:Comment>Kafka 记录时间戳（毫秒）</a:Comment>
 <a:History>ORG {751562FE-8495-4D1E-844A-E416B94CFA19}
 DAT 1794266526</a:History>
 <a:DataType>INT8</a:DataType>
@@ -7242,6 +7221,7 @@ DAT 1794266526</a:History>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1794266526</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
+<a:Comment>Kafka 记录时间戳（毫秒），与 first_seen_ms 相同</a:Comment>
 <a:History>ORG {6A65C409-61DD-4940-922D-74F73D5BC966}
 DAT 1794266526</a:History>
 <a:DataType>INT8</a:DataType>
@@ -7260,7 +7240,7 @@ DAT 1794266526</a:History>
 <a:Comment>处理状态
 @enum DeadLetterStatus default=Pending
   0=Pending        待处理
-  1=Retried        已重投
+  1=Retried        已重投（报文写回源 topic）
   2=Discarded      已废弃
   3=ManualHandled  已人工处理</a:Comment>
 <a:History>ORG {4F2E3325-4007-42C3-B85D-7A62B785DFF6}
@@ -7381,10 +7361,10 @@ DAT 1794266526</a:History>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1794266526</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
-<a:Comment>确定性失败的细分子类
+<a:Comment>异常细分子类，由 DLQ 异常消息推导
 @enum DeadLetterFailureSubtype default=Other
-  0=Other            未细分（唯一键冲突、外键缺失、旧脚本未上报子类等）
-  1=FieldValidation  字段不合规（必填缺失、类型不符、长度超限等），允许修改报文后重投</a:Comment>
+  0=Other            未细分
+  1=FieldValidation  字段不合规，允许修改报文后重投</a:Comment>
 <a:History>ORG {8AC7736C-D91D-4F6A-AE1D-96A65471B0A2}
 DAT 1794266526</a:History>
 <a:DefaultValue>0</a:DefaultValue>
@@ -7474,7 +7454,7 @@ DAT 1794266526</a:History>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1794266526</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
-<a:Comment>最近一次人工重投的结果说明（失败时为对端返回的原因）</a:Comment>
+<a:Comment>最近一次人工重投的结果说明（写回源 topic 的结果）</a:Comment>
 <a:History>ORG {F96C27DA-BF55-4C6D-882C-9CBA9D43D44F}
 DAT 1794266526</a:History>
 <a:DataType>TEXT</a:DataType>
@@ -7488,7 +7468,7 @@ DAT 1794266526</a:History>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1794266526</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
-<a:Comment>给人看的一句失败原因，由后端按分类/子类统一生成；原始技术内容在 failure_detail</a:Comment>
+<a:Comment>给人看的一句失败原因，由后端按异常分类统一生成；原始技术内容在 failure_detail</a:Comment>
 <a:History>ORG {0EF2E1F9-605A-453B-9CFB-F66E699F79C8}
 DAT 1794266526</a:History>
 <a:DefaultValue>''</a:DefaultValue>
@@ -7504,6 +7484,7 @@ DAT 1794266526</a:History>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1794266526</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
+<a:Comment>原始消息所在分区（来自 __connect.errors.partition）；与 connector_id/topic/offset 组成幂等键</a:Comment>
 <a:History>ORG {106E4C2D-43E4-4542-8EF2-75AD20226E9C}
 DAT 1794266526</a:History>
 <a:DataType>INT4</a:DataType>
@@ -7518,6 +7499,7 @@ DAT 1794266526</a:History>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1794266526</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
+<a:Comment>原始消息 offset（来自 __connect.errors.offset）；与 connector_id/topic/partition 组成幂等键</a:Comment>
 <a:History>ORG {095D40E7-8045-4633-BC9E-2DC1E48053AD}
 DAT 1794266526</a:History>
 <a:DataType>INT8</a:DataType>
@@ -7582,6 +7564,20 @@ DAT 1794266526</a:History>
 <a:GlobalObjectID/>
 <a:Unique>1</a:Unique>
 <c:IndexColumns>
+<o:IndexColumn Id="o246">
+<a:ObjectID>5D6A1B2C-3E4F-4A5B-8C6D-7E8F9A0B1C2D</a:ObjectID>
+<a:CreationDate>1794266526</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1794266526</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:GlobalObjectID/>
+<c:Column>
+<o:Column Ref="o167"/>
+</c:Column>
+<c:Elements>
+<o:Column Ref="o167"/>
+</c:Elements>
+</o:IndexColumn>
 <o:IndexColumn Id="o198">
 <a:ObjectID>9BBCA292-E137-42E9-83E4-3E2F6A98ABDD</a:ObjectID>
 <a:CreationDate>1794266526</a:CreationDate>
@@ -7590,10 +7586,10 @@ DAT 1794266526</a:History>
 <a:Modifier>张柏子</a:Modifier>
 <a:GlobalObjectID/>
 <c:Column>
-<o:Column Ref="o166"/>
+<o:Column Ref="o168"/>
 </c:Column>
 <c:Elements>
-<o:Column Ref="o166"/>
+<o:Column Ref="o168"/>
 </c:Elements>
 </o:IndexColumn>
 <o:IndexColumn Id="o199">
@@ -7604,10 +7600,10 @@ DAT 1794266526</a:History>
 <a:Modifier>张柏子</a:Modifier>
 <a:GlobalObjectID/>
 <c:Column>
-<o:Column Ref="o167"/>
+<o:Column Ref="o192"/>
 </c:Column>
 <c:Elements>
-<o:Column Ref="o167"/>
+<o:Column Ref="o192"/>
 </c:Elements>
 </o:IndexColumn>
 <o:IndexColumn Id="o200">
@@ -7618,24 +7614,10 @@ DAT 1794266526</a:History>
 <a:Modifier>张柏子</a:Modifier>
 <a:GlobalObjectID/>
 <c:Column>
-<o:Column Ref="o168"/>
+<o:Column Ref="o193"/>
 </c:Column>
 <c:Elements>
-<o:Column Ref="o168"/>
-</c:Elements>
-</o:IndexColumn>
-<o:IndexColumn Id="o201">
-<a:ObjectID>5C818EE6-60CC-4E38-873B-926A088C5297</a:ObjectID>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:GlobalObjectID/>
-<c:Column>
-<o:Column Ref="o169"/>
-</c:Column>
-<c:Elements>
-<o:Column Ref="o169"/>
+<o:Column Ref="o193"/>
 </c:Elements>
 </o:IndexColumn>
 </c:IndexColumns>
@@ -7643,440 +7625,6 @@ DAT 1794266526</a:History>
 </c:Indexes>
 <c:PrimaryKey>
 <o:Key Ref="o194"/>
-</c:PrimaryKey>
-</o:Table>
-<o:Table Id="o202">
-<a:ObjectID>CCEC663D-8DB0-4BEF-934F-0BED9A493237</a:ObjectID>
-<a:Name>传输类失败的重试队列（由 dbz 后台 worker 按退避策略重投）</a:Name>
-<a:Code>dbz_dead_letter_retry</a:Code>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:Comment>传输类失败的重试队列（由 dbz 后台 worker 按退避策略重投）</a:Comment>
-<a:History>ORG {9F583E05-4629-4EE2-8061-D44DE2DBC2D9}
-DAT 1794266526</a:History>
-<a:GlobalObjectID/>
-<a:TotalSavingCurrency/>
-<c:Columns>
-<o:Column Id="o203">
-<a:ObjectID>B452BA22-692D-4D4D-AC13-BE03CA0439B2</a:ObjectID>
-<a:Name>id</a:Name>
-<a:Code>id</a:Code>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:History>ORG {7BFCC536-0F3D-457C-8826-9AAB69070541}
-DAT 1794266526</a:History>
-<a:DataType>INT8</a:DataType>
-<a:Length>8</a:Length>
-<a:Column.Mandatory>1</a:Column.Mandatory>
-<a:GlobalObjectID/>
-</o:Column>
-<o:Column Id="o204">
-<a:ObjectID>D808CFE1-D119-4A95-901B-9C1CE114B204</a:ObjectID>
-<a:Name>connector_type</a:Name>
-<a:Code>connector_type</a:Code>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:History>ORG {50E5CBEB-B4E2-4223-9E63-09F9D8517467}
-DAT 1794266526</a:History>
-<a:DataType>INT2</a:DataType>
-<a:Length>2</a:Length>
-<a:Column.Mandatory>1</a:Column.Mandatory>
-<a:GlobalObjectID/>
-</o:Column>
-<o:Column Id="o205">
-<a:ObjectID>8C36DDA6-582A-4C44-B72F-65147292F36A</a:ObjectID>
-<a:Name>connector_id</a:Name>
-<a:Code>connector_id</a:Code>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:History>ORG {4F10FA83-CCFB-4AAA-86EB-FFB3C5E19C44}
-DAT 1794266526</a:History>
-<a:DataType>INT8</a:DataType>
-<a:Length>8</a:Length>
-<a:Column.Mandatory>1</a:Column.Mandatory>
-<a:GlobalObjectID/>
-</o:Column>
-<o:Column Id="o206">
-<a:ObjectID>C8C3CB8C-55C9-4F10-AEE1-1CEA7869C031</a:ObjectID>
-<a:Name>topic</a:Name>
-<a:Code>topic</a:Code>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:History>ORG {8BDFE136-0868-4DA2-A2B3-9472E3BD709E}
-DAT 1794266526</a:History>
-<a:DataType>VARCHAR(255)</a:DataType>
-<a:Length>255</a:Length>
-<a:Column.Mandatory>1</a:Column.Mandatory>
-<a:GlobalObjectID/>
-</o:Column>
-<o:Column Id="o207">
-<a:ObjectID>D9D2D056-6034-4463-B34A-87D3528A4B42</a:ObjectID>
-<a:Name>record_key</a:Name>
-<a:Code>record_key</a:Code>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:History>ORG {7F0481C0-4344-4104-B97A-768C390B8FC1}
-DAT 1794266526</a:History>
-<a:DefaultValue>''</a:DefaultValue>
-<a:DataType>VARCHAR(512)</a:DataType>
-<a:Length>512</a:Length>
-<a:Column.Mandatory>1</a:Column.Mandatory>
-<a:GlobalObjectID/>
-</o:Column>
-<o:Column Id="o208">
-<a:ObjectID>974C9CD9-6428-45F3-AB86-CA9FBAD9AE1A</a:ObjectID>
-<a:Name>payload</a:Name>
-<a:Code>payload</a:Code>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:History>ORG {F39F2E3C-FAE0-4A30-B50B-2AD921DF7F88}
-DAT 1794266526</a:History>
-<a:DataType>JSONB</a:DataType>
-<a:Column.Mandatory>1</a:Column.Mandatory>
-<a:GlobalObjectID/>
-</o:Column>
-<o:Column Id="o209">
-<a:ObjectID>1D6B5A1E-96AF-4446-B1E8-7EECF1FAD7D6</a:ObjectID>
-<a:Name>failure_category</a:Name>
-<a:Code>failure_category</a:Code>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:History>ORG {F83E1393-99E1-41F6-B9B7-4CF652CFA217}
-DAT 1794266526</a:History>
-<a:DataType>INT2</a:DataType>
-<a:Length>2</a:Length>
-<a:Column.Mandatory>1</a:Column.Mandatory>
-<a:GlobalObjectID/>
-</o:Column>
-<o:Column Id="o210">
-<a:ObjectID>00AAF4B1-21C9-48E1-A341-49026BA27844</a:ObjectID>
-<a:Name>failure_detail</a:Name>
-<a:Code>failure_detail</a:Code>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:Comment>最近一次原始失败详情，原样保存不加工</a:Comment>
-<a:History>ORG {E6168EE4-E3ED-4BC7-9CE3-583C2334E1F2}
-DAT 1794266526</a:History>
-<a:DefaultValue>''</a:DefaultValue>
-<a:DataType>TEXT</a:DataType>
-<a:Column.Mandatory>1</a:Column.Mandatory>
-<a:GlobalObjectID/>
-</o:Column>
-<o:Column Id="o211">
-<a:ObjectID>5DAF9CFB-B828-4352-9856-60EB4E99E243</a:ObjectID>
-<a:Name>attempts</a:Name>
-<a:Code>attempts</a:Code>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:History>ORG {35DE6A19-FA58-4B4A-86B3-B3728635ADCE}
-DAT 1794266526</a:History>
-<a:DefaultValue>0</a:DefaultValue>
-<a:DataType>INT4</a:DataType>
-<a:Length>4</a:Length>
-<a:Column.Mandatory>1</a:Column.Mandatory>
-<a:GlobalObjectID/>
-</o:Column>
-<o:Column Id="o212">
-<a:ObjectID>2A82967D-DEE1-4A5E-98B1-076623376D81</a:ObjectID>
-<a:Name>next_at_ms</a:Name>
-<a:Code>next_at_ms</a:Code>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:History>ORG {C3626306-EE5F-49A3-B239-330F954A29D4}
-DAT 1794266526</a:History>
-<a:DataType>INT8</a:DataType>
-<a:Length>8</a:Length>
-<a:Column.Mandatory>1</a:Column.Mandatory>
-<a:GlobalObjectID/>
-</o:Column>
-<o:Column Id="o213">
-<a:ObjectID>16CD1A9D-5229-4284-B650-D8EB233ED73F</a:ObjectID>
-<a:Name>last_error</a:Name>
-<a:Code>last_error</a:Code>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:History>ORG {713FA973-1681-405D-8B17-9C2EF1247113}
-DAT 1794266526</a:History>
-<a:DataType>TEXT</a:DataType>
-<a:GlobalObjectID/>
-</o:Column>
-<o:Column Id="o214">
-<a:ObjectID>1F90306C-275E-4CB1-A444-87E3AA0FD2DA</a:ObjectID>
-<a:Name>first_seen_ms</a:Name>
-<a:Code>first_seen_ms</a:Code>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:History>ORG {7D54863B-5BB4-4541-8BA5-EC7ADA45D214}
-DAT 1794266526</a:History>
-<a:DataType>INT8</a:DataType>
-<a:Length>8</a:Length>
-<a:Column.Mandatory>1</a:Column.Mandatory>
-<a:GlobalObjectID/>
-</o:Column>
-<o:Column Id="o215">
-<a:ObjectID>B6F87392-ACDA-446E-87C9-CE686F5EE6CB</a:ObjectID>
-<a:Name>last_seen_ms</a:Name>
-<a:Code>last_seen_ms</a:Code>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:History>ORG {2E5C2EA4-96A3-4352-960E-B7C70630B622}
-DAT 1794266526</a:History>
-<a:DataType>INT8</a:DataType>
-<a:Length>8</a:Length>
-<a:Column.Mandatory>1</a:Column.Mandatory>
-<a:GlobalObjectID/>
-</o:Column>
-<o:Column Id="o216">
-<a:ObjectID>A57296F5-DE52-478B-B753-4176125FA48C</a:ObjectID>
-<a:Name>creater_id</a:Name>
-<a:Code>creater_id</a:Code>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:History>ORG {675B3108-F04C-49C7-B382-811F7B0C9A82}
-DAT 1794266526</a:History>
-<a:DataType>INT8</a:DataType>
-<a:Length>8</a:Length>
-<a:Column.Mandatory>1</a:Column.Mandatory>
-<a:GlobalObjectID/>
-</o:Column>
-<o:Column Id="o217">
-<a:ObjectID>7F3ECB86-43EA-4A0B-BE96-36FFF337CAA8</a:ObjectID>
-<a:Name>create_ms</a:Name>
-<a:Code>create_ms</a:Code>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:History>ORG {45E4C4AE-F257-4F67-B48A-0FCE865B21C5}
-DAT 1794266526</a:History>
-<a:DataType>INT8</a:DataType>
-<a:Length>8</a:Length>
-<a:Column.Mandatory>1</a:Column.Mandatory>
-<a:GlobalObjectID/>
-</o:Column>
-<o:Column Id="o218">
-<a:ObjectID>D6B7438C-87A6-43CA-9C8C-CA52DB94F0BD</a:ObjectID>
-<a:Name>updater_id</a:Name>
-<a:Code>updater_id</a:Code>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:History>ORG {1CAB7980-07B1-49F8-8CE5-A5416AF12B0F}
-DAT 1794266526</a:History>
-<a:DataType>INT8</a:DataType>
-<a:Length>8</a:Length>
-<a:Column.Mandatory>1</a:Column.Mandatory>
-<a:GlobalObjectID/>
-</o:Column>
-<o:Column Id="o219">
-<a:ObjectID>42452EE7-B934-4EEB-98A8-CB344074D10A</a:ObjectID>
-<a:Name>update_ms</a:Name>
-<a:Code>update_ms</a:Code>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:History>ORG {A86E34A3-4C70-490A-A6B9-05CE83B22E4E}
-DAT 1794266526</a:History>
-<a:DataType>INT8</a:DataType>
-<a:Length>8</a:Length>
-<a:Column.Mandatory>1</a:Column.Mandatory>
-<a:GlobalObjectID/>
-</o:Column>
-<o:Column Id="o220">
-<a:ObjectID>EED1199A-4263-410E-B76B-35C000637702</a:ObjectID>
-<a:Name>reason</a:Name>
-<a:Code>reason</a:Code>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:Comment>给人看的一句失败原因，与死信表同一口径，由后端按分类统一生成</a:Comment>
-<a:History>ORG {1374D463-A04F-4C29-9DD1-BEB9EB1DD5C0}
-DAT 1794266526</a:History>
-<a:DefaultValue>''</a:DefaultValue>
-<a:DataType>TEXT</a:DataType>
-<a:Column.Mandatory>1</a:Column.Mandatory>
-<a:GlobalObjectID/>
-</o:Column>
-<o:Column Id="o221">
-<a:ObjectID>9B6930DB-EAA5-4CFF-B20B-F14C9376F873</a:ObjectID>
-<a:Name>partition</a:Name>
-<a:Code>partition</a:Code>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:History>ORG {535888FB-8BB6-4CE7-9FE7-FB255E69438D}
-DAT 1794266526</a:History>
-<a:DataType>INT4</a:DataType>
-<a:Length>4</a:Length>
-<a:GlobalObjectID/>
-</o:Column>
-<o:Column Id="o222">
-<a:ObjectID>A43DFC17-182A-471B-8964-305B53C99B3C</a:ObjectID>
-<a:Name>offset</a:Name>
-<a:Code>offset</a:Code>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:History>ORG {EE9004EB-7C99-4D1E-86C8-459CA4053BCC}
-DAT 1794266526</a:History>
-<a:DataType>INT8</a:DataType>
-<a:Length>8</a:Length>
-<a:GlobalObjectID/>
-</o:Column>
-</c:Columns>
-<c:Keys>
-<o:Key Id="o223">
-<a:ObjectID>6D0D40C0-0C11-4C26-BEF6-3725B451A0AC</a:ObjectID>
-<a:Name>Identifier_1</a:Name>
-<a:Code>Identifier_1</a:Code>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:GlobalObjectID/>
-<c:Key.Columns>
-<o:Column Ref="o203"/>
-</c:Key.Columns>
-</o:Key>
-</c:Keys>
-<c:Indexes>
-<o:Index Id="o224">
-<a:ObjectID>FE3C9210-692B-4163-A83C-156FDC0BC359</a:ObjectID>
-<a:Name>dbz_dead_letter_retry_PK</a:Name>
-<a:Code>dbz_dead_letter_retry_PK</a:Code>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:GlobalObjectID/>
-<a:Unique>1</a:Unique>
-<c:LinkedObject>
-<o:Key Ref="o223"/>
-</c:LinkedObject>
-<c:IndexColumns>
-<o:IndexColumn Id="o225">
-<a:ObjectID>A63CF325-BA36-4316-B5E3-EB09F5A20037</a:ObjectID>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:GlobalObjectID/>
-<c:Column>
-<o:Column Ref="o203"/>
-</c:Column>
-<c:Elements>
-<o:Column Ref="o203"/>
-</c:Elements>
-</o:IndexColumn>
-</c:IndexColumns>
-</o:Index>
-<o:Index Id="o226">
-<a:ObjectID>F33292D7-DEB8-40DD-AC65-FE25B0B06305</a:ObjectID>
-<a:Name>ux_dbz_dead_letter_retry_key</a:Name>
-<a:Code>ux_dbz_dead_letter_retry_key</a:Code>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:GlobalObjectID/>
-<a:Unique>1</a:Unique>
-<c:IndexColumns>
-<o:IndexColumn Id="o227">
-<a:ObjectID>FD03160B-5677-45E2-B4F7-9F1953847C7E</a:ObjectID>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:GlobalObjectID/>
-<c:Column>
-<o:Column Ref="o204"/>
-</c:Column>
-<c:Elements>
-<o:Column Ref="o204"/>
-</c:Elements>
-</o:IndexColumn>
-<o:IndexColumn Id="o228">
-<a:ObjectID>776D6C32-E241-47E7-8133-6103056006ED</a:ObjectID>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:GlobalObjectID/>
-<c:Column>
-<o:Column Ref="o205"/>
-</c:Column>
-<c:Elements>
-<o:Column Ref="o205"/>
-</c:Elements>
-</o:IndexColumn>
-<o:IndexColumn Id="o229">
-<a:ObjectID>28D90368-1158-4433-B955-FD51A2ADA2B4</a:ObjectID>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:GlobalObjectID/>
-<c:Column>
-<o:Column Ref="o206"/>
-</c:Column>
-<c:Elements>
-<o:Column Ref="o206"/>
-</c:Elements>
-</o:IndexColumn>
-<o:IndexColumn Id="o230">
-<a:ObjectID>F8CB05F9-D212-46C8-864C-209B695EAE72</a:ObjectID>
-<a:CreationDate>1794266526</a:CreationDate>
-<a:Creator>张柏子</a:Creator>
-<a:ModificationDate>1794266526</a:ModificationDate>
-<a:Modifier>张柏子</a:Modifier>
-<a:GlobalObjectID/>
-<c:Column>
-<o:Column Ref="o207"/>
-</c:Column>
-<c:Elements>
-<o:Column Ref="o207"/>
-</c:Elements>
-</o:IndexColumn>
-</c:IndexColumns>
-</o:Index>
-</c:Indexes>
-<c:PrimaryKey>
-<o:Key Ref="o223"/>
 </c:PrimaryKey>
 </o:Table>
 <o:Table Id="o231">

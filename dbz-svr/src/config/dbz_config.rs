@@ -43,7 +43,7 @@ pub struct DbzConfig {
     /// 健康检查配置
     #[serde(default)]
     pub health_check: HealthCheckConfig,
-    /// 死信与重试队列配置
+    /// Kafka Connect 死信队列配置
     #[serde(default)]
     pub dead_letter: DeadLetterConfig,
 }
@@ -72,46 +72,71 @@ fn dbz_job_group_name_default() -> String {
     DBZ_JOB_GROUP_NAME.to_string()
 }
 
-/// # 死信与重试配置
+/// # Kafka Connect 死信队列配置
 ///
-/// 对应 `[dbz.dead-letter]`。默认值按「保留 30 天、单连接器最多 5 万条」设定；
-/// 重试间隔 1s → 5s → 30s → 2m → 10m，超过 10 次转死信。
+/// 对应 `[dbz.dead-letter]`。坏记录的**产生、重试、落地**全部交给 Kafka Connect：
+/// 这里的值在部署下游连接器时被写进 `connector_config`（见
+/// [`crate::utils::ensure_sink_dlq_config`]），dbz 只负责从 DLQ topic 同步记录供页面查询，
+/// 以及人工处置。dbz 侧不再有重试队列、退避 worker 和「脚本显式上报」。
+///
+/// 注意 Connect 的 DLQ 只适用于 **sink** 连接器（source 侧无法把外部记录转成
+/// Kafka 记录），所以这些 key 只注入下游连接器。
 #[derive(Debug, Serialize, Deserialize, Clone)]
 #[serde(rename_all = "kebab-case")]
 pub struct DeadLetterConfig {
-    /// 是否启用后台重试 worker（关掉后只写死信，不自动重投）
+    /// 是否启用 DLQ 配置注入与记录同步
     #[serde(default = "dead_letter_enabled_default")]
     pub enabled: bool,
-    /// 死信保留天数
+    /// 全局 DLQ topic 名；所有下游连接器共用，靠 context header 区分来源
+    #[serde(default = "dead_letter_topic_default")]
+    pub topic: String,
+    /// Connect 自动创建 DLQ topic 时的副本数
+    #[serde(default = "dead_letter_replication_factor_default")]
+    pub replication_factor: u16,
+    /// `errors.retry.timeout`：框架层单次错误最长重试多久（毫秒）
+    #[serde(default = "dead_letter_retry_timeout_ms_default")]
+    pub retry_timeout_ms: u64,
+    /// `errors.retry.delay.max.ms`：框架层重试的最大退避间隔（毫秒）
+    #[serde(default = "dead_letter_retry_delay_max_ms_default")]
+    pub retry_delay_max_ms: u64,
+    /// `max.retries`：HTTP Sink 自身对失败请求的重试次数
+    #[serde(default = "dead_letter_http_max_retries_default")]
+    pub http_max_retries: u32,
+    /// `retry.backoff.ms`：HTTP Sink 自身重试的初始退避（毫秒）
+    #[serde(default = "dead_letter_http_retry_backoff_ms_default")]
+    pub http_retry_backoff_ms: u64,
+    /// `errors.log.enable`：把错误上下文写进 Connect 日志
+    #[serde(default = "dead_letter_log_enable_default")]
+    pub log_enable: bool,
+    /// `errors.log.include.messages`：日志里带上原始报文（可能含敏感信息）
+    #[serde(default = "dead_letter_log_include_messages_default")]
+    pub log_include_messages: bool,
+    /// 每轮每个 DLQ 分区最多同步多少条记录
+    #[serde(default = "dead_letter_sync_batch_size_default")]
+    pub sync_batch_size: u32,
+    /// 页面索引的保留天数（DLQ topic 本身的保留由 Kafka 侧配置，互不影响）
     #[serde(default = "dead_letter_retention_days_default")]
     pub retention_days: u32,
-    /// 单个连接器的死信条数上限，超出按 `last_seen_ms` 淘汰最旧的
+    /// 单个连接器在页面索引里最多保留多少条
     #[serde(default = "dead_letter_max_per_connector_default")]
     pub max_per_connector: u32,
-    /// 传输类失败的最大重试次数，超过转死信
-    #[serde(default = "dead_letter_max_attempts_default")]
-    pub max_attempts: u32,
-    /// worker 轮询间隔（毫秒）
-    #[serde(default = "dead_letter_worker_interval_ms_default")]
-    pub worker_interval_ms: u64,
-    /// 每轮最多处理的重试条数
-    #[serde(default = "dead_letter_batch_size_default")]
-    pub batch_size: u64,
-    /// 单条重投的 HTTP 超时（毫秒）
-    #[serde(default = "dead_letter_request_timeout_ms_default")]
-    pub request_timeout_ms: u64,
 }
 
 impl Default for DeadLetterConfig {
     fn default() -> Self {
         Self {
             enabled: dead_letter_enabled_default(),
+            topic: dead_letter_topic_default(),
+            replication_factor: dead_letter_replication_factor_default(),
+            retry_timeout_ms: dead_letter_retry_timeout_ms_default(),
+            retry_delay_max_ms: dead_letter_retry_delay_max_ms_default(),
+            http_max_retries: dead_letter_http_max_retries_default(),
+            http_retry_backoff_ms: dead_letter_http_retry_backoff_ms_default(),
+            log_enable: dead_letter_log_enable_default(),
+            log_include_messages: dead_letter_log_include_messages_default(),
+            sync_batch_size: dead_letter_sync_batch_size_default(),
             retention_days: dead_letter_retention_days_default(),
             max_per_connector: dead_letter_max_per_connector_default(),
-            max_attempts: dead_letter_max_attempts_default(),
-            worker_interval_ms: dead_letter_worker_interval_ms_default(),
-            batch_size: dead_letter_batch_size_default(),
-            request_timeout_ms: dead_letter_request_timeout_ms_default(),
         }
     }
 }
@@ -120,28 +145,48 @@ fn dead_letter_enabled_default() -> bool {
     true
 }
 
+fn dead_letter_topic_default() -> String {
+    "dbz-connect-dlq".to_string()
+}
+
+fn dead_letter_replication_factor_default() -> u16 {
+    3
+}
+
+fn dead_letter_retry_timeout_ms_default() -> u64 {
+    300_000
+}
+
+fn dead_letter_retry_delay_max_ms_default() -> u64 {
+    30_000
+}
+
+fn dead_letter_http_max_retries_default() -> u32 {
+    10
+}
+
+fn dead_letter_http_retry_backoff_ms_default() -> u64 {
+    3_000
+}
+
+fn dead_letter_log_enable_default() -> bool {
+    true
+}
+
+fn dead_letter_log_include_messages_default() -> bool {
+    false
+}
+
+fn dead_letter_sync_batch_size_default() -> u32 {
+    200
+}
+
 fn dead_letter_retention_days_default() -> u32 {
     30
 }
 
 fn dead_letter_max_per_connector_default() -> u32 {
     50_000
-}
-
-fn dead_letter_max_attempts_default() -> u32 {
-    10
-}
-
-fn dead_letter_worker_interval_ms_default() -> u64 {
-    1_000
-}
-
-fn dead_letter_batch_size_default() -> u64 {
-    50
-}
-
-fn dead_letter_request_timeout_ms_default() -> u64 {
-    15_000
 }
 
 /// # 检查配置

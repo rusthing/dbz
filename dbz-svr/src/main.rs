@@ -63,13 +63,10 @@ async fn setup(
 
     setup_web_server(app_config.web.clone(), port, old_pid, changed).await?;
 
+    // 死信由 Kafka Connect 的 DLQ 承载，坏记录的重试交给 Connect；dbz 侧的 DLQ
+    // 增量同步挂在 jobx 健康检查计划上（见 utils::dbz_config_utils），不再单独
+    // spawn 后台 worker —— 写库类周期任务统一由 jobx 调度，避免多副本重复投递。
     setup_dbz_config(app_config.dbz.clone(), changed).await?;
-
-    // 死信重试 worker：只在首次加载时 spawn，循环内每轮重读配置，热更新开关/间隔
-    // 即时生效。重复 spawn 会让同一条重试行被多次抢占，因此不跟随 rebootstrap。
-    if changed.is_none() {
-        tokio::spawn(dbz_svr::svc::DbzDeadLetterSvc::run_retry_worker());
-    }
 
     Ok(())
 }

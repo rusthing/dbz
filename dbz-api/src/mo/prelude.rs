@@ -3,7 +3,6 @@
 pub use super::dbz_control_plane_edge_layout::Entity as DbzControlPlaneEdgeLayout;
 pub use super::dbz_control_plane_layout::Entity as DbzControlPlaneLayout;
 pub use super::dbz_dead_letter::Entity as DbzDeadLetter;
-pub use super::dbz_dead_letter_retry::Entity as DbzDeadLetterRetry;
 pub use super::dbz_delete_audit::Entity as DbzDeleteAudit;
 pub use super::dbz_kafka_broker::Entity as DbzKafkaBroker;
 pub use super::dbz_kafka_connect::Entity as DbzKafkaConnect;

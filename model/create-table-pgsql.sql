@@ -124,40 +124,49 @@ create table dbz_dead_letter (
 );
 
 comment on table dbz_dead_letter is
-'死信记录（最终处理态，重试耗尽或确定性失败后写入）';
+'死信记录（Kafka Connect DLQ 镜像 + 人工处置）；事实来源是 DLQ topic，本表只做页面索引与人工结论';
 
 comment on column dbz_dead_letter.connector_type is
-'连接器类型
+'连接器类型；Connect 的 DLQ 只适用于 sink，故恒为 2
 @enum DeadLetterConnectorType default=Sink
-  1=Source  上游连接器
+  1=Source  上游连接器（历史取值，不再产生死信）
   2=Sink    下游连接器';
 
 comment on column dbz_dead_letter.connector_id is
-'连接器记录 ID（按 connector_type 指向上游或下游表）';
+'下游连接器记录 ID（由 DLQ 上下文头里的连接器名反查，未知为 0）；与 topic/partition/offset 组成幂等键';
+
+comment on column dbz_dead_letter.topic is
+'原始消息所在的源 topic（来自 __connect.errors.topic）；与 connector_id/partition/offset 组成幂等键';
+
+comment on column dbz_dead_letter.partition is
+'原始消息所在分区（来自 __connect.errors.partition）；与 connector_id/topic/offset 组成幂等键';
+
+comment on column dbz_dead_letter."offset" is
+'原始消息 offset（来自 __connect.errors.offset）；与 connector_id/topic/partition 组成幂等键';
 
 comment on column dbz_dead_letter.failure_category is
-'失败分类
+'异常分类，由 DLQ 记录头里的异常类名推导，只用于页面展示，不参与重试决策
 @enum DeadLetterFailureCategory default=Deterministic
-  1=Deterministic  确定性失败（参数校验不通过、唯一键冲突、外键缺失等）
-  2=Transient      传输类失败（连接失败、5xx、超时）
-  3=Unknown        响应异常（result 非成功且无法归类、响应无法解析）';
+  1=Deterministic  数据/格式/配置类异常（DataException、序列化失败等）
+  2=Transient      投递类异常（RetriableException、超时、IO、HTTP 错误）
+  3=Unknown        其它无法归类的异常';
 
 comment on column dbz_dead_letter.failure_detail is
-'原始失败详情（HTTP 状态与响应体、校验报错原文、RTW 错误码、异常栈摘要等），原样保存不截断';
+'DLQ 上下文原文：异常类名、消息、堆栈与 DLQ 坐标，原样保存不截断';
 
 comment on column dbz_dead_letter.status is
 '处理状态
 @enum DeadLetterStatus default=Pending
   0=Pending        待处理
-  1=Retried        已重投
+  1=Retried        已重投（报文写回源 topic）
   2=Discarded      已废弃
   3=ManualHandled  已人工处理';
 
 comment on column dbz_dead_letter.failure_subtype is
-'确定性失败的细分子类
+'异常细分子类，由 DLQ 异常消息推导
 @enum DeadLetterFailureSubtype default=Other
-  0=Other            未细分（唯一键冲突、外键缺失、旧脚本未上报子类等）
-  1=FieldValidation  字段不合规（必填缺失、类型不符、长度超限等），允许修改报文后重投';
+  0=Other            未细分
+  1=FieldValidation  字段不合规，允许修改报文后重投';
 
 comment on column dbz_dead_letter.pending_payload is
 '修改后的待投报文（JSONB）；原始报文 payload 永不覆盖，为空表示没有修改过';
@@ -175,10 +184,19 @@ comment on column dbz_dead_letter.last_retry_ms is
 '最近一次人工重投的时间戳（毫秒）';
 
 comment on column dbz_dead_letter.last_retry_message is
-'最近一次人工重投的结果说明（失败时为对端返回的原因）';
+'最近一次人工重投的结果说明（写回源 topic 的结果）';
 
 comment on column dbz_dead_letter.reason is
-'给人看的一句失败原因，由后端按分类/子类统一生成；原始技术内容在 failure_detail';
+'给人看的一句失败原因，由后端按异常分类统一生成；原始技术内容在 failure_detail';
+
+comment on column dbz_dead_letter.retry_count is
+'保留列：Connect 的重试次数不写进 DLQ，故恒为 0';
+
+comment on column dbz_dead_letter.first_seen_ms is
+'Kafka 记录时间戳（毫秒）';
+
+comment on column dbz_dead_letter.last_seen_ms is
+'Kafka 记录时间戳（毫秒），与 first_seen_ms 相同';
 
 /*==============================================================*/
 /* Index: dbz_dead_letter_PK                                    */
@@ -191,63 +209,10 @@ id
 /* Index: ux_dbz_dead_letter_key                                */
 /*==============================================================*/
 create unique index ux_dbz_dead_letter_key on dbz_dead_letter (
-connector_type,
 connector_id,
 topic,
-record_key
-);
-
-/*==============================================================*/
-/* Table: dbz_dead_letter_retry                                 */
-/*==============================================================*/
-create table dbz_dead_letter_retry (
-   id                   INT8                 not null,
-   connector_type       INT2                 not null,
-   connector_id         INT8                 not null,
-   topic                VARCHAR(255)         not null,
-   record_key           VARCHAR(512)         not null default '',
-   payload              JSONB                not null,
-   failure_category     INT2                 not null,
-   failure_detail       TEXT                 not null default '',
-   attempts             INT4                 not null default 0,
-   next_at_ms           INT8                 not null,
-   last_error           TEXT                 null,
-   first_seen_ms        INT8                 not null,
-   last_seen_ms         INT8                 not null,
-   creater_id           INT8                 not null,
-   create_ms            INT8                 not null,
-   updater_id           INT8                 not null,
-   update_ms            INT8                 not null,
-   reason               TEXT                 not null default '',
-   partition            INT4                 null,
-   "offset"             INT8                 null,
-   constraint PK_DBZ_DEAD_LETTER_RETRY primary key (id)
-);
-
-comment on table dbz_dead_letter_retry is
-'传输类失败的重试队列（由 dbz 后台 worker 按退避策略重投）';
-
-comment on column dbz_dead_letter_retry.failure_detail is
-'最近一次原始失败详情，原样保存不加工';
-
-comment on column dbz_dead_letter_retry.reason is
-'给人看的一句失败原因，与死信表同一口径，由后端按分类统一生成';
-
-/*==============================================================*/
-/* Index: dbz_dead_letter_retry_PK                              */
-/*==============================================================*/
-create unique index dbz_dead_letter_retry_PK on dbz_dead_letter_retry (
-id
-);
-
-/*==============================================================*/
-/* Index: ux_dbz_dead_letter_retry_key                          */
-/*==============================================================*/
-create unique index ux_dbz_dead_letter_retry_key on dbz_dead_letter_retry (
-connector_type,
-connector_id,
-topic,
-record_key
+partition,
+"offset"
 );
 
 /*==============================================================*/

@@ -3,38 +3,41 @@
 use sea_orm::entity::prelude::*;
 use serde::{Deserialize, Serialize};
 
-/// # 死信记录
+/// # 死信记录的页面索引
 ///
-/// 一行代表「一条源记录在某个连接器上失败」。幂等键是
-/// `(connector_type, connector_id, topic, record_key)`：同一条记录重复失败只累加
-/// `retry_count` 并刷新 `last_seen_ms`，不新增行。
+/// 一行代表 Kafka Connect 写进 DLQ topic 的**一条 Kafka 记录**。事实来源是 DLQ
+/// topic，本表只做可查询的镜像 + 人工处置结论（状态、备注、处理人），删行不会
+/// 丢 Kafka 里的原始报文。
 ///
-/// `connector_id` 指向 `dbz_source_connector` 或 `dbz_sink_connector`，具体是哪张表
-/// 由 `connector_type` 决定，因此这里不建外键。
+/// 幂等键是 `(connector_id, topic, partition, offset)`：DLQ 记录不可变，重复同步
+/// 直接跳过，不累加次数、也不覆盖人工结论。带上 `connector_id` 是因为同一源 topic
+/// 可能被多条 sink 连接器消费，各自的失败是独立死信。`connector_type` 恒为 Sink
+/// （Connect 的 DLQ 只对 sink 有效），`connector_id` 由 DLQ 头里的连接器名反查，
+/// 查不到记 0（未归属），不建外键。
 #[sea_orm::model]
 #[derive(Clone, Debug, PartialEq, DeriveEntityModel, Serialize, Deserialize, Default)]
 #[sea_orm(table_name = "dbz_dead_letter")]
 pub struct Model {
     #[sea_orm(primary_key, auto_increment = false, unique)]
     pub id: i64,
-    /// 连接器类型：1=上游，2=下游
+    /// 连接器类型：恒为 2=下游（Connect DLQ 只适用于 sink）
     pub connector_type: i16,
-    /// 连接器记录 ID（上游或下游表）
+    /// 下游连接器记录 ID（由 DLQ 头里的连接器名反查，未知为 0）；幂等键之一
     pub connector_id: i64,
-    /// Kafka topic
+    /// 原始消息所在的源 topic（来自 `__connect.errors.topic`）；幂等键之一
     pub topic: String,
-    /// 记录主键（无主键的记录用空串）
+    /// 原始消息的 key（来自 DLQ 记录 key，无 key 时空串）
     pub record_key: String,
-    /// 原始消息所在分区（脚本上报时可选）
+    /// 原始消息所在分区（来自 DLQ 上下文头，无 context headers 时用 DLQ 分区兜底）
     pub partition: Option<i32>,
-    /// 原始消息的 offset（脚本上报时可选）
+    /// 原始消息 offset（来自 DLQ 上下文头，无 context headers 时用 DLQ offset 兜底）
     pub offset: Option<i64>,
-    /// 原始报文（JSONB）
+    /// DLQ 记录的原始报文（JSONB）；非 JSON 文本包成 `{"__raw_utf8": ...}` 保留
     #[sea_orm(column_type = "JsonBinary")]
     pub payload: Json,
-    /// 失败分类：1=确定性失败，2=传输类失败
+    /// 异常展示分类：1=数据/格式类，2=投递类，3=其它（由异常类名推导）
     pub failure_category: i16,
-    /// 确定性失败的细分子类：0=未细分，1=字段不合规（允许改报文重投）
+    /// 细分子类：0=未细分，1=字段不合规（允许改报文重投）
     pub failure_subtype: i16,
     /// 修改后的待投报文（JSONB）；为空表示没有修改过，原始 `payload` 永不覆盖
     #[sea_orm(column_type = "JsonBinary")]
@@ -47,20 +50,20 @@ pub struct Model {
     pub last_retry_success: Option<bool>,
     /// 最近一次人工重投的时间戳（毫秒）
     pub last_retry_ms: Option<i64>,
-    /// 最近一次人工重投的结果说明（失败时为对端返回的原因）
+    /// 最近一次人工重投的结果说明（写回源 topic 的结果）
     #[sea_orm(column_type = "Text")]
     pub last_retry_message: Option<String>,
-    /// 给人看的一句失败原因，由后端按分类/子类统一生成
+    /// 给人看的一句失败原因，由后端按异常分类统一生成
     #[sea_orm(column_type = "Text")]
     pub reason: String,
-    /// 失败详情（对端的原始报错，原样保存不截断）
+    /// DLQ 上下文原文：异常类名、消息、堆栈与 DLQ 坐标，原样保存不截断
     #[sea_orm(column_type = "Text")]
     pub failure_detail: String,
-    /// 累计失败次数（传输类包含了进入死信前的重试次数）
+    /// 保留列：Connect 的重试次数不写进 DLQ，故恒为 0
     pub retry_count: i32,
-    /// 首次失败时间戳（毫秒）
+    /// Kafka 记录时间戳（毫秒）
     pub first_seen_ms: i64,
-    /// 末次失败时间戳（毫秒）
+    /// Kafka 记录时间戳（毫秒），与 first_seen_ms 相同
     pub last_seen_ms: i64,
     /// 状态：0=待处理，1=已重投，2=已废弃，3=已人工处理
     pub status: i16,

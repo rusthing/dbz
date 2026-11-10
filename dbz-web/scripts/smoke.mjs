@@ -275,7 +275,7 @@ const deadLetters = [
     lastRetryMessage: null,
     reason: '字段校验不通过，请核对并修改报文后重投',
     failureDetail:
-      'HTTP 200 result=-2\n' +
+      'org.apache.kafka.connect.errors.DataException: 字段校验失败\n' +
       'response: {"code":"FIELD_INVALID","message":"amount must be number","field":"amount"}\n' +
       'record: {"id":1001,"order_no":"SO-20261107-1","amount":99.5}\n' +
       'validate: amount=99.5 is not a number\n' +
@@ -344,7 +344,7 @@ const deadLetters = [
     reason: '字段校验不通过，请核对并修改报文后重投',
     failureDetail:
       '历史记录原始报错：\n' +
-      'HTTP 200 result=-2\n' +
+      'org.apache.kafka.connect.errors.DataException: 字段校验失败\n' +
       'response: {"code":"FIELD_INVALID","message":"amount must be number"}\n' +
       'validate: shipping_address is required',
     retryCount: 2,
@@ -757,6 +757,10 @@ await page.route('**/dbz/**', async (route) => {
     // 检测接口要回业务数据（reachable/topicCount…），空信封会让页面走进异常分支
     if (path === '/dbz/kafka-broker/check') {
       return route.fulfill({ json: ro({ reachable: true, topicCount: 12, elapsedMs: 34 }) });
+    }
+    // 从 Kafka Connect DLQ 同步：返回本轮新落库条数
+    if (path === '/dbz/dead-letter/sync') {
+      return route.fulfill({ json: ro(0) });
     }
     // 死信重投：返回逐条结果；带 payload 表示用修改后的报文，903 模拟仍然失败
     if (path === '/dbz/dead-letter/retry') {
@@ -3174,11 +3178,11 @@ try {
     (await page.locator('.ant-select-selection-item:has-text("订单同步到数仓")').count()) >= 1,
   );
   check(
-    '死信状态与失败分类标签渲染',
+    '死信状态与异常分类标签渲染',
     (await page.locator('.ant-tag:has-text("待处理")').count()) >= 1 &&
       (await page.locator('.ant-tag:has-text("已重投")').count()) >= 1 &&
-      (await page.locator('.ant-tag:has-text("确定性失败")').count()) >= 1 &&
-      (await page.locator('.ant-tag:has-text("传输类失败")').count()) >= 1 &&
+      (await page.locator('.ant-tag:has-text("数据/格式类")').count()) >= 1 &&
+      (await page.locator('.ant-tag:has-text("投递类")').count()) >= 1 &&
       (await page.locator('.ant-tag:has-text("字段不合规")').count()) >= 1,
   );
 
@@ -3203,6 +3207,28 @@ try {
       !deadLetterHeader.includes('Offset'),
     deadLetterHeader.replace(/\s+/g, ' '),
   );
+  check(
+    '死信列表不再展示恒为 0 的失败次数，改为 Kafka 记录时间',
+    !deadLetterHeader.includes('次数') && deadLetterHeader.includes('记录时间'),
+    deadLetterHeader.replace(/\s+/g, ' '),
+  );
+
+  // 「同步 DLQ」按钮：新机制的手动入口，不能退化成旧的 /report 上报
+  const syncResponse = page.waitForResponse((response) =>
+    response.url().includes('/dbz/dead-letter/sync'),
+  );
+  await page.locator('.dbz-toolbar button:has-text("同步 DLQ")').click();
+  await syncResponse.catch(() => {});
+  const syncRequest = posted.filter((item) => item.path === '/dbz/dead-letter/sync').at(-1);
+  check(
+    '同步 DLQ 按钮调用同步接口并带用户头',
+    syncRequest?.method === 'POST' && syncRequest?.headers['x-user-id'] !== undefined,
+    JSON.stringify(syncRequest ?? null),
+  );
+  check(
+    '页面没有旧的死信上报接口',
+    !posted.some((item) => item.path === '/dbz/dead-letter/report'),
+  );
 
   // 失败分类筛选：固定枚举走按钮组，点选后请求带上 failureCategory
   const categoryGroup = page.locator('.dbz-toolbar [role="radiogroup"][aria-label="失败分类"]');
@@ -3211,7 +3237,7 @@ try {
       response.url().includes('/dbz/dead-letter/page') &&
       response.url().includes('failureCategory=1'),
   );
-  await categoryGroup.locator('button:has-text("确定性失败")').click();
+  await categoryGroup.locator('button:has-text("数据/格式类")').click();
   await categoryResponse.catch(() => {});
   const categoryRequest = getRequests
     .filter((item) => item.path === '/dbz/dead-letter/page')
@@ -3289,7 +3315,7 @@ try {
   check(
     '死信详情内联展示完整失败详情、topic 与分区 offset，并带复制入口',
     (await page.locator('.ant-drawer-body button[aria-label="复制失败详情"]').count()) === 1 &&
-      deadLetterDetail.includes('HTTP 200 result=-2') &&
+      deadLetterDetail.includes('org.apache.kafka.connect.errors.DataException') &&
       deadLetterDetail.includes('FieldValidator.validate') &&
       deadLetterDetail.includes('Topic') &&
       deadLetterDetail.includes('dbz.orders') &&
@@ -3541,13 +3567,13 @@ try {
   await page.click('.ant-drawer-close');
   await page.waitForTimeout(300);
 
-  /* 902：传输类失败 —— 页面上没有改报文入口 */
+  /* 902：投递类异常 —— 页面上没有改报文入口 */
   const row902 = page.locator('.ant-table-tbody tr.ant-table-row').nth(1);
   await row902.locator('button:has-text("详情")').click();
   await page.waitForSelector('.ant-drawer-title:has-text("死信详情")');
   const transportDetail = await page.locator('.ant-drawer-body').innerText();
   check(
-    '传输类死信禁止编辑报文',
+    '投递类死信禁止编辑报文',
     transportDetail.includes('该记录不允许修改报文') &&
       (await page.locator('.ant-drawer-body textarea.dbz-json-editor').count()) === 0 &&
       (await page.locator('.ant-drawer-body button:has-text("保存待投")').count()) === 0 &&

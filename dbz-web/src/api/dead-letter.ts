@@ -3,8 +3,8 @@
  *
  * 对应 `DbzDeadLetterRouter`，路径前缀 `/dbz/dead-letter`。
  *
- * 写入（`report`）由 magic 脚本在失败分支调用，页面只做查询、重投与废弃。
- * 重投是把原报文重新 POST 到下游连接器的 `url`，成功由服务端转「已重投」。
+ * 死信由 Kafka Connect 写进 DLQ topic，服务端负责增量同步；页面只做查询、重投与
+ * 处置。重投是把报文写回源 topic 让 Connect 重新消费，不再直接 POST 下游地址。
  */
 
 import { apiGet, apiGetPage, apiPost, type QueryParams } from './client';
@@ -23,6 +23,9 @@ import type {
 const BASE = '/dbz/dead-letter';
 
 export const deadLetterApi = {
+  /** 立即从 Kafka Connect 的 DLQ topic 同步一次，返回新落库条数 */
+  sync: (): Promise<number> => apiPost(BASE + '/sync', {}),
+
   /** 分页查询（`connectorType` / `connectorId` / `status` / `topic` / `startMs` / `endMs`） */
   page: (params?: QueryParams): Promise<PageRx<DbzDeadLetterVo>> =>
     apiGetPage(BASE + '/page', params),

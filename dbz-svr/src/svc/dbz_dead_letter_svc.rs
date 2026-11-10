@@ -1,173 +1,371 @@
-//! # 死信与重试队列服务
+//! # 死信服务（Kafka Connect DLQ 镜像 + 人工处置）
 //!
-//! ## 为什么重试与死信必须由 dbz 自己驱动
+//! ## 职责边界
 //!
-//! HttpSink 的 `put` 只把 `IOException` / `InterruptedException` 视为可重试异常；
-//! 对端返回 HTTP 4xx/5xx 时它**只记日志并照常提交偏移量**。magic 脚本的业务失败
-//! 又是 HTTP 200 + `{"result":-2}`，Connect 视为成功。因此：
+//! 坏记录的**产生、重试、保全**全部由 Kafka Connect 负责：部署下游连接器时，
+//! [`crate::utils::ensure_sink_dlq_config`] 会把 `errors.tolerance=all`、
+//! `errors.deadletterqueue.*`、`errors.retry.*` 写进 `connector_config`，Connect 于是把
+//! 处理不了的记录连同 `__connect.errors.*` 上下文头写进 DLQ topic，并正常提交偏移。
 //!
-//! - `errors.tolerance` / Connect DLQ 兜不住任何东西，偏移已经提交；
-//! - 重试必须落在数据库队列里，由本服务的 worker 驱动；
-//! - 死信只能由脚本显式上报。
+//! 本服务只做三件事：
 //!
-//! ## 三类失败
+//! 1. **同步**：从 DLQ topic 增量拉取记录，按 `(connector_id, 源 topic, 分区, offset)`
+//!    幂等落到 `dbz_dead_letter`，作为可查询、可筛选的页面索引。DLQ topic 本身才是
+//!    事实来源，表里删了记录也不会丢 Kafka 里的原始报文。
+//! 2. **处置**：待处理 / 已重投 / 已废弃 / 已人工处理，以及备注与处理人，这些是
+//!    Connect 没有的「人的结论」，只存在 dbz。
+//! 3. **重投**：把报文重新生产回**源 topic**，让 Connect 重新消费一次，而不是绕过
+//!    Connect 直接 POST 下游 HTTP 地址。重试策略、转换器、SMT 与 offset 语义因而
+//!    和原始链路完全一致。
 //!
-//! | 分类 | 入口 | 处理 |
-//! | --- | --- | --- |
-//! | 确定性失败（参数、唯一键、外键） | 直接写死信表 | 不重试，等人工重投或废弃 |
-//! | 传输类失败（连接失败、5xx、超时） | 写重试队列 | 1s→5s→30s→2m→10m，10 次后转死信 |
-//! | 响应异常（result 非成功且无法归类 / 响应无法解析） | 写重试队列 | 同上，分类记 `Unknown` |
+//! ## 不再做的事
 //!
-//! ## 与 magic 侧旧表的关系
+//! - 不再有「业务脚本上报失败」：`/report` 已删除。旧实现里脚本用 HTTP 200 +
+//!   `{"result":-2}` 表达业务失败，Connect 认为成功并提交偏移，于是要求脚本主动调
+//!   dbz 写死信。脚本漏报、崩溃、网络断都会静默丢数据，而且 Kafka 里没有原始报文。
+//!   **新机制的前提是下游把业务失败表达成非 2xx**，否则 Connect 层看不到失败。
+//! - 不再有自建重试队列与退避 worker：Connect 的 `errors.retry.timeout`、
+//!   `errors.retry.delay.max.ms` 与 HTTP Sink 的 `max.retries` / `retry.backoff.ms`
+//!   已经覆盖，dbz 再投一遍只会绕过框架、且无法保证顺序与幂等。
+//! - 不再按 `(connector_type, connector_id, topic, recordKey)` 合并失败：DLQ 里
+//!   每条 Kafka 记录都是独立事件，唯一键改成
+//!   `(connector_id, topic, partition, offset)`，重复同步不会覆盖人工结论。带上
+//!   `connector_id` 是因为同一源 topic 可能被多条 sink 连接器消费，同一条源记录在
+//!   每条连接器上失败都是独立的一条死信，只按源坐标查重会互相吞掉。
 //!
-//! `dtw同步到dtwrs.dtw_locator_bind` 已在 magic 侧建了 `dtwrs_bind_retry` 与
-//! `dtwrs_bind_dead_letter`。本服务**不并行维护第二套终态**：这两个表作为迁移来源，
-//! 脚本改为调用本服务的上报接口后停止写入；存量数据用一次性导入脚本搬到
-//! `dbz_dead_letter`（保留同一幂等键）。保留在 magic 侧的理由只剩「脚本失败时
-//! 的事务上下文」，而那是重试队列的写入动作，不是终态。
+//! ## 适用范围
 //!
-//! 选择 dbz 侧的理由：连接器身份、启停状态、权限与页面都在 dbz；magic 侧表按脚本
-//! 各建一套，控制面看不到、也无法统一保留与重投。重投目标地址从对应下游连接器的
-//! `connector_config.url` 取，不需要脚本额外传参。
+//! Connect 的 DLQ 只对 **sink** 连接器有效（source 侧没有「把外部记录转成 Kafka
+//! 记录」这一步），所以 `connector_type` 恒为 `Sink`；上游连接器不产生死信。
 
-use crate::dao::{DbzDeadLetterDao, DbzDeadLetterRetryDao, DbzSinkConnectorDao};
+use crate::config::{DeadLetterConfig, get_dbz_config};
+use crate::dao::DbzDeadLetterDao;
 use crate::dic::{
     DeadLetterConnectorType, DeadLetterFailureCategory, DeadLetterFailureSubtype, DeadLetterStatus,
 };
 use crate::dto::{
     DbzDeadLetterCountDto, DbzDeadLetterDiscardDto, DbzDeadLetterEditPayloadDto,
-    DbzDeadLetterMarkHandledDto, DbzDeadLetterQueryDto, DbzDeadLetterReportDto,
-    DbzDeadLetterRetryDto, DbzDeadLetterUnmarkHandledDto,
+    DbzDeadLetterMarkHandledDto, DbzDeadLetterQueryDto, DbzDeadLetterRetryDto,
+    DbzDeadLetterUnmarkHandledDto,
 };
 use crate::mo::dbz_dead_letter::{
     ActiveModel as DeadLetterActiveModel, Column as DeadLetterColumn, Entity as DeadLetterEntity,
     Model as DeadLetterModel,
 };
-use crate::mo::dbz_dead_letter_retry::{
-    ActiveModel as RetryActiveModel, Column as RetryColumn, Entity as RetryEntity,
-    Model as RetryModel,
+use crate::mo::dbz_kafka_broker::{
+    Column as BrokerColumn, Entity as BrokerEntity, Model as BrokerModel,
 };
-use crate::mo::dbz_sink_connector::Model as SinkModel;
+use crate::mo::dbz_kafka_connect::Entity as ConnectEntity;
+use crate::mo::dbz_sink_connector::{Column as SinkColumn, Entity as SinkEntity};
+use crate::utils::{
+    BrokerConn, HDR_CONNECTOR_NAME, HDR_EXCEPTION_CLASS, HDR_EXCEPTION_MESSAGE,
+    HDR_EXCEPTION_STACKTRACE, HDR_OFFSET, HDR_PARTITION, HDR_TOPIC, KafkaBrokerUtils,
+    classify_error, dlq_topic, header_text, payload_bytes, payload_value,
+};
 use crate::vo::{DbzDeadLetterCountVo, DbzDeadLetterRetryResultVo, DbzDeadLetterVo};
 use anyhow::anyhow;
 use robotech::api::{PageRx, Ro, U64};
 use robotech::db::get_db_conn;
 use robotech::svc::SvcError;
+use rskafka::client::partition::{OffsetAt, UnknownTopicHandling};
+use rskafka::record::Record;
 use sea_orm::sea_query::Expr;
 use sea_orm::{
     ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter,
-    QueryOrder, QuerySelect, Set,
+    QuerySelect, Set,
 };
 use serde_json::Value;
-use std::time::Duration;
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::LazyLock;
+use tokio::sync::Mutex;
 use tracing::{info, warn};
 use wheel_rs::time_utils::now_ms;
 
-/// 传输类失败的重试间隔：1s → 5s → 30s → 2m → 10m
-const RETRY_DELAYS_MS: [i64; 5] = [1_000, 5_000, 30_000, 120_000, 600_000];
+/// DLQ 各分区的同步进度：`{broker}|{topic}|{partition}` → 下一条要读的 offset
+///
+/// 只放在进程内，重启后按 `Earliest` 重新扫一遍：DLQ topic 有 retention，且落库按
+/// 四列坐标幂等、遇到已存在的行直接跳过，重扫不会重复，也不会覆盖人工处置结论。
+/// 进程内这把锁只用来串行化本进程的分区拉取；**跨副本**并发靠唯一索引 +
+/// `upsert_from_dlq` 撞唯一键后的复查兜底，不需要分布式锁。
+static DLQ_CURSORS: LazyLock<Mutex<HashMap<String, i64>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
-/// 清理周期：10 分钟一次
+/// 保留清理周期：10 分钟一次
 const CLEANUP_INTERVAL_MS: i64 = 10 * 60 * 1_000;
+
+/// 单次 fetch 的最大字节范围
+const FETCH_BYTES: std::ops::Range<i32> = 1..1_048_576;
 
 /// # 死信服务
 ///
-/// 没有对应的 CRUD 路由，只有上报、查询、重投、废弃、计数与后台 worker，
-/// 因此不使用 `#[svc]` 宏。
+/// 没有对应的 CRUD 路由，只有同步、查询、重投、废弃、计数，因此不使用 `#[svc]` 宏。
 pub struct DbzDeadLetterSvc;
 
+// SvcError 由框架定义且体积较大，钩子/服务方法的返回类型必须与宏约定一致，
+// 无法改成 Box 包裹，这里统一放行该 lint（与 dbz_sink_connector_svc 同一处理）
+#[allow(clippy::result_large_err)]
 impl DbzDeadLetterSvc {
-    /// # 上报一条死信（供 magic 脚本调用）
+    /// # 手动同步（页面「同步」按钮）
     ///
-    /// 确定性失败直接写死信表；传输类与响应异常写重试队列，由 worker 按退避重投。
-    /// 已存在的重试行只累加次数、刷新时间，不新增行。
+    /// jobx 周期任务走 [`Self::sync_from_dlq`]；这里包一层给 HTTP 用。
+    pub async fn sync() -> Result<Ro<u64>, SvcError> {
+        let count = Self::sync_from_dlq()
+            .await
+            .map_err(|e| SvcError::from(anyhow!("同步 Kafka Connect DLQ 失败: {e}")))?;
+        Ok(Ro::success(format!("已同步 {count} 条死信")).extra(Some(count)))
+    }
+
+    /// # 从 Kafka Connect DLQ 增量同步死信
+    ///
+    /// 遍历 dbz 纳管的每个 Kafka 集群（按 broker 地址去重），拉取全局 DLQ topic 的
+    /// 全部分区。同步失败不影响其它集群：单个集群连不上只记日志。
+    ///
+    /// 由 jobx 健康检查计划每轮顺带触发一次，页面「同步」按钮也能手动触发。
     ///
     /// ## 返回值
-    /// * `Ok(Ro<()>)` - 已入死信或已加入重试队列
-    /// * `Err(SvcError)` - 参数不合法或读写库失败
-    pub async fn report(dto: DbzDeadLetterReportDto, operator_id: U64) -> Result<Ro<()>, SvcError> {
-        let connector_id = i64::from(dto.connector_id);
-        let connector_type = i16::from(dto.connector_type);
-        let topic = dto.topic.trim().to_string();
-        if topic.is_empty() {
-            return Err(anyhow!("topic 不能为空").into());
+    /// * `Ok(u64)` - 本轮新落库的死信条数
+    pub async fn sync_from_dlq() -> anyhow::Result<u64> {
+        let cfg = current_config();
+        if !cfg.enabled {
+            return Ok(0);
         }
-        if connector_id <= 0 {
-            return Err(anyhow!("connectorId 必须为正数").into());
-        }
-        // 死信只针对下游连接器：上游没有可重投的 HTTP 地址，页面也不再展示上游类型
-        if dto.connector_type != DeadLetterConnectorType::Sink {
-            return Err(anyhow!("死信仅支持下游连接器").into());
-        }
-
+        let topic = dlq_topic(&cfg).to_string();
         let db = get_db_conn().map_err(|e| anyhow!("获取数据库连接失败: {e}"))?;
-        let now = now_ms() as i64;
-        let record_key = truncate(&dto.record_key, 512);
-        // 失败详情是原始技术内容，按要求原样保存、不截断
-        let failure_detail = dto.failure_detail;
-        let attempts = dto.retry_count as i32;
-        let operator = i64::from(operator_id);
+        let brokers = BrokerEntity::find()
+            .filter(BrokerColumn::Enabled.eq(true))
+            .all(db.as_ref())
+            .await?;
 
-        if dto.failure_category == DeadLetterFailureCategory::Deterministic {
-            // 确定性失败不再等重试：若正排在队列里，直接撤掉
-            Self::delete_retry(
-                db.as_ref(),
-                connector_type,
-                connector_id,
-                &topic,
-                &record_key,
-            )
-            .await?;
-            let _ = Self::upsert_dead_letter(
-                db.as_ref(),
-                connector_type,
-                connector_id,
-                &topic,
-                &record_key,
-                dto.partition,
-                dto.offset,
-                dto.payload,
-                i16::from(dto.failure_category),
-                i16::from(dto.failure_subtype),
-                &failure_detail,
-                attempts + 1,
-                now,
-                now,
-                operator,
-            )
-            .await?;
-            return Ok(Ro::success("已写入死信".to_string()));
+        let mut seen = HashSet::new();
+        let mut total = 0u64;
+        for broker in brokers {
+            if !seen.insert(broker.bootstrap_servers.clone()) {
+                continue;
+            }
+            match Self::sync_one_cluster(db.as_ref(), &broker, &topic, &cfg).await {
+                Ok(count) => total += count,
+                Err(e) => warn!("从 Kafka 集群<{}>同步 DLQ<{}>失败: {e}", broker.name, topic),
+            }
         }
 
-        // 传输类 / 响应异常：先进重试队列（死信只面向下游连接器）
-        let _ = Self::upsert_retry(
-            db.as_ref(),
-            connector_type,
+        if let Err(e) = Self::maybe_cleanup(db.as_ref(), &cfg).await {
+            warn!("死信保留清理失败: {e}");
+        }
+        Ok(total)
+    }
+
+    /// # 同步一个 Kafka 集群上的 DLQ topic
+    async fn sync_one_cluster(
+        db: &DatabaseConnection,
+        broker: &BrokerModel,
+        topic: &str,
+        cfg: &DeadLetterConfig,
+    ) -> anyhow::Result<u64> {
+        let conn = BrokerConn::from_model(broker);
+        let client = KafkaBrokerUtils::connect(&conn).await?;
+        let topics = client.list_topics().await?;
+        // DLQ topic 由 Connect 在第一次坏记录出现时自动创建，还没有死信时不存在是正常的
+        let Some(metadata) = topics.iter().find(|one| one.name == topic) else {
+            return Ok(0);
+        };
+
+        let mut total = 0u64;
+        for partition in &metadata.partitions {
+            let client = client
+                .partition_client(topic, *partition, UnknownTopicHandling::Error)
+                .await?;
+            let earliest = client.get_offset(OffsetAt::Earliest).await?;
+            let latest = client.get_offset(OffsetAt::Latest).await?;
+            let cursor_key = format!("{}|{}|{}", broker.bootstrap_servers, topic, partition);
+            let mut cursors = DLQ_CURSORS.lock().await;
+            // DLQ topic 被删后重建 / retention 清到新起点时，进程内游标会跑到 latest 后面，
+            // 这时必须从 earliest 重新扫，否则该分区永远同步不到新记录。
+            let stored = cursors.get(&cursor_key).copied().unwrap_or(earliest);
+            let start = if stored > latest {
+                earliest
+            } else {
+                stored.max(earliest)
+            };
+            if start >= latest {
+                continue;
+            }
+            let (records, _) = match client.fetch_records(start, FETCH_BYTES, 500).await {
+                Ok(result) => result,
+                Err(e) => {
+                    drop(cursors);
+                    return Err(anyhow!("拉取 DLQ<{topic}>分区<{partition}>失败: {e}"));
+                }
+            };
+            let batch: Vec<_> = records
+                .iter()
+                .take(cfg.sync_batch_size.max(1) as usize)
+                .collect();
+            for record in &batch {
+                // 只数真正新落库的条数：重扫命中的旧记录不该算进「已同步 N 条」
+                if Self::upsert_from_dlq(db, topic, *partition, record).await? {
+                    total += 1;
+                }
+            }
+            if let Some(last) = batch.last() {
+                cursors.insert(cursor_key, last.offset + 1);
+            }
+            drop(cursors);
+        }
+        Ok(total)
+    }
+
+    /// # 把一条 DLQ 记录落成页面索引
+    ///
+    /// 重复同步（多副本、进程重启后重扫）时按
+    /// `(connector_id, topic, partition, offset)` 查到已存在就直接返回：DLQ 记录
+    /// 是不可变的，重扫没有新信息，更不该把「已人工处理」重置回「待处理」。
+    ///
+    /// 返回是否**新增**了一行，供同步计数使用。
+    async fn upsert_from_dlq(
+        db: &DatabaseConnection,
+        dlq_topic: &str,
+        dlq_partition: i32,
+        entry: &rskafka::record::RecordAndOffset,
+    ) -> anyhow::Result<bool> {
+        let headers = &entry.record.headers;
+        // 没开 context headers 时拿不到源坐标，用 DLQ 自身坐标兜底，保证仍能入库
+        let source_topic =
+            header_text(headers, HDR_TOPIC).unwrap_or_else(|| format!("{dlq_topic}:no-context"));
+        let source_partition = header_text(headers, HDR_PARTITION)
+            .and_then(|text| text.parse::<i32>().ok())
+            .unwrap_or(dlq_partition);
+        let source_offset = header_text(headers, HDR_OFFSET)
+            .and_then(|text| text.parse::<i64>().ok())
+            .unwrap_or(entry.offset);
+        let connector_name = header_text(headers, HDR_CONNECTOR_NAME).unwrap_or_default();
+        let exception_class = header_text(headers, HDR_EXCEPTION_CLASS).unwrap_or_default();
+        let exception_message = header_text(headers, HDR_EXCEPTION_MESSAGE).unwrap_or_default();
+        let stacktrace = header_text(headers, HDR_EXCEPTION_STACKTRACE).unwrap_or_default();
+
+        // 幂等键必须包含连接器：同一源 topic 常被多条 sink 连接器订阅，同一条源记录
+        // 在每条连接器上失败都会各自写一条 DLQ 记录，只按源坐标查重会互相吞掉。
+        // DLQ 头里的连接器名反查不到本地记录时记 0（未归属），此时源坐标仍可区分。
+        let connector_id = Self::find_sink_id(db, &connector_name).await;
+        if Self::dead_letter_exists(
+            db,
             connector_id,
-            &topic,
-            &record_key,
-            dto.partition,
-            dto.offset,
-            dto.payload,
-            i16::from(dto.failure_category),
-            &failure_detail,
-            attempts,
-            now,
-            now,
-            operator,
+            &source_topic,
+            source_partition,
+            source_offset,
         )
-        .await?;
-        Ok(Ro::success("已加入重试队列".to_string()))
+        .await?
+        {
+            return Ok(false);
+        }
+
+        let (category, subtype) = classify_error(&exception_class, &exception_message);
+        let category = i16::from(category);
+        let subtype = i16::from(subtype);
+        let detail = format!(
+            "Kafka Connect DLQ<{dlq_topic}:{dlq_partition}:{}>\n异常类: {exception_class}\n异常消息: {exception_message}\n堆栈: {stacktrace}",
+            entry.offset
+        );
+        let payload = payload_value(entry.record.value.as_deref().unwrap_or_default());
+        let record_key = entry
+            .record
+            .key
+            .as_deref()
+            .map(|bytes| truncate(&String::from_utf8_lossy(bytes), 512))
+            .unwrap_or_default();
+        let occurred_ms = entry.record.timestamp.timestamp_millis();
+        let now = now_ms() as i64;
+
+        let active = DeadLetterActiveModel {
+            connector_type: Set(i16::from(DeadLetterConnectorType::Sink)),
+            connector_id: Set(connector_id),
+            topic: Set(source_topic.clone()),
+            record_key: Set(record_key),
+            partition: Set(Some(source_partition)),
+            offset: Set(Some(source_offset)),
+            payload: Set(payload),
+            failure_category: Set(category),
+            failure_subtype: Set(subtype),
+            reason: Set(Self::dead_letter_reason(category, subtype)),
+            failure_detail: Set(detail),
+            retry_count: Set(0),
+            first_seen_ms: Set(occurred_ms),
+            last_seen_ms: Set(occurred_ms),
+            status: Set(i16::from(DeadLetterStatus::Pending)),
+            handled_by: Set(None),
+            handled_ms: Set(None),
+            remark: Set(None),
+            pending_payload: Set(None),
+            payload_edited_by: Set(None),
+            payload_edited_ms: Set(None),
+            creater_id: Set(0),
+            create_ms: Set(now),
+            updater_id: Set(0),
+            update_ms: Set(now),
+            ..Default::default()
+        };
+        if let Err(e) = DbzDeadLetterDao::insert(active, db).await {
+            // 多副本的 jobx 可能同时同步到同一条 DLQ 记录，落库会撞唯一索引。
+            // 复查到行就当成本轮跳过；其它错误照常上抛，不吞真实故障。
+            if Self::dead_letter_exists(
+                db,
+                connector_id,
+                &source_topic,
+                source_partition,
+                source_offset,
+            )
+            .await?
+            {
+                return Ok(false);
+            }
+            return Err(e.into());
+        }
+        info!(
+            "同步 Connect 死信: connector={connector_name}(id={connector_id}) dlq={dlq_topic}:{dlq_partition}:{} source={source_partition}/{source_offset}",
+            entry.offset
+        );
+        Ok(true)
+    }
+
+    /// 按四列幂等键查重；查重与插入之间不持分布式锁，靠这里的复查兜并发
+    async fn dead_letter_exists(
+        db: &DatabaseConnection,
+        connector_id: i64,
+        topic: &str,
+        partition: i32,
+        offset: i64,
+    ) -> anyhow::Result<bool> {
+        Ok(DeadLetterEntity::find()
+            .filter(
+                Condition::all()
+                    .add(DeadLetterColumn::ConnectorId.eq(connector_id))
+                    .add(DeadLetterColumn::Topic.eq(topic))
+                    .add(DeadLetterColumn::Partition.eq(partition))
+                    .add(DeadLetterColumn::Offset.eq(offset)),
+            )
+            .one(db)
+            .await?
+            .is_some())
+    }
+
+    /// 按 Connect 头里的连接器名反查本地下游连接器 ID，用于页面角标与筛选
+    async fn find_sink_id(db: &DatabaseConnection, connector_name: &str) -> i64 {
+        if connector_name.is_empty() {
+            return 0;
+        }
+        SinkEntity::find()
+            .filter(SinkColumn::ConnectorName.eq(connector_name))
+            .one(db)
+            .await
+            .ok()
+            .flatten()
+            .map(|one| one.id)
+            .unwrap_or(0)
     }
 
     /// # 分页查询死信
-    ///
-    /// 只查死信终态表；重试队列中的记录还没「死」，不在这里出现。
     pub async fn page(dto: DbzDeadLetterQueryDto) -> Result<Ro<PageRx<DbzDeadLetterVo>>, SvcError> {
         let db = get_db_conn().map_err(|e| anyhow!("获取数据库连接失败: {e}"))?;
 
-        if dto.connector_type == Some(DeadLetterConnectorType::Source) {
-            return Err(anyhow!("死信仅支持下游连接器").into());
-        }
         let mut condition = Condition::all()
             .add(DeadLetterColumn::ConnectorType.eq(i16::from(DeadLetterConnectorType::Sink)));
         if let Some(connector_type) = dto.connector_type {
@@ -232,10 +430,6 @@ impl DbzDeadLetterSvc {
     ) -> Result<Ro<Vec<DbzDeadLetterCountVo>>, SvcError> {
         let db = get_db_conn().map_err(|e| anyhow!("获取数据库连接失败: {e}"))?;
 
-        // 待处理角标只给下游连接器挂；上游死信在迁移中已清理，接口也不再接受上游类型
-        if dto.connector_type == Some(DeadLetterConnectorType::Source) {
-            return Ok(Ro::success("上游连接器不产生死信".to_string()).extra(Some(Vec::new())));
-        }
         let mut condition = Condition::all()
             .add(DeadLetterColumn::Status.eq(i16::from(DeadLetterStatus::Pending)))
             .add(DeadLetterColumn::ConnectorType.eq(i16::from(DeadLetterConnectorType::Sink)));
@@ -278,12 +472,11 @@ impl DbzDeadLetterSvc {
 
     /// # 批量重投
     ///
-    /// 逐条 POST 到下游连接器配置里的 `url`（magic 的 sync 接口），HTTP 2xx 且
-    /// 响应 `result=1` 才算成功；成功转「已重投」，失败保持「待处理」并返回原因。
-    /// 单条重投就是只传一个 ID。
+    /// 把报文重新生产回**源 topic**（写回 Kafka，让 Connect 再消费一次），不是绕过
+    /// Connect 直接 POST 下游 HTTP 地址。成功转「已重投」，失败保持原状态并回写原因。
     ///
-    /// `payload` 不传时按原始报文重投（与旧行为一致）；传入修改后的报文时只允许单条，
-    /// 且记录必须是「确定性失败 + 字段不合规」。修改后的报文另存，原始报文不覆盖。
+    /// `payload` 不传时按 DLQ 里的原始报文重投；传入修改后的报文时只允许单条，
+    /// 且必须符合分类白名单。修改后的报文另存，原始报文不覆盖。
     pub async fn retry(
         dto: DbzDeadLetterRetryDto,
         operator_id: U64,
@@ -301,10 +494,6 @@ impl DbzDeadLetterSvc {
             None => None,
         };
         let db = get_db_conn().map_err(|e| anyhow!("获取数据库连接失败: {e}"))?;
-        let cfg = crate::config::get_dbz_config()
-            .map_err(|e| anyhow!("读取 dbz 配置失败: {e}"))?
-            .dead_letter
-            .clone();
         let operator = i64::from(operator_id);
         let now = now_ms() as i64;
 
@@ -315,7 +504,6 @@ impl DbzDeadLetterSvc {
                 id,
                 operator,
                 now,
-                cfg.request_timeout_ms,
                 dto.remark.as_deref(),
                 edited_payload.as_ref(),
             )
@@ -330,7 +518,7 @@ impl DbzDeadLetterSvc {
     /// # 保存待投报文（不重投）
     ///
     /// 原始报文 `payload` 永不覆盖，这里只写 `pending_payload` 与编辑审计字段。
-    /// 只有「确定性失败 + 字段不合规」的记录允许调用；传输类与响应异常类直接拒绝。
+    /// 只有「异常分类为字段不合规」的记录允许调用。
     pub async fn edit_payload(
         dto: DbzDeadLetterEditPayloadDto,
         operator_id: U64,
@@ -351,11 +539,8 @@ impl DbzDeadLetterSvc {
         Self::ensure_editable(&model)?;
         let payload =
             Self::parse_payload_text(&dto.payload).map_err(|e| anyhow!("待投报文校验失败: {e}"))?;
-        let config = Self::sink_config(db.as_ref(), model.connector_type, model.connector_id)
-            .await
-            .ok();
-        Self::validate_field_payload(&payload, config.as_ref())
-            .map_err(|e| anyhow!("待投报文校验失败: {e}"))?;
+        Self::validate_field_payload(&payload, None)
+            .map_err(|e| SvcError::from(anyhow!("待投报文校验失败: {e}")))?;
 
         let mut active: DeadLetterActiveModel = model.into();
         active.pending_payload = Set(Some(payload));
@@ -370,7 +555,8 @@ impl DbzDeadLetterSvc {
 
     /// # 批量废弃
     ///
-    /// 只改状态与处理信息，不删行，保留追溯。
+    /// 只改状态与处理信息，不删行，保留追溯。注意 DLQ topic 里的原始记录仍在，
+    /// 废弃只是 dbz 页面上的结论。
     pub async fn discard(
         dto: DbzDeadLetterDiscardDto,
         operator_id: U64,
@@ -404,9 +590,6 @@ impl DbzDeadLetterSvc {
     }
 
     /// # 批量标记「已人工处理」
-    ///
-    /// 只处理「待处理」的记录：已重投、已废弃的记录不允许再改结论。标记不删行，
-    /// 处理说明写入 `remark`，处理人与时间由服务端记录，供之后撤销与追溯。
     pub async fn mark_handled(
         dto: DbzDeadLetterMarkHandledDto,
         operator_id: U64,
@@ -444,9 +627,6 @@ impl DbzDeadLetterSvc {
     }
 
     /// # 批量撤销「已人工处理」
-    ///
-    /// 只撤销当前状态为「已人工处理」的记录，恢复为「待处理」并清空处理人与
-    /// 处理说明；已废弃、已重投的记录不受影响。
     pub async fn unmark_handled(
         dto: DbzDeadLetterUnmarkHandledDto,
         operator_id: U64,
@@ -490,160 +670,15 @@ impl DbzDeadLetterSvc {
         )))
     }
 
-    /// # 后台重试 worker
-    ///
-    /// 在 `main::setup` 首次加载配置时 spawn 一次。每轮重新读取配置，支持热更新
-    /// 开关与间隔；到期行先用「把 next_at 推到 claim 超时之后」原子占位，避免多实例
-    /// 重复重投。
-    pub async fn run_retry_worker() {
-        let mut last_cleanup = 0i64;
-        loop {
-            let cfg = match crate::config::get_dbz_config() {
-                Ok(config) => config.dead_letter.clone(),
-                Err(e) => {
-                    warn!("读取 dbz 配置失败，死信 worker 使用默认值: {e}");
-                    crate::config::DeadLetterConfig::default()
-                }
-            };
-
-            if cfg.enabled {
-                if let Err(e) = Self::retry_due(&cfg).await {
-                    warn!("死信重试 worker 执行失败: {e}");
-                }
-                let now = now_ms() as i64;
-                if now - last_cleanup >= CLEANUP_INTERVAL_MS {
-                    if let Err(e) = Self::cleanup(&cfg).await {
-                        warn!("死信保留清理失败: {e}");
-                    }
-                    last_cleanup = now;
-                }
-            }
-
-            tokio::time::sleep(Duration::from_millis(cfg.worker_interval_ms.max(200))).await;
-        }
-    }
-
-    /// # 处理一批到期的重试行
-    async fn retry_due(cfg: &crate::config::DeadLetterConfig) -> anyhow::Result<()> {
-        let db = get_db_conn().map_err(|e| anyhow!("获取数据库连接失败: {e}"))?;
-        let now = now_ms() as i64;
-
-        let due = RetryEntity::find()
-            .filter(RetryColumn::NextAtMs.lte(now))
-            .order_by_asc(RetryColumn::NextAtMs)
-            .limit(cfg.batch_size.max(1))
-            .all(db.as_ref())
-            .await?;
-
-        for row in due {
-            // 原子占位：只有 next_at 仍到期的那一个实例能拿到
-            let claimed = RetryEntity::update_many()
-                .col_expr(
-                    RetryColumn::NextAtMs,
-                    Expr::value(now + cfg.request_timeout_ms as i64),
-                )
-                .col_expr(RetryColumn::UpdateMs, Expr::value(now))
-                .filter(RetryColumn::Id.eq(row.id))
-                .filter(RetryColumn::NextAtMs.lte(now))
-                .exec(db.as_ref())
-                .await?;
-            if claimed.rows_affected == 0 {
-                continue;
-            }
-
-            Self::attempt_retry(db.as_ref(), row, cfg, now).await?;
-        }
-        Ok(())
-    }
-
-    /// # 对一行执行一次重投
-    async fn attempt_retry(
-        db: &DatabaseConnection,
-        row: RetryModel,
-        cfg: &crate::config::DeadLetterConfig,
-        now: i64,
-    ) -> anyhow::Result<()> {
-        let attempts = row.attempts + 1;
-        let is_sink = row.connector_type == i16::from(DeadLetterConnectorType::Sink);
-        let post_result = if is_sink {
-            match Self::target_url(db, row.connector_type, row.connector_id).await {
-                Ok(url) => Self::post_to_magic(&url, &row.payload, cfg.request_timeout_ms).await,
-                Err(e) => Err(e),
-            }
-        } else {
-            Err("上游连接器没有可重投的 HTTP 地址".to_string())
-        };
-
-        match post_result {
-            Ok(()) => {
-                info!(
-                    "死信重投成功: connector={}(id={}) topic={} key={}",
-                    row.connector_type, row.connector_id, row.topic, row.record_key
-                );
-                RetryEntity::delete_by_id(row.id).exec(db).await?;
-            }
-            Err(error) => {
-                let extra = if is_sink {
-                    ""
-                } else {
-                    "（上游连接器没有可重投的 HTTP 地址，直接转死信）"
-                };
-                if !is_sink || attempts >= cfg.max_attempts as i32 {
-                    // 重试耗尽：转死信，不再保留队列行
-                    Self::upsert_dead_letter(
-                        db,
-                        row.connector_type,
-                        row.connector_id,
-                        &row.topic,
-                        &row.record_key,
-                        row.partition,
-                        row.offset,
-                        row.payload.clone(),
-                        row.failure_category,
-                        i16::from(DeadLetterFailureSubtype::Other),
-                        &format!("{error}{extra}"),
-                        attempts,
-                        row.first_seen_ms,
-                        now,
-                        0,
-                    )
-                    .await?;
-                    RetryEntity::delete_by_id(row.id).exec(db).await?;
-                    warn!(
-                        "死信重试耗尽({attempts}次)，已转死信: connector={}(id={}) topic={}: {error}",
-                        row.connector_type, row.connector_id, row.topic
-                    );
-                } else {
-                    let next_at = now + retry_delay_ms(attempts);
-                    let mut active: RetryActiveModel = row.into();
-                    active.attempts = Set(attempts);
-                    active.next_at_ms = Set(next_at);
-                    active.last_error = Set(Some(truncate(&format!("{error}{extra}"), 5_000)));
-                    active.last_seen_ms = Set(now);
-                    active.update_ms = Set(now);
-                    DbzDeadLetterRetryDao::update(active, db).await?;
-                    info!(
-                        "死信重投失败，{attempts}/{} 次，{}ms 后重试: {error}{extra}",
-                        cfg.max_attempts,
-                        next_at - now
-                    );
-                }
-            }
-        }
-        Ok(())
-    }
-
     /// # 单条重投（人工触发）
     ///
-    /// `edited_payload` 为 `Some` 时表示这次重投用的是修改后的报文：先校验白名单
-    /// 与字段，再把待投报文和编辑审计字段落库，最后才 POST。无论重投结果如何，
-    /// 都会把结果回写到本行（`last_retry_*`），原始 `payload` 始终不动。
+    /// 把报文写回源 topic，交给 Kafka Connect 重新走一遍完整的 sink 链路。
+    /// 无论成败都回写 `last_retry_*`，原始 `payload` 始终不动。
     async fn retry_one(
         db: &DatabaseConnection,
         id: U64,
         operator: i64,
         now: i64,
-        timeout_ms: u64,
         remark: Option<&str>,
         edited_payload: Option<&Value>,
     ) -> anyhow::Result<DbzDeadLetterRetryResultVo> {
@@ -673,27 +708,18 @@ impl DbzDeadLetterSvc {
         let mut payload_to_post = model.payload.clone();
         if let Some(payload) = edited_payload {
             Self::ensure_editable(&model)?;
-            let config = Self::sink_config(db, model.connector_type, model.connector_id)
-                .await
-                .ok();
-            Self::validate_field_payload(payload, config.as_ref())
+            Self::validate_field_payload(payload, None)
                 .map_err(|e| anyhow!("待投报文校验失败: {e}"))?;
-
             payload_to_post = payload.clone();
             model.pending_payload = Some(payload.clone());
             model.payload_edited_by = Some(operator);
             model.payload_edited_ms = Some(now);
         }
 
-        let post_result = match Self::target_url(db, model.connector_type, model.connector_id).await
-        {
-            Ok(url) => Self::post_to_magic(&url, &payload_to_post, timeout_ms).await,
-            Err(e) => Err(e),
-        };
-
+        let post_result = Self::produce_back(db, &model, &payload_to_post).await;
         let success = post_result.is_ok();
         let message = match &post_result {
-            Ok(()) => "重投成功".to_string(),
+            Ok(()) => "已写回源 topic，等待 Kafka Connect 重新消费".to_string(),
             Err(error) => error.clone(),
         };
 
@@ -719,21 +745,77 @@ impl DbzDeadLetterSvc {
         })
     }
 
-    /// # 是否允许修改报文
+    /// # 把报文写回源 topic
     ///
-    /// 只有「确定性失败 + 字段不合规」这一类改报文才有意义；传输类、响应异常类
-    /// 以及未细分的确定性失败（唯一键冲突、外键缺失等）一律拒绝。
+    /// broker 归属由 `connector_id → sink → connect → broker` 推导，接口从不接受
+    /// 调用方直接传地址。源 topic 可能同时被多条下游连接器消费，重投会让它们都
+    /// 再收到一次 —— 这是写回原始 topic 的固有语义，页面与文档都会提示。
+    async fn produce_back(
+        db: &DatabaseConnection,
+        model: &DeadLetterModel,
+        payload: &Value,
+    ) -> Result<(), String> {
+        if model.topic.is_empty() || model.topic.ends_with(":no-context") {
+            return Err("DLQ 记录缺少源 topic 上下文，无法确定重投目标".to_string());
+        }
+        if model.connector_id == 0 {
+            return Err(
+                "DLQ 记录未归属到下游连接器（连接器名未在本系统登记），无法确定重投目标集群"
+                    .to_string(),
+            );
+        }
+        let sink = SinkEntity::find()
+            .filter(SinkColumn::Id.eq(model.connector_id))
+            .one(db)
+            .await
+            .map_err(|e| format!("查询下游连接器失败: {e}"))?
+            .ok_or_else(|| format!("下游连接器(id={})不存在", model.connector_id))?;
+        let connect = ConnectEntity::find_by_id(sink.kafka_connect_id)
+            .one(db)
+            .await
+            .map_err(|e| format!("查询 Kafka Connect 失败: {e}"))?
+            .ok_or_else(|| "下游连接器所属的 Kafka Connect 不存在".to_string())?;
+        let broker = BrokerEntity::find_by_id(connect.kafka_broker_id)
+            .one(db)
+            .await
+            .map_err(|e| format!("查询 Kafka 集群失败: {e}"))?
+            .ok_or_else(|| "Kafka Connect 所属的 Kafka 集群不存在".to_string())?;
+
+        let conn = BrokerConn::from_model(&broker);
+        let client = KafkaBrokerUtils::connect(&conn)
+            .await
+            .map_err(|e| format!("连接 Kafka 集群<{}>失败: {e}", broker.name))?;
+        let partition = model.partition.unwrap_or(0);
+        let partition_client = client
+            .partition_client(&model.topic, partition, UnknownTopicHandling::Error)
+            .await
+            .map_err(|e| format!("定位源 topic<{}>分区<{partition}>失败: {e}", model.topic))?;
+        let record = Record {
+            key: Some(model.record_key.as_bytes().to_vec()),
+            value: Some(payload_bytes(payload)),
+            headers: BTreeMap::new(),
+            timestamp: chrono::Utc::now(),
+        };
+        partition_client
+            .produce(
+                vec![record],
+                rskafka::client::partition::Compression::default(),
+            )
+            .await
+            .map_err(|e| format!("写回源 topic<{}>失败: {e}", model.topic))?;
+        Ok(())
+    }
+
+    /// # 是否允许修改报文
     fn ensure_editable(model: &DeadLetterModel) -> anyhow::Result<()> {
         if Self::can_edit_payload(model.failure_category, model.failure_subtype) {
             Ok(())
         } else {
-            Err(anyhow!(
-                "该死信属于传输类/响应异常类或非字段不合规的确定性失败，禁止修改报文"
-            ))
+            Err(anyhow!("该死信的异常不属于字段不合规类，禁止修改报文"))
         }
     }
 
-    /// 白名单判定：确定性失败（1）且子类为字段不合规（1）
+    /// 白名单判定：数据/格式类（1）且子类为字段不合规（1）
     fn can_edit_payload(failure_category: i16, failure_subtype: i16) -> bool {
         failure_category == i16::from(DeadLetterFailureCategory::Deterministic)
             && failure_subtype == i16::from(DeadLetterFailureSubtype::FieldValidation)
@@ -741,34 +823,18 @@ impl DbzDeadLetterSvc {
 
     /// # 死信记录给人看的一句失败原因
     ///
-    /// 只按分类/子类归一出结论，绝不把原始技术内容塞进这一列；无法识别分类时
-    /// 给保守但仍可读的兜底说明。与重试队列的口径保持一致。
+    /// 只按 DLQ 异常分类归一出结论，绝不把原始堆栈塞进这一列。
     fn dead_letter_reason(failure_category: i16, failure_subtype: i16) -> String {
         if failure_category == i16::from(DeadLetterFailureCategory::Deterministic) {
             if failure_subtype == i16::from(DeadLetterFailureSubtype::FieldValidation) {
-                "字段校验不通过，请核对并修改报文后重投".to_string()
+                "报文结构或字段不合规，请核对并修改报文后重投".to_string()
             } else {
-                "数据与下游约束冲突（唯一键冲突或外键缺失），请核对数据".to_string()
+                "Kafka Connect 无法转换或写入该记录，请核对数据与转换器配置".to_string()
             }
         } else if failure_category == i16::from(DeadLetterFailureCategory::Transient) {
-            "下游连接失败，重试多次后仍失败".to_string()
-        } else if failure_category == i16::from(DeadLetterFailureCategory::Unknown) {
-            "下游响应异常，无法确认处理结果，请核对后重投".to_string()
+            "下游投递失败且 Connect 重试耗尽，请确认目标服务恢复后重投".to_string()
         } else {
-            "处理失败，请查看失败详情".to_string()
-        }
-    }
-
-    /// # 重试队列给人看的一句失败原因
-    ///
-    /// 与死信表同一口径，只差生命周期状态：队列里的记录还在重试，死信已经终态。
-    fn retry_reason(failure_category: i16) -> String {
-        if failure_category == i16::from(DeadLetterFailureCategory::Transient) {
-            "下游连接失败，已进入重试队列".to_string()
-        } else if failure_category == i16::from(DeadLetterFailureCategory::Unknown) {
-            "下游响应异常，已进入重试队列".to_string()
-        } else {
-            "处理失败，请查看失败详情".to_string()
+            "Kafka Connect 处理该记录时失败，请查看失败详情".to_string()
         }
     }
 
@@ -787,346 +853,38 @@ impl DbzDeadLetterSvc {
         })
     }
 
-    /// 按下游连接器配置做基础字段检查
-    ///
-    /// 目标表的列类型没有落在 `connector_config` 里，离线做不了完整类型校验；
-    /// 能确定的是 `pk.fields` / `primary.key.fields` 声明的必填主键字段。
-    fn validate_field_payload(payload: &Value, config: Option<&Value>) -> Result<(), String> {
-        let object = payload
-            .as_object()
-            .ok_or_else(|| "待投报文必须是 JSON 对象（{...}）".to_string())?;
-
-        let Some(config) = config else {
-            return Ok(());
-        };
-
-        for key in ["pk.fields", "primary.key.fields"] {
-            let Some(fields) = config.get(key).and_then(Value::as_str) else {
-                continue;
-            };
-            for field in fields.split(',') {
-                let field = field.trim();
-                if field.is_empty() {
-                    continue;
-                }
-                match object.get(field) {
-                    None | Some(Value::Null) => {
-                        return Err(format!("主键字段 `{field}` 必填，待投报文里缺失或为 null"));
-                    }
-                    Some(_) => {}
-                }
-            }
+    /// 待投报文必须是 JSON 对象；DLQ 记录若本来不是 JSON 文本，不允许改写
+    fn validate_field_payload(payload: &Value, _config: Option<&Value>) -> Result<(), String> {
+        if payload.get("__raw_utf8").is_some() {
+            return Err("原始报文不是 JSON，不能修改后重投".to_string());
         }
-        Ok(())
-    }
-
-    /// # 取重投目标地址
-    ///
-    /// 下游连接器的 `connector_config` 里 `url` 就是 HttpSink 投递的 magic 脚本
-    /// 地址，重投即把原报文再 POST 一次。上游连接器没有这个地址，直接报错。
-    async fn target_url(
-        db: &DatabaseConnection,
-        connector_type: i16,
-        connector_id: i64,
-    ) -> Result<String, String> {
-        let record = Self::sink_record(db, connector_type, connector_id).await?;
-        if !record.enabled {
-            return Err(format!("下游连接器<{}>已停用，不能重投", record.name));
+        if !payload.is_object() {
+            return Err("待投报文必须是 JSON 对象（{...}）".to_string());
         }
-
-        let config: Value = serde_json::from_str(&record.connector_config)
-            .map_err(|e| format!("解析连接器<{}>配置失败: {e}", record.name))?;
-        config
-            .get("url")
-            .or_else(|| config.get("http.url"))
-            .or_else(|| config.get("http.api.url"))
-            .and_then(Value::as_str)
-            .map(|url| url.to_string())
-            .ok_or_else(|| format!("连接器<{}>配置缺少 url，无法重投", record.name))
-    }
-
-    /// # 取下游连接器配置（用于待投报文的字段检查）
-    ///
-    /// 只读 `connector_config`；连接器不存在或配置不是 JSON 时返回错误，调用方
-    /// 可以选择跳过字段检查，由后续重投给出真实原因。
-    async fn sink_config(
-        db: &DatabaseConnection,
-        connector_type: i16,
-        connector_id: i64,
-    ) -> Result<Value, String> {
-        let record = Self::sink_record(db, connector_type, connector_id).await?;
-        serde_json::from_str::<Value>(&record.connector_config)
-            .map_err(|e| format!("解析连接器<{}>配置失败: {e}", record.name))
-    }
-
-    /// # 取下游连接器记录
-    async fn sink_record(
-        db: &DatabaseConnection,
-        connector_type: i16,
-        connector_id: i64,
-    ) -> Result<SinkModel, String> {
-        if connector_type != i16::from(DeadLetterConnectorType::Sink) {
-            return Err("上游连接器没有可重投的 HTTP 地址".to_string());
-        }
-        DbzSinkConnectorDao::get_by_id::<_, SinkModel>(U64::from(connector_id), db)
-            .await
-            .map_err(|e| format!("查询下游连接器失败: {e}"))?
-            .ok_or_else(|| format!("下游连接器(id={connector_id})不存在"))
-    }
-
-    /// # POST 原报文到 magic
-    ///
-    /// magic 脚本的成功约定是 `result=1`；`{"result":-2}` 等一律视为失败。
-    async fn post_to_magic(url: &str, payload: &Value, timeout_ms: u64) -> Result<(), String> {
-        let client = reqwest::Client::builder()
-            .timeout(Duration::from_millis(timeout_ms))
-            .build()
-            .map_err(|e| format!("创建 HTTP 客户端失败: {e}"))?;
-        let resp = client
-            .post(url)
-            .json(payload)
-            .send()
-            .await
-            .map_err(|e| format!("重投请求失败: {e}"))?;
-        let status = resp.status();
-        let body = resp.text().await.unwrap_or_default();
-        if !status.is_success() {
-            return Err(format!(
-                "magic 返回 HTTP {status}: {}",
-                truncate(&body, 500)
-            ));
-        }
-        let value: Value = serde_json::from_str(&body)
-            .map_err(|e| format!("响应不是 JSON: {e}; body={}", truncate(&body, 500)))?;
-        let result = value.get("result").and_then(Value::as_i64);
-        if result == Some(1) {
-            Ok(())
-        } else {
-            Err(format!(
-                "magic 返回 result={result:?}: {}",
-                truncate(&body, 500)
-            ))
-        }
-    }
-
-    /// # 写重试队列（按幂等键 upsert）
-    #[allow(clippy::too_many_arguments)]
-    async fn upsert_retry(
-        db: &DatabaseConnection,
-        connector_type: i16,
-        connector_id: i64,
-        topic: &str,
-        record_key: &str,
-        partition: Option<i32>,
-        offset: Option<i64>,
-        payload: Value,
-        failure_category: i16,
-        failure_detail: &str,
-        attempts: i32,
-        first_seen_ms: i64,
-        last_seen_ms: i64,
-        operator: i64,
-    ) -> anyhow::Result<RetryModel> {
-        let condition = Self::retry_key_condition(connector_type, connector_id, topic, record_key);
-        let now = now_ms() as i64;
-
-        if let Some(existing) = RetryEntity::find()
-            .filter(condition.clone())
-            .one(db)
-            .await?
-        {
-            let next_attempts = existing.attempts + attempts.max(0);
-            let mut active: RetryActiveModel = existing.into();
-            active.partition = Set(partition);
-            active.offset = Set(offset);
-            active.payload = Set(payload);
-            active.failure_category = Set(failure_category);
-            active.reason = Set(Self::retry_reason(failure_category));
-            active.failure_detail = Set(failure_detail.to_string());
-            active.attempts = Set(next_attempts);
-            active.next_at_ms = Set(now + retry_delay_ms(next_attempts));
-            active.last_seen_ms = Set(last_seen_ms);
-            active.updater_id = Set(operator);
-            active.update_ms = Set(now);
-            return Ok(DbzDeadLetterRetryDao::update(active, db).await?);
-        }
-
-        let active = RetryActiveModel {
-            connector_type: Set(connector_type),
-            connector_id: Set(connector_id),
-            topic: Set(topic.to_string()),
-            record_key: Set(record_key.to_string()),
-            partition: Set(partition),
-            offset: Set(offset),
-            payload: Set(payload),
-            failure_category: Set(failure_category),
-            reason: Set(Self::retry_reason(failure_category)),
-            failure_detail: Set(failure_detail.to_string()),
-            attempts: Set(attempts.max(0)),
-            next_at_ms: Set(now + retry_delay_ms(attempts.max(0))),
-            last_error: Set(None),
-            first_seen_ms: Set(first_seen_ms),
-            last_seen_ms: Set(last_seen_ms),
-            creater_id: Set(operator),
-            create_ms: Set(now),
-            updater_id: Set(operator),
-            update_ms: Set(now),
-            ..Default::default()
-        };
-        Ok(DbzDeadLetterRetryDao::insert(active, db).await?)
-    }
-
-    /// # 写死信终态（按幂等键 upsert）
-    ///
-    /// 已存在时累加失败次数、刷新末次时间、重置为「待处理」并清空上一轮处理信息；
-    /// 这条记录又被人工重投后再次失败，说明上一轮处理结论已失效。
-    #[allow(clippy::too_many_arguments)]
-    async fn upsert_dead_letter(
-        db: &DatabaseConnection,
-        connector_type: i16,
-        connector_id: i64,
-        topic: &str,
-        record_key: &str,
-        partition: Option<i32>,
-        offset: Option<i64>,
-        payload: Value,
-        failure_category: i16,
-        failure_subtype: i16,
-        failure_detail: &str,
-        increment: i32,
-        first_seen_ms: i64,
-        last_seen_ms: i64,
-        operator: i64,
-    ) -> anyhow::Result<DeadLetterModel> {
-        let condition = Self::key_condition(connector_type, connector_id, topic, record_key);
-        let now = now_ms() as i64;
-
-        if let Some(existing) = DeadLetterEntity::find()
-            .filter(condition.clone())
-            .one(db)
-            .await?
-        {
-            let next_retry_count = existing.retry_count + increment.max(0);
-            let first_seen = first_seen_ms.min(existing.first_seen_ms);
-            let mut active: DeadLetterActiveModel = existing.into();
-            active.partition = Set(partition);
-            active.offset = Set(offset);
-            active.payload = Set(payload);
-            active.failure_category = Set(failure_category);
-            active.failure_subtype = Set(failure_subtype);
-            active.reason = Set(Self::dead_letter_reason(failure_category, failure_subtype));
-            active.failure_detail = Set(failure_detail.to_string());
-            active.retry_count = Set(next_retry_count);
-            active.first_seen_ms = Set(first_seen);
-            active.last_seen_ms = Set(last_seen_ms);
-            active.status = Set(i16::from(DeadLetterStatus::Pending));
-            active.handled_by = Set(None);
-            active.handled_ms = Set(None);
-            active.remark = Set(None);
-            active.updater_id = Set(operator);
-            active.update_ms = Set(now);
-            return Ok(DbzDeadLetterDao::update(active, db).await?);
-        }
-
-        let active = DeadLetterActiveModel {
-            connector_type: Set(connector_type),
-            connector_id: Set(connector_id),
-            topic: Set(topic.to_string()),
-            record_key: Set(record_key.to_string()),
-            partition: Set(partition),
-            offset: Set(offset),
-            payload: Set(payload),
-            failure_category: Set(failure_category),
-            failure_subtype: Set(failure_subtype),
-            reason: Set(Self::dead_letter_reason(failure_category, failure_subtype)),
-            failure_detail: Set(failure_detail.to_string()),
-            retry_count: Set(increment.max(0)),
-            first_seen_ms: Set(first_seen_ms),
-            last_seen_ms: Set(last_seen_ms),
-            status: Set(i16::from(DeadLetterStatus::Pending)),
-            handled_by: Set(None),
-            handled_ms: Set(None),
-            remark: Set(None),
-            pending_payload: Set(None),
-            payload_edited_by: Set(None),
-            payload_edited_ms: Set(None),
-            creater_id: Set(operator),
-            create_ms: Set(now),
-            updater_id: Set(operator),
-            update_ms: Set(now),
-            ..Default::default()
-        };
-        Ok(DbzDeadLetterDao::insert(active, db).await?)
-    }
-
-    /// 幂等键条件（死信表）
-    fn key_condition(
-        connector_type: i16,
-        connector_id: i64,
-        topic: &str,
-        record_key: &str,
-    ) -> Condition {
-        Condition::all()
-            .add(DeadLetterColumn::ConnectorType.eq(connector_type))
-            .add(DeadLetterColumn::ConnectorId.eq(connector_id))
-            .add(DeadLetterColumn::Topic.eq(topic))
-            .add(DeadLetterColumn::RecordKey.eq(record_key))
-    }
-
-    /// 幂等键条件（重试队列）
-    fn retry_key_condition(
-        connector_type: i16,
-        connector_id: i64,
-        topic: &str,
-        record_key: &str,
-    ) -> Condition {
-        Condition::all()
-            .add(RetryColumn::ConnectorType.eq(connector_type))
-            .add(RetryColumn::ConnectorId.eq(connector_id))
-            .add(RetryColumn::Topic.eq(topic))
-            .add(RetryColumn::RecordKey.eq(record_key))
-    }
-
-    /// 删掉同一幂等键的重试行（确定性失败时用）
-    async fn delete_retry(
-        db: &DatabaseConnection,
-        connector_type: i16,
-        connector_id: i64,
-        topic: &str,
-        record_key: &str,
-    ) -> anyhow::Result<()> {
-        RetryEntity::delete_many()
-            .filter(
-                Condition::all()
-                    .add(RetryColumn::ConnectorType.eq(connector_type))
-                    .add(RetryColumn::ConnectorId.eq(connector_id))
-                    .add(RetryColumn::Topic.eq(topic))
-                    .add(RetryColumn::RecordKey.eq(record_key)),
-            )
-            .exec(db)
-            .await?;
         Ok(())
     }
 
     /// # 保留清理
     ///
-    /// 死信：超过保留天数按 `last_seen_ms` 删除；单个连接器超过上限时淘汰最旧的。
-    /// 重试队列：超过保留天数的行也清掉，避免地址长期失效的记录一直轮询。
-    async fn cleanup(cfg: &crate::config::DeadLetterConfig) -> anyhow::Result<()> {
-        let db = get_db_conn().map_err(|e| anyhow!("获取数据库连接失败: {e}"))?;
+    /// 只清页面索引：DLQ topic 里的原始记录由 Kafka 的 retention 管理，dbz 不碰。
+    async fn maybe_cleanup(db: &DatabaseConnection, cfg: &DeadLetterConfig) -> anyhow::Result<()> {
+        static LAST_CLEANUP: LazyLock<Mutex<i64>> = LazyLock::new(|| Mutex::new(0));
         let now = now_ms() as i64;
-        let cutoff = now - cfg.retention_days as i64 * 24 * 60 * 60 * 1_000;
+        {
+            let mut last = LAST_CLEANUP.lock().await;
+            if now - *last < CLEANUP_INTERVAL_MS {
+                return Ok(());
+            }
+            *last = now;
+        }
 
+        let cutoff = now - cfg.retention_days as i64 * 24 * 60 * 60 * 1_000;
         DeadLetterEntity::delete_many()
             .filter(DeadLetterColumn::LastSeenMs.lt(cutoff))
-            .exec(db.as_ref())
-            .await?;
-        RetryEntity::delete_many()
-            .filter(RetryColumn::LastSeenMs.lt(cutoff))
-            .exec(db.as_ref())
+            .exec(db)
             .await?;
 
-        // 单连接器上限：按最后一次失败时间保留最新的 N 条
+        // 单连接器上限：按最后失败时间保留最新的 N 条
         let sql = "DELETE FROM dbz_dead_letter WHERE id IN (
             SELECT id FROM (
                 SELECT id, row_number() OVER (
@@ -1142,9 +900,15 @@ impl DbzDeadLetterSvc {
             [sea_orm::Value::BigInt(Some(cfg.max_per_connector as i64))],
         ))
         .await?;
-
         Ok(())
     }
+}
+
+/// 读取当前死信配置；尚未加载配置时回落默认值
+fn current_config() -> DeadLetterConfig {
+    get_dbz_config()
+        .map(|config| config.dead_letter.clone())
+        .unwrap_or_default()
 }
 
 /// 模型转 VO
@@ -1192,136 +956,61 @@ fn truncate(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
 }
 
-/// 第 `attempts` 次失败后的等待间隔
-fn retry_delay_ms(attempts: i32) -> i64 {
-    let index = (attempts.max(0) as usize).min(RETRY_DELAYS_MS.len() - 1);
-    RETRY_DELAYS_MS[index]
-}
-
 #[cfg(test)]
 mod tests {
     use super::DbzDeadLetterSvc;
     use crate::dic::{DeadLetterFailureCategory, DeadLetterFailureSubtype};
-    use serde_json::json;
-
-    fn category(value: DeadLetterFailureCategory) -> i16 {
-        i16::from(value)
-    }
-
-    fn subtype(value: DeadLetterFailureSubtype) -> i16 {
-        i16::from(value)
-    }
 
     #[test]
     fn only_deterministic_field_validation_can_edit() {
         assert!(DbzDeadLetterSvc::can_edit_payload(
-            category(DeadLetterFailureCategory::Deterministic),
-            subtype(DeadLetterFailureSubtype::FieldValidation),
+            i16::from(DeadLetterFailureCategory::Deterministic),
+            i16::from(DeadLetterFailureSubtype::FieldValidation),
         ));
         assert!(!DbzDeadLetterSvc::can_edit_payload(
-            category(DeadLetterFailureCategory::Deterministic),
-            subtype(DeadLetterFailureSubtype::Other),
+            i16::from(DeadLetterFailureCategory::Transient),
+            i16::from(DeadLetterFailureSubtype::FieldValidation),
         ));
         assert!(!DbzDeadLetterSvc::can_edit_payload(
-            category(DeadLetterFailureCategory::Transient),
-            subtype(DeadLetterFailureSubtype::FieldValidation),
-        ));
-        assert!(!DbzDeadLetterSvc::can_edit_payload(
-            category(DeadLetterFailureCategory::Unknown),
-            subtype(DeadLetterFailureSubtype::FieldValidation),
+            i16::from(DeadLetterFailureCategory::Deterministic),
+            i16::from(DeadLetterFailureSubtype::Other),
         ));
     }
 
     #[test]
     fn invalid_json_has_readable_error() {
-        let error =
-            DbzDeadLetterSvc::parse_payload_text("{\"id\":}").expect_err("非法 JSON 必须被拒绝");
-        assert!(error.contains("不是合法 JSON"), "{error}");
+        let error = DbzDeadLetterSvc::parse_payload_text("{oops").unwrap_err();
+        assert!(error.contains("不是合法 JSON"));
     }
 
     #[test]
     fn empty_payload_rejected() {
-        let error = DbzDeadLetterSvc::parse_payload_text("   ").expect_err("空报文必须被拒绝");
-        assert_eq!(error, "待投报文不能为空");
-    }
-
-    #[test]
-    fn missing_required_pk_field_rejected() {
-        let config = json!({ "pk.fields": "id, tenant_id" });
-        let error = DbzDeadLetterSvc::validate_field_payload(
-            &json!({ "id": 1001, "tenant_id": null }),
-            Some(&config),
-        )
-        .expect_err("主键字段为 null 必须被拒绝");
-        assert!(error.contains("tenant_id"), "{error}");
-    }
-
-    #[test]
-    fn complete_pk_fields_pass() {
-        let config = json!({ "pk.fields": "id, tenant_id" });
-        assert!(
-            DbzDeadLetterSvc::validate_field_payload(
-                &json!({ "id": 1001, "tenant_id": "t1" }),
-                Some(&config),
-            )
-            .is_ok()
-        );
+        assert!(DbzDeadLetterSvc::parse_payload_text("  ").is_err());
     }
 
     #[test]
     fn payload_must_be_object() {
-        let error = DbzDeadLetterSvc::validate_field_payload(&json!([1, 2]), None)
-            .expect_err("数组不是目标表的字段结构");
-        assert!(error.contains("JSON 对象"), "{error}");
+        let value = serde_json::json!([1, 2]);
+        assert!(DbzDeadLetterSvc::validate_field_payload(&value, None).is_err());
     }
 
     #[test]
-    fn without_sink_config_only_json_is_checked() {
-        assert!(DbzDeadLetterSvc::validate_field_payload(&json!({ "id": 1001 }), None).is_ok());
+    fn raw_payload_cannot_be_edited() {
+        let value = serde_json::json!({ "__raw_utf8": "id,name\n1,a" });
+        assert!(DbzDeadLetterSvc::validate_field_payload(&value, None).is_err());
     }
 
     #[test]
     fn dead_letter_reason_is_human_readable_by_category() {
-        let field_validation = DbzDeadLetterSvc::dead_letter_reason(
-            category(DeadLetterFailureCategory::Deterministic),
-            subtype(DeadLetterFailureSubtype::FieldValidation),
+        let reason = DbzDeadLetterSvc::dead_letter_reason(
+            i16::from(DeadLetterFailureCategory::Transient),
+            i16::from(DeadLetterFailureSubtype::Other),
         );
-        assert!(
-            field_validation.contains("字段校验不通过"),
-            "{field_validation}"
+        assert!(reason.contains("重试耗尽"));
+        let reason = DbzDeadLetterSvc::dead_letter_reason(
+            i16::from(DeadLetterFailureCategory::Deterministic),
+            i16::from(DeadLetterFailureSubtype::FieldValidation),
         );
-
-        let deterministic = DbzDeadLetterSvc::dead_letter_reason(
-            category(DeadLetterFailureCategory::Deterministic),
-            subtype(DeadLetterFailureSubtype::Other),
-        );
-        assert!(deterministic.contains("约束冲突"), "{deterministic}");
-
-        let transient =
-            DbzDeadLetterSvc::dead_letter_reason(category(DeadLetterFailureCategory::Transient), 0);
-        assert!(transient.contains("下游连接失败"), "{transient}");
-
-        let unknown =
-            DbzDeadLetterSvc::dead_letter_reason(category(DeadLetterFailureCategory::Unknown), 0);
-        assert!(unknown.contains("下游响应异常"), "{unknown}");
-    }
-
-    #[test]
-    fn unknown_category_has_conservative_reason() {
-        let reason = DbzDeadLetterSvc::dead_letter_reason(99, 99);
-        assert_eq!(reason, "处理失败，请查看失败详情");
-        let retry = DbzDeadLetterSvc::retry_reason(99);
-        assert_eq!(retry, "处理失败，请查看失败详情");
-    }
-
-    #[test]
-    fn retry_queue_reason_uses_same_category_language() {
-        let transient =
-            DbzDeadLetterSvc::retry_reason(category(DeadLetterFailureCategory::Transient));
-        assert!(transient.contains("下游连接失败"), "{transient}");
-        assert!(transient.contains("重试队列"), "{transient}");
-
-        let unknown = DbzDeadLetterSvc::retry_reason(category(DeadLetterFailureCategory::Unknown));
-        assert!(unknown.contains("下游响应异常"), "{unknown}");
+        assert!(reason.contains("字段不合规"));
     }
 }

@@ -576,13 +576,13 @@ export interface DbzControlPlaneNodeDeleteVo {
   pswdKind: DbzDeletePswdKind;
 }
 
-/** # 死信连接器类型（`DeadLetterConnectorType`） */
+/** # 死信连接器类型（`DeadLetterConnectorType`）：DLQ 只对 sink 有效，实际恒为 2 */
 export type DeadLetterConnectorType = 1 | 2;
 
-/** # 死信失败分类（`DeadLetterFailureCategory`） */
+/** # DLQ 异常分类（`DeadLetterFailureCategory`）：1=数据/格式类，2=投递类，3=其它 */
 export type DeadLetterFailureCategory = 1 | 2 | 3;
 
-/** # 死信失败子类（`DeadLetterFailureSubtype`）：1=字段不合规，允许改报文 */
+/** # 异常子类（`DeadLetterFailureSubtype`）：1=字段不合规，允许改报文 */
 export type DeadLetterFailureSubtype = 0 | 1;
 
 /** # 死信处理状态（`DeadLetterStatus`） */
@@ -591,8 +591,11 @@ export type DeadLetterStatus = 0 | 1 | 2 | 3;
 /**
  * # 死信记录（`DbzDeadLetterVo`）
  *
- * 幂等键是 `(connectorType, connectorId, topic, recordKey)`：同一条记录重复失败只累加
- * `retryCount` 并刷新 `lastSeenMs`，不新增行。
+ * 一行对应 Kafka Connect 写进 DLQ topic 的一条记录，事实来源是 DLQ topic，这里只是
+ * 页面索引 + 人工处置结论。幂等键是
+ * `(connectorId, topic, partition, offset)`：带上连接器是为了区分同一源 topic 被多条
+ * sink 连接器消费时各自产生的死信。DLQ 记录不可变，重复同步直接跳过，不累加次数，
+ * 也不覆盖「已人工处理」等人工结论。
  */
 export interface DbzDeadLetterVo {
   id: Id;
@@ -600,14 +603,14 @@ export interface DbzDeadLetterVo {
   connectorId: Id;
   topic: string;
   recordKey: string;
-  /** 原始消息所在分区；脚本未上报时为空 */
+  /** 原始消息所在分区（来自 DLQ 上下文头） */
   partition?: number | null;
-  /** 原始消息的 offset；脚本未上报时为空 */
+  /** 原始消息 offset（来自 DLQ 上下文头） */
   offset?: number | null;
-  /** 原始报文（JSONB），字段随来源表变化 */
+  /** DLQ 记录的原始报文（JSONB），字段随来源表变化 */
   payload: unknown;
   failureCategory: DeadLetterFailureCategory;
-  /** 确定性失败细分；1=字段不合规才允许改报文 */
+  /** 异常子类；1=字段不合规才允许改报文 */
   failureSubtype: DeadLetterFailureSubtype;
   /** 服务端判定的「是否允许修改报文后重投」 */
   canEditPayload: boolean;
@@ -621,15 +624,17 @@ export interface DbzDeadLetterVo {
   lastRetrySuccess?: boolean | null;
   /** 最近一次人工重投时间（毫秒） */
   lastRetryMs?: string | null;
-  /** 最近一次人工重投的结果说明（失败时为对端原因） */
+  /** 最近一次人工重投的结果说明（写回源 topic 的结果） */
   lastRetryMessage?: string | null;
-  /** 失败原因：后端按分类/子类生成的一句清晰说明 */
+  /** 失败原因：后端按 DLQ 异常分类生成的一句清晰说明 */
   reason: string;
-  /** 失败详情：对端返回的原始技术内容，原样保存 */
+  /** 失败详情：DLQ 上下文原文（异常类名、消息、堆栈与坐标），原样保存 */
   failureDetail: string;
-  /** 累计失败次数（含进入死信前的重试） */
+  /** 保留列：Connect 的重试次数不写进 DLQ，恒为 0 */
   retryCount: number;
+  /** Kafka 记录时间戳（毫秒） */
   firstSeenMs: string;
+  /** Kafka 记录时间戳（毫秒），与 firstSeenMs 相同 */
   lastSeenMs: string;
   status: DeadLetterStatus;
   handledBy?: string | null;

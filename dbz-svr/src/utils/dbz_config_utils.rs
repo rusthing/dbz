@@ -1,6 +1,6 @@
 use crate::config::DBZ_JOB_GROUP_REMARK;
 use crate::config::{DBZ_CONFIG_KEY, DbzConfig, set_dbz_config};
-use crate::svc::DbzKafkaConnectSvc;
+use crate::svc::{DbzDeadLetterSvc, DbzKafkaConnectSvc};
 use anyhow::bail;
 use async_trait::async_trait;
 use config::Value;
@@ -13,7 +13,7 @@ use jobx_wkr::{
 use robotech::api::{RO_CODE_WARNING_DUPLICATE_KEY, U64};
 use std::collections::HashMap;
 use std::sync::Arc;
-use tracing::info;
+use tracing::{info, warn};
 use wheel_rs::config_utils::has_config_changed;
 
 struct HealthCheckHandler;
@@ -21,7 +21,14 @@ struct HealthCheckHandler;
 #[async_trait]
 impl JobxTaskHandler for HealthCheckHandler {
     async fn handle(&self, _task: &JobxTaskVo) -> anyhow::Result<String> {
-        DbzKafkaConnectSvc::check_all_connectors().await
+        let health = DbzKafkaConnectSvc::check_all_connectors().await;
+        // 死信同步与巡检共用同一个 jobx 计划：都是「连远端 → 写本地库」的周期动作，
+        // 没必要再注册第二个执行器。同步失败不能让健康检查变成失败，只记日志；
+        // 按 Kafka 坐标幂等落库，多副本各跑一次也不会重复或覆盖人工结论。
+        if let Err(e) = DbzDeadLetterSvc::sync_from_dlq().await {
+            warn!("同步 Kafka Connect DLQ 失败: {e}");
+        }
+        health
     }
 }
 

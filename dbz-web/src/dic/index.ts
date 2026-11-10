@@ -99,11 +99,11 @@ export const deadLetterStatusDic: DicItem<DeadLetterStatus>[] = [
   { value: 3, label: '已人工处理', color: 'processing' },
 ];
 
-/** # 死信失败分类 */
+/** # 死信异常分类（由 DLQ 记录头里的异常类名推导） */
 export const deadLetterFailureCategoryDic: DicItem<DeadLetterFailureCategory>[] = [
-  { value: 1, label: '确定性失败', color: 'error' },
-  { value: 2, label: '传输类失败', color: 'warning' },
-  { value: 3, label: '响应异常', color: 'gold' },
+  { value: 1, label: '数据/格式类', color: 'error' },
+  { value: 2, label: '投递类', color: 'warning' },
+  { value: 3, label: '其它异常', color: 'gold' },
 ];
 
 /** # 死信失败子类 */

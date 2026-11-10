@@ -1,22 +1,21 @@
 //! # 死信控制器
 //!
-//! 六个手写接口：
-//! - `POST /dbz/dead-letter/report`：magic 脚本上报失败（内部写入）
+//! 八个手写接口（死信由 Kafka Connect DLQ 产生，没有「上报」入口）：
+//! - `POST /dbz/dead-letter/sync`：立即从 DLQ topic 同步一次
 //! - `GET  /dbz/dead-letter/page`：分页查询
 //! - `GET  /dbz/dead-letter/pending-count`：待处理计数（前端角标）
-//! - `POST /dbz/dead-letter/retry`：单条/批量重投（可带修改后的报文）
+//! - `POST /dbz/dead-letter/retry`：单条/批量重投（写回源 topic，可带修改后报文）
 //! - `POST /dbz/dead-letter/edit-payload`：保存待投报文（不重投）
 //! - `POST /dbz/dead-letter/discard`：单条/批量废弃
 //! - `POST /dbz/dead-letter/mark-handled`：批量标记「已人工处理」
 //! - `POST /dbz/dead-letter/unmark-handled`：批量撤销「已人工处理」
 //!
-//! 上报接口允许不带 `X-User-Id`（脚本没有登录态），其余接口沿用框架约定，
-//! 缺少用户头按参数校验失败处理。
+//! 所有写操作沿用框架约定，缺少 `X-User-Id` 按参数校验失败处理。
 
 use crate::dto::{
     DbzDeadLetterCountDto, DbzDeadLetterDiscardDto, DbzDeadLetterEditPayloadDto,
-    DbzDeadLetterMarkHandledDto, DbzDeadLetterQueryDto, DbzDeadLetterReportDto,
-    DbzDeadLetterRetryDto, DbzDeadLetterUnmarkHandledDto,
+    DbzDeadLetterMarkHandledDto, DbzDeadLetterQueryDto, DbzDeadLetterRetryDto,
+    DbzDeadLetterUnmarkHandledDto,
 };
 use crate::svc::DbzDeadLetterSvc;
 use crate::vo::{DbzDeadLetterCountVo, DbzDeadLetterRetryResultVo, DbzDeadLetterVo};
@@ -29,34 +28,27 @@ use robotech::macros::log_call;
 use robotech::web::CtrlError;
 use robotech::web::ctrl_utils::get_current_user_id;
 
-/// 脚本上报允许没有用户头，缺省记为 0（系统）
-fn optional_operator(headers: &HeaderMap) -> U64 {
-    get_current_user_id(headers).unwrap_or(U64(0))
-}
-
 /// 前端操作必须带用户头
+// CtrlError 由框架定义且体积较大，这里的返回类型要和其它控制器保持一致
+#[allow(clippy::result_large_err)]
 fn required_operator(headers: &HeaderMap) -> Result<U64, CtrlError> {
     Ok(get_current_user_id(headers)?)
 }
 
-/// # 上报死信
+/// # 立即同步 Kafka Connect DLQ
 ///
-/// magic 脚本的失败分支调用。确定性失败直接进死信；传输类失败进重试队列，
-/// 由后台 worker 按 1s→5s→30s→2m→10m 退避重投，超过 10 次转死信。
-/// 响应异常（`result` 非成功且无法归类）按传输类处理。
+/// 正常由 jobx 周期任务自动同步，这里给运维一个「马上看最新坏记录」的入口。
+/// 返回本轮新落库的条数；DLQ topic 里的原始记录不受影响。
 #[utoipa::path(
     post,
-    path = "/dbz/dead-letter/report",
-    request_body = DbzDeadLetterReportDto,
-    responses((status = OK, description = "已写入死信或重试队列"))
+    path = "/dbz/dead-letter/sync",
+    responses((status = OK, body = Ro<u64>))
 )]
 #[debug_handler]
 #[log_call]
-pub async fn report(
-    headers: HeaderMap,
-    Json(dto): Json<DbzDeadLetterReportDto>,
-) -> Result<Json<Ro<()>>, CtrlError> {
-    let ro = DbzDeadLetterSvc::report(dto, optional_operator(&headers)).await?;
+pub async fn sync(headers: HeaderMap) -> Result<Json<Ro<u64>>, CtrlError> {
+    let _ = required_operator(&headers)?;
+    let ro = DbzDeadLetterSvc::sync().await?;
     Ok(Json(ro))
 }
 
@@ -98,9 +90,9 @@ pub async fn pending_count(
 
 /// # 批量重投
 ///
-/// 把报文重新 POST 到下游连接器配置里的 magic sync 地址；HTTP 2xx 且
-/// `result=1` 才转「已重投」，失败保持待处理并把原因回写到记录。单条重投只传一个 ID。
-/// 可选 `payload` 为修改后的报文（JSON 文本）；仅单条、且记录必须是「确定性失败 +
+/// 把报文重新生产回源 topic，由 Kafka Connect 再消费一次；生产成功即转「已重投」，
+/// 失败保持待处理并把原因回写到记录。单条重投只传一个 ID。
+/// 可选 `payload` 为修改后的报文（JSON 文本）；仅单条、且记录必须是「数据/格式类 +
 /// 字段不合规」时允许，原始报文始终保留。
 #[utoipa::path(
     post,
@@ -121,7 +113,7 @@ pub async fn retry(
 /// # 保存待投报文
 ///
 /// 只写 `pending_payload` 与编辑人/编辑时间，不重投；原始报文不覆盖。
-/// 传输类、响应异常类以及非字段不合规的确定性失败都会被接口拒绝。
+/// 投递类、其它类以及非字段不合规的数据/格式类异常都会被接口拒绝。
 #[utoipa::path(
     post,
     path = "/dbz/dead-letter/edit-payload",

@@ -1,10 +1,10 @@
 /**
  * # 死信列表
  *
- * 死信由 magic 脚本在失败分支显式上报，不由 Kafka Connect 的 DLQ 产生：
- * HttpSink 对 HTTP 4xx/5xx 只记日志并照常提交偏移量，Connect 层兜不住任何东西。
- * 页面只做四件事：看报文与失败原因、改报文后重投（仅确定性字段不合规类）、
- * 按原报文重投、废弃不再处理。
+ * 坏记录由 Kafka Connect 写进 DLQ topic（`errors.deadletterqueue.topic.name`），
+ * dbz 增量同步成页面索引；重试由 Connect 负责，dbz 不再自建队列或 worker。
+ * 页面只做四件事：看报文与异常上下文、改报文后重投（仅字段不合规类）、
+ * 按原报文写回源 topic、废弃不再处理。
  *
  * 从控制面连接器卡片进来时带 `connectorType` / `connectorId`，筛选器会预先选中。
  */
@@ -166,6 +166,7 @@ export default function DeadLetterPage() {
   const [acting, setActing] = useState(false);
   const [applied, setApplied] = useState<FilterDraft>(() => initialDraft(searchParams));
   const [exporting, setExporting] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [handledOpen, setHandledOpen] = useState(false);
   const [handledTargets, setHandledTargets] = useState<DbzDeadLetterVo[]>([]);
   const [handledRemark, setHandledRemark] = useState('');
@@ -212,6 +213,20 @@ export default function DeadLetterPage() {
     () => connectors.data.map((item) => ({ value: item.value, label: item.label })),
     [connectors.data],
   );
+
+  /** 立即从 Kafka Connect 的 DLQ topic 增量同步一次（平时由 jobx 计划任务自动跑） */
+  const syncDlq = async () => {
+    setSyncing(true);
+    try {
+      const count = await deadLetterApi.sync();
+      message.success(count > 0 ? `已从 DLQ 同步 ${count} 条死信` : 'DLQ 暂无新记录');
+      reload();
+    } catch (reason) {
+      message.error(errorMessage(reason));
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   /** 重投：不传 payload 按原始报文；传 payload 表示用修改后的待投报文（仅单条） */
   const retryRecords = async (records: DbzDeadLetterVo[], payload?: string) => {
@@ -316,7 +331,7 @@ export default function DeadLetterPage() {
     modal.confirm({
       title: '用修改后的报文重投 1 条死信？',
       content:
-        '待投报文会另外保存，原始报文不会被覆盖；对端返回 HTTP 2xx 且 result=1 才转为「已重投」，失败原因会回写到本条死信。',
+        '待投报文会另外保存，原始报文不会被覆盖；报文会写回源 topic 由 Kafka Connect 重新消费，写入成功即转为「已重投」，失败原因会回写到本条死信。',
       okText: '改后重投',
       cancelText: '取消',
       onOk: () => retryRecords([detail], payloadDraft),
@@ -356,7 +371,7 @@ export default function DeadLetterPage() {
     modal.confirm({
       title: `重投 ${records.length} 条死信？`,
       content:
-        '会把原始报文重新 POST 到下游连接器配置里的 magic 地址；对端返回 HTTP 2xx 且 result=1 才转为「已重投」，否则保持「待处理」。',
+        '会把原始报文写回源 topic，由 Kafka Connect 重新走一遍下游链路；写入成功即转为「已重投」，否则保持「待处理」。源 topic 若被多条下游连接器订阅，它们都会再收到一次，请确认后再重投。',
       okText: '重投',
       cancelText: '取消',
       onOk: () => retryRecords(records),
@@ -457,9 +472,7 @@ export default function DeadLetterPage() {
         '失败子类',
         '失败原因',
         '失败详情',
-        '失败次数',
-        '首次失败',
-        '末次失败',
+        'Kafka 记录时间',
         '最近重投',
         '处理人',
         '处理时间',
@@ -481,8 +494,6 @@ export default function DeadLetterPage() {
           item.failureSubtype,
         item.reason,
         item.failureDetail,
-        item.retryCount,
-        formatMs(item.firstSeenMs),
         formatMs(item.lastSeenMs),
         item.lastRetryMs ? `${item.lastRetrySuccess ? '成功' : '失败'} ${formatMs(item.lastRetryMs)}` : '',
         item.handledBy ?? '',
@@ -626,14 +637,9 @@ export default function DeadLetterPage() {
       ),
     },
     {
-      title: '次数',
-      dataIndex: 'retryCount',
-      width: 56,
-      className: 'dbz-num',
-      render: (value: number) => value,
-    },
-    {
-      title: '末次失败',
+      // DLQ 记录不可变，一条死信就是一条 Kafka 记录，不再有「累计失败次数」；
+      // 这里展示的是该 Kafka 记录的时间戳。
+      title: '记录时间',
       dataIndex: 'lastSeenMs',
       width: 134,
       className: 'dbz-num',
@@ -851,6 +857,9 @@ export default function DeadLetterPage() {
         <Button icon={<ExportOutlined />} loading={exporting} onClick={exportCsv}>
           导出 CSV
         </Button>
+        <Button icon={<ReloadOutlined />} loading={syncing} onClick={syncDlq}>
+          同步 DLQ
+        </Button>
         <Button icon={<ReloadOutlined />} onClick={reload}>
           刷新
         </Button>
@@ -860,8 +869,8 @@ export default function DeadLetterPage() {
         type="info"
         showIcon
         style={{ marginBottom: 16 }}
-        message="死信由 magic 脚本显式上报，不依赖 Kafka Connect 的 DLQ"
-        description="HttpSink 对 HTTP 4xx/5xx 只记日志并照常提交偏移量，Connect 层不会重投；传输类失败的重试由 dbz 后台 worker 按 1s→5s→30s→2m→10m 执行，超过 10 次才进死信。"
+        message="死信来自 Kafka Connect 的 DLQ topic"
+        description="部署下游连接器时会自动注入 errors.tolerance=all 与 errors.deadletterqueue.*；坏记录连同异常上下文写进 DLQ topic，重试也由 Connect 负责。页面索引由 jobx 计划任务增量同步，可点「同步 DLQ」立即拉取。重投 = 把报文写回源 topic 让 Connect 重新消费；下游接口必须把业务失败返回为非 2xx，否则 Connect 视为成功。"
       />
 
       {error && (
@@ -1023,15 +1032,7 @@ export default function DeadLetterPage() {
               <span className="dbz-status-row-value dbz-mono">{orDash(detail.recordKey)}</span>
             </div>
             <div className="dbz-status-row">
-              <span className="dbz-status-row-label">失败次数</span>
-              <span className="dbz-status-row-value">{detail.retryCount}</span>
-            </div>
-            <div className="dbz-status-row">
-              <span className="dbz-status-row-label">首次失败</span>
-              <span className="dbz-status-row-value">{formatMs(detail.firstSeenMs)}</span>
-            </div>
-            <div className="dbz-status-row">
-              <span className="dbz-status-row-label">末次失败</span>
+              <span className="dbz-status-row-label">Kafka 记录时间</span>
               <span className="dbz-status-row-value">{formatMs(detail.lastSeenMs)}</span>
             </div>
             {detail.handledMs && (
@@ -1190,7 +1191,7 @@ export default function DeadLetterPage() {
                 icon={<WarningOutlined />}
                 style={{ marginTop: 16 }}
                 message="该记录不允许修改报文"
-                description="只有「确定性失败 + 字段不合规」的死信可以改报文重投；传输类、响应异常类以及唯一键冲突等其他确定性失败只能按原报文重投或废弃。"
+                description="只有异常分类为「数据/格式类」且子类为「字段不合规」的死信可以改报文重投；投递类与其它类异常改报文没有意义，只能按原报文重投或废弃。"
               />
             )}
 

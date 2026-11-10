@@ -272,8 +272,8 @@ scripts/smoke.mjs        # 冒烟测试
 | `ConnectorRunStatus` | 检查任务对连接器得出的结论 | 是 |
 | `KafkaConnectorStatus` | 集群连接器此刻的实时状态 | 否（来自 Kafka Connect REST） |
 | `DeadLetterStatus` | 死信处理状态：待处理 / 已重投 / 已废弃 / 已人工处理 | 是 |
-| `DeadLetterFailureCategory` | 死信失败分类：确定性 / 传输类 / 响应异常 | 是 |
-| `DeadLetterConnectorType` | 死信所属连接器方向：上游 / 下游 | 是 |
+| `DeadLetterFailureCategory` | DLQ 异常分类：数据/格式类 / 投递类 / 其它（由异常类名推导） | 是 |
+| `DeadLetterConnectorType` | 死信所属连接器方向；DLQ 只对 sink 有效，恒为下游 | 是 |
 
 改后端枚举时必须同步 `src/dic/index.ts`，否则页面显示「未知状态」。
 
@@ -355,7 +355,7 @@ scripts/smoke.mjs        # 冒烟测试
 | 上游连接器 | `/dbz/source-connector` 同上 + `GET /snapshot/preview`、`POST /snapshot` |
 | 下游连接器 | `/dbz/sink-connector` 同上 |
 | 集群连接器 | `GET /dbz/kafka-connector/list`（集群上全部连接器）、`GET /dbz/kafka-connector/plugins`（已安装插件） |
-| 死信 | `GET /dbz/dead-letter/page`（连接器/状态/topic/时间筛选）、`GET /pending-count`（卡片角标）、`POST /retry`、`POST /discard`；`POST /report` 只给 magic 脚本调用 |
+| 死信 | `POST /dbz/dead-letter/sync`（立即从 DLQ 同步）、`GET /page`（连接器/状态/topic/时间筛选）、`GET /pending-count`（卡片角标）、`POST /retry`、`POST /edit-payload`、`POST /discard`、`POST /mark-handled`、`POST /unmark-handled`；没有上报接口 |
 
 ## 控制面板
 
@@ -405,94 +405,104 @@ scripts/smoke.mjs        # 冒烟测试
 | 连接器指标 | 任务 lag、吞吐等 metrics 未暴露，图上只展示状态与任务清点 |
 | 未纳管连接器的图内操作 | 图上仅列出名称并跳远端页；要先在上游/下游建记录才能启用/停用 |
 
-## 死信与重试
+## 死信与重试（Kafka Connect DLQ）
 
-死信**不依赖 Kafka Connect 的 DLQ**。反编译 `http-sink-connector-3.5.46.jar` 可见：`HttpSinkTask.put`
-只把 `IOException` / `InterruptedException` 当成可重试异常；对端返回 4xx/5xx 时只记日志并照常
-提交偏移量。而 magic 脚本的业务失败返回 HTTP 200 + `{"result":-2}`，Connect 视为成功。偏移一旦
-提交，`errors.tolerance` 与 Connect DLQ 都兜不住，记录就永久丢了。
+坏记录的**产生、重试、保全**全部交给 Kafka Connect，dbz 不再自建死信判定与重试队列。
 
-因此队列和终态都放在 dbz 侧（`dbz_dead_letter` / `dbz_dead_letter_retry`）：
+### 为什么不用旧的自研方案
 
-- **确定性失败**（参数校验、唯一键冲突、外键缺失）：magic 脚本直接调 `POST /dbz/dead-letter/report`
-  写死信，不重试。
-- **传输类失败**（连接失败、5xx、超时）：先写重试队列表，由 dbz 后台 worker 按
-  `1s → 5s → 30s → 2m → 10m` 退避重投，超过 10 次转死信。
-- **响应异常**（`result` 非成功且无法归类、响应无法解析）：按传输类处理，分类记 `Unknown`。
+旧实现要求 magic 脚本在失败分支调 `POST /dbz/dead-letter/report` 写死信，再由
+dbz 的后台 worker 按 `1s → 5s → 30s → 2m → 10m` 退避重投、10 次后转终态。依据是
+「HttpSink 对 4xx/5xx 只记日志并照常提交偏移，Connect DLQ 兜不住」。这个结论有两个问题：
 
-死信按 `(connectorType, connectorId, topic, recordKey)` 幂等：重复失败只累加次数与末次时间，
-不新增行。重投是把报文重新 POST 到下游连接器 `connector_config.url`（magic sync 接口），
-HTTP 2xx 且 `result=1` 才转「已重投」；废弃只改状态，不删报文。
+1. Confluent HTTP Sink 官方文档明确支持 DLQ，并且自带 `max.retries` /
+   `retry.backoff.ms`；Kafka Connect 的 `errors.tolerance=all` +
+   `errors.deadletterqueue.topic.name` + `errors.deadletterqueue.context.headers.enable`
+   会把坏记录的原始字节连同源坐标、异常类名、消息与堆栈写进 DLQ topic。
+2. 真正让 Connect 「看不见失败」的是业务契约：magic 用 HTTP 200 +
+   `{"result":-2}` 表达业务失败。把判定外包给脚本的后果是 —— 脚本漏报、崩溃、
+   网络断都会静默丢数据，而且 Kafka 里连原始报文都没留下。这**不是** DLQ 的能力
+   缺陷，而是失败没有被表达出来。
 
-失败信息拆成两列：`failure_detail` 原样保存 HTTP 状态与响应体、校验报错原文、RTW 错误码、
-异常栈摘要等原始内容，不做加工也不截断；`reason` 由后端按 `failureCategory` / `failureSubtype`
-统一生成一句给人看的说明（例如「字段校验不通过，请核对并修改报文后重投」「下游连接失败，
-重试多次后仍失败」），上游脚本无需也无法改写措辞。最近一次人工重投的 `last_retry_message`
-仍保留对端原始内容。
+`errors.tolerance=all` 会跳过错误继续消费，因此 DLQ 与 context headers 必须同时开，
+否则同样等于丢数据。
 
-死信详情支持**修改报文后重投**：
+### 现在的链路
 
-- 只有 `failureCategory=1`（确定性失败）且 `failureSubtype=1`（字段不合规）的记录可以改；
-  传输类、响应异常类以及唯一键冲突/外键缺失等未细分的确定性失败，接口直接拒绝，页面上也不给编辑入口。
-- 原始报文 `payload` 永不覆盖；修改后的待投报文写 `pending_payload`，并记录
-  `payload_edited_by` / `payload_edited_ms`。页面并排展示原始报文与已保存的待投报文。
-- `POST /dbz/dead-letter/retry` 可带 `payload`（JSON 文本，仅单条）。不传则按原始报文重投，
-  行为与旧版一致。提交前做 JSON 合法性与结构校验；连接器配置声明 `pk.fields` 时额外检查主键字段必填。
-- 最近一次人工重投的结果会回写到 `last_retry_success` / `last_retry_ms` / `last_retry_message`，
-  页面直接展示「成功 / 仍失败 + 原因」，避免反复盲改。
-- 只想保存修改、暂不重投时用 `POST /dbz/dead-letter/edit-payload`（`{ "id": 901, "payload": "{...}" }`）。
+```
+下游接口返回非 2xx / 记录转换失败
+  → Kafka Connect 按 errors.retry.* 与 max.retries 重试
+  → 仍失败：原始记录 + __connect.errors.* 头写进 DLQ topic，正常提交偏移
+  → dbz（jobx 健康检查计划 / 页面「同步 DLQ」）增量拉取，按四列坐标幂等落库
+  → 死信页查询、改报文、重投、废弃、标记已处理
+```
 
-保留策略在 `[dbz.dead-letter]`（`dbz-svr.toml`）里配置，默认值：
+- **配置注入**：新增/修改下游连接器时，`dbz-svr` 把下列 key 合并进
+  `connector_config` 再下发（库内保存的也是补齐后的配置，一致性检测不会误报）：
+  `errors.tolerance=all`、`errors.deadletterqueue.topic.name`、
+  `errors.deadletterqueue.topic.replication.factor`、
+  `errors.deadletterqueue.context.headers.enable=true`、
+  `errors.retry.timeout`、`errors.retry.delay.max.ms`、`errors.log.*`；
+  HTTP Sink 另外补 `max.retries` / `retry.backoff.ms`。上游（source）连接器不注入
+  —— Connect 的 DLQ 只适用于 sink。
+- **事实来源**：`dbz_dead_letter` 只是页面索引 + 人工处置结论（状态、备注、处理人），
+  唯一键是 `(connector_id, topic, partition, offset)` —— 带上连接器是因为同一源 topic
+  可能被多条 sink 连接器订阅，同一条源记录在每条连接器上失败都是独立死信。
+  DLQ 记录不可变，重复同步直接跳过，不会把「已人工处理」重置回「待处理」；
+  删索引行不丢 Kafka 里的原始报文。DLQ 头里的连接器名反查不到本地记录时
+  `connector_id=0`（未归属），这类记录能看不能重投。
+- **重试**：由 Connect 负责，dbz 不再有重试队列表、退避 worker 与 `/report` 接口。
+- **重投**：把报文写回**源 topic**，让 Connect 重新走一遍完整链路（转换器、SMT、
+  offset 语义都与原始链路一致），不再绕过 Connect 直接 POST 下游 HTTP 地址。
+  ⚠️ 源 topic 若被多条下游连接器订阅，它们都会再收到一次，重投前请确认。
+
+### 前提与约束（部署时必须满足）
+
+- 下游接口必须把**业务失败返回成非 2xx**，不能再用 HTTP 200 + `{"result":-2}`，
+  否则 Connect 认为投递成功，任何 DLQ 都接不住。
+- DLQ topic 不能被连接器的 `topics` / `topics.regex` 覆盖，否则 Connect 会拒绝下发配置，
+  即便下发成功也会把死信再当业务消息消费一次。dbz 在补齐配置时会先拦一道：
+  `topics` 精确命中、或 `topics.regex` 明显命中就报错，不会再打到 Connect 上。
+- 安全集群里 Connect worker 需要有创建 DLQ topic 与写 DLQ 的权限；用 RBAC 时还要
+  给 worker 配 `admin.*` 管理端参数。
+- `replication-factor` 默认 3，单 broker 的开发环境要调小，否则 Connect 自动创建
+  DLQ topic 会因副本数超过可用 broker 而失败。
+- DLQ 上下文头来自 Apache Kafka 的 `DeadLetterQueueReporter`，实际 key 为
+  `__connect.errors.topic` / `partition` / `offset` / `connector.name` /
+  `exception.class.name` / `exception.message` / `exception.stacktrace`；dbz 同时兼容
+  Confluent 文档里出现过的 `_connect.errors.*` 单下划线前缀。
+- 重投只写回原始 key 与 value，**不复制 DLQ 记录头**：Connect 写 DLQ 时是在原记录头
+  上追加 `__connect.errors.*` 上下文头，整包写回会污染源 topic。代价是原业务记录
+  自带的消息头不会保留；若下游依赖消息头，需要在改报文时自行补齐。
+- 改造不兼容旧数据：`20261110000000_dlq-redesign.sql` 会删掉 `dbz_dead_letter_retry`、
+  清空 `dbz_dead_letter` 并重建唯一索引，重启后从 DLQ topic 重新同步。
+
+### 配置（`[dbz.dead-letter]`，`dbz-svr.toml`）
 
 | 配置项 | 默认值 | 作用 |
 | --- | --- | --- |
-| `enabled` | `true` | 后台重试 worker 开关 |
-| `retention-days` | `30` | 死信与重试队列保留天数，按 `last_seen_ms` 清理 |
-| `max-per-connector` | `50000` | 单连接器上限，超出按 `last_seen_ms` 淘汰最旧的 |
-| `max-attempts` | `10` | 传输类失败重试上限，超过转死信 |
-| `worker-interval-ms` | `1000` | worker 轮询间隔 |
-| `batch-size` | `50` | 每轮最多处理条数 |
-| `request-timeout-ms` | `15000` | 单条重投 HTTP 超时 |
+| `enabled` | `true` | 是否注入 DLQ 配置并同步 DLQ 记录 |
+| `topic` | `dbz-connect-dlq` | 全局 DLQ topic 名 |
+| `replication-factor` | `3` | Connect 自动建 DLQ topic 的副本数 |
+| `retry-timeout-ms` | `300000` | `errors.retry.timeout` |
+| `retry-delay-max-ms` | `30000` | `errors.retry.delay.max.ms` |
+| `http-max-retries` | `10` | HTTP Sink 的 `max.retries` |
+| `http-retry-backoff-ms` | `3000` | HTTP Sink 的 `retry.backoff.ms` |
+| `log-enable` / `log-include-messages` | `true` / `false` | `errors.log.*` |
+| `sync-batch-size` | `200` | 每轮每分区最多同步条数 |
+| `retention-days` | `30` | 页面索引保留天数（DLQ topic 由 Kafka retention 管） |
+| `max-per-connector` | `50000` | 单连接器索引上限 |
 
-`dtw同步到dtwrs.dtw_locator_bind` 原先在 magic 侧自建的 `dtwrs_bind_retry` /
-`dtwrs_bind_dead_letter` 与 dbz 这套是**同一个设计的两代实现**，不并存：脚本切到 dbz 上报接口后，
-旧表停止写入，只作为存量数据的一次性迁移来源。脚本源码在 magic 库里、不在本仓，切换动作需在
-magic 侧发布，调用约定见下节。
+### 页面字段口径
 
-### magic 脚本调用约定
-
-脚本的失败分支按 `failureCategory` 分流，统一调用：
-
-```http
-POST /dbz/dead-letter/report
-Content-Type: application/json
-
-{
-  "connectorType": 2,
-  "connectorId": 301,
-  "topic": "dbz.orders",
-  "recordKey": "1001",
-  "payload": { "id": 1001, "order_no": "SO-1" },
-  "failureCategory": 1,
-  "failureSubtype": 1,
-  "failureDetail": "amount 必须是数字",
-  "retryCount": 0
-}
-```
-
-| `failureCategory` | 脚本何时使用 | 服务端动作 |
-| --- | --- | --- |
-| `1` 确定性失败 | 参数校验不通过、唯一键冲突、外键缺失 | 直接写 `dbz_dead_letter`，不重试 |
-| `2` 传输类失败 | 连接失败、超时、对端 5xx | 写 `dbz_dead_letter_retry`，worker 退避重投 |
-| `3` 响应异常 | `result` 非成功且无法归类、响应无法解析 | 同传输类，保留分类 |
-
-`failureSubtype` 只在 `failureCategory=1` 时有意义：字段缺失、类型不符、长度超限等
-「字段不合规」传 `1`，允许页面改报文重投；唯一键冲突、外键缺失等传 `0`（默认）。
-旧脚本不上报该字段时按 `0` 处理，记录只能按原报文重投。
-
-`recordKey` 是幂等键的一部分；没有主键时传空串（同一 topic 下无主键的记录会被合并为一条，
-脚本应尽量从报文里取稳定主键）。`connectorType`：上游 `1`、下游 `2`。上游连接器没有可重投
-的 HTTP 地址，传输类失败也会直接进死信。
+`failure_category` / `failure_subtype` 由 DLQ 头的异常类名与消息推导，只用于筛选、
+一句话说明与「能否改报文」白名单，**不参与重试决策**。只有「数据/格式类 +
+字段不合规」允许修改报文：原始 `payload` 永不覆盖，改后的报文写在
+`pending_payload`，重投时序列化回源 topic。`failure_detail` 保留 DLQ 上下文原文
+（异常类名、消息、堆栈、DLQ 坐标）。`retry_count` 恒为 0 —— Connect 的内部重试次数
+不写进 DLQ，因此列表、详情与 CSV 导都不再展示「次数 / 首次失败 / 末次失败」，
+只保留一个「Kafka 记录时间」（`first_seen_ms` 与 `last_seen_ms` 同值）。
+`connector_type` 恒为下游（2）。
 
 ## 状态悬停：运行详情
 

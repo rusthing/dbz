@@ -11,7 +11,7 @@ use strum::{AsRefStr, Display, EnumString};
 pub enum DeadLetterStatus {
     /// 待处理
     Pending = 0,
-    /// 已重投（重新 POST 到 magic 并成功）
+    /// 已重投（报文写回源 topic，由 Kafka Connect 重新消费）
     Retried = 1,
     /// 已废弃（人工确认不再重投）
     Discarded = 2,
