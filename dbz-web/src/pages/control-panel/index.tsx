@@ -91,6 +91,7 @@ import { errorMessage, formatMs, orDash, prettyJson, truncate } from '../../util
 import ControlPanelCanvas from './ControlPanelCanvas';
 import DetectResultModal, {
   DetectResultBrief,
+  type DetectItemStatus,
   type DetectOutcome,
 } from './DetectResultModal';
 import InconsistentDiffModal from './InconsistentDiffModal';
@@ -385,125 +386,6 @@ function sinkOffsetHint(record: DbzSinkConnectorVo): string {
 function sourceSnapshotHint(record: DbzSourceConnectorVo): string {
   const mode = connectorConfigValueOf(record, 'snapshot.mode') || '未配置';
   return `当前 snapshot.mode=${mode}：清空位点后会重新做一次全量快照，整库整表重读，下游会被重灌一遍。耗时与源库压力取决于数据量，请在低峰期执行。`;
-}
-
-/**
- * # 一致性检测要比对的关键配置项
- *
- * 只比两侧都存在（或只有一侧存在）的键，不要求整套 Debezium 配置逐字段相同：
- * 版本不同会多出无关键，逐字段比会把正常差异误报成失败。这里覆盖用户真正会
- * 关心的连接信息、topic 范围与快照模式。
- */
-const CONSISTENCY_CONFIG_KEYS = [
-  'connector.class',
-  'tasks.max',
-  'database.hostname',
-  'database.port',
-  'database.user',
-  'database.dbname',
-  'database.url',
-  'topic.prefix',
-  'database.server.name',
-  'table.include.list',
-  'table.exclude.list',
-  'topics',
-  'topics.regex',
-  'snapshot.mode',
-];
-
-/** 配置值的展示文本：数组/对象按 JSON，标量按字符串 */
-function configValueText(value: unknown): string {
-  if (value === null || value === undefined) {
-    return '';
-  }
-  if (typeof value === 'string') {
-    return value.trim();
-  }
-  if (typeof value === 'number' || typeof value === 'boolean') {
-    return String(value);
-  }
-  try {
-    return JSON.stringify(value);
-  } catch {
-    return String(value);
-  }
-}
-
-/** 文本能解析成数字时返回数值：`"3306"` 与 `3306` 是同一个端口 */
-function numericText(value: string): number | null {
-  const text = value.trim();
-  if (!text) {
-    return null;
-  }
-  const parsed = Number(text);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function isConfigObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
-
-/**
- * # 配置值是否相同
- *
- * 与后端 `json_eq` 同一套口径，避免「卡片说不一致、这里说一致」：
- * 对象键序无关、数组逐项、数字按数值比较，**文本与数字能解析成同一数值时也视为
- * 相同**（库内写 `"3306"`、Connect 返回 `3306`），其余按值严格相等。
- */
-function configValueEquals(left: unknown, right: unknown): boolean {
-  if (Array.isArray(left) && Array.isArray(right)) {
-    return (
-      left.length === right.length &&
-      left.every((item, index) => configValueEquals(item, right[index]))
-    );
-  }
-  if (isConfigObject(left) && isConfigObject(right)) {
-    const keys = Object.keys(left);
-    return (
-      keys.length === Object.keys(right).length &&
-      keys.every((key) => key in right && configValueEquals(left[key], right[key]))
-    );
-  }
-  if (typeof left === 'number' && typeof right === 'number') {
-    return left === right;
-  }
-  if (typeof left === 'number' && typeof right === 'string') {
-    return left === numericText(right);
-  }
-  if (typeof left === 'string' && typeof right === 'number') {
-    return numericText(left) === right;
-  }
-  return left === right;
-}
-
-/** 解析库内 `connectorConfig`；非法 JSON 返回 null，由调用方给出明确原因 */
-function parseConnectorConfig(raw: string): Record<string, unknown> | null {
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      return null;
-    }
-    return parsed as Record<string, unknown>;
-  } catch {
-    return null;
-  }
-}
-
-/** 比对库内配置与 Connect 实际配置，返回人类可读的差异列表 */
-function configDiffOf(
-  stored: Record<string, unknown>,
-  actual: Record<string, unknown>,
-): string[] {
-  const diffs: string[] = [];
-  for (const key of CONSISTENCY_CONFIG_KEYS) {
-    if (configValueEquals(stored[key], actual[key])) {
-      continue;
-    }
-    const left = configValueText(stored[key]);
-    const right = configValueText(actual[key]);
-    diffs.push(`${key}：库内「${left || '未配置'}」，Connect 实际「${right || '未配置'}」`);
-  }
-  return diffs;
 }
 
 /** 重置位点的步骤文案 */
@@ -1519,53 +1401,56 @@ export default function ControlPanelPage() {
   /**
    * 连接器一致性检测：库内配置 vs Connect 实际配置 + 启停状态
    *
-   * 比 `connector.class`、连接信息、topic 范围等关键项；状态只比「启停是否一致」，
-   * 不拿库内回写的 run_status 与远端逐状态比对，避免把刷新时序当成不一致。
+   * 判定交给后端 `POST /dbz/control-plane/connector-config/detect`：与整台 Connect
+   * 的「检测」同源（同一套差异口径、同一份脱敏快照），但只作用于这一条记录，
+   * 并回写 `inconsistent` / `inconsistent_detail`。检测完刷新数据，卡片的「不一致」
+   * 标签和对比弹窗立即能拿到本次结论；启停状态只是补充诊断，不参与不一致判定。
    */
   const checkConnectorConsistency = async (node: CanvasNode): Promise<DetectOutcome> => {
     const record = node.record as ManagedConnectorRecord;
     const startedAt = performance.now();
-    const stored = parseConnectorConfig(record.connectorConfig);
-    if (!stored) {
-      const outcome: DetectOutcome = {
-        nodeKey: node.key,
-        kindLabel: kindLabel(node.kind),
-        name: record.name,
-        elapsedMs: performance.now() - startedAt,
-        items: [
-          {
-            key: 'stored',
-            label: '库内配置格式',
-            status: 'error',
-            detail:
-              '库内 connectorConfig 不是合法的 JSON 对象，无法与 Connect 实际配置比对；请先在编辑表单里修正配置',
-          },
-        ],
-        reason: '库内配置不是合法 JSON 对象',
-      };
-      recordDetect(outcome);
-      return outcome;
+    const result = await controlPlaneApi.detectConnectorConfig({
+      nodeType: node.kind as ConnectorKind,
+      nodeId: node.id,
+    });
+
+    // 启停核对是补充诊断：实时列表取不到也不该把一致性结论带偏
+    let runDetail = '未取到 Connect 实时状态，跳过启停核对';
+    let runStatus: DetectItemStatus = 'warning';
+    if (!result.remoteExists) {
+      runDetail = '远端已不存在该连接器，未比对启停';
+    } else {
+      try {
+        const liveList = await kafkaConnectorApi.list(record.kafkaConnectId);
+        const live = liveList.find((item) => item.name === record.connectorName);
+        if (!live) {
+          runDetail = '实时列表里没有该连接器，未比对启停';
+        } else if (record.enabled && live.state !== 0) {
+          const stateLabel =
+            kafkaConnectorStatusDic.find((dic) => dic.value === live.state)?.label ??
+            `状态 ${live.state}`;
+          runDetail = `库内为启用，Connect 实际为「${stateLabel}」`;
+        } else if (!record.enabled && live.state === 0) {
+          runDetail = '库内为停用，但 Connect 上连接器仍在运行';
+        } else {
+          runDetail = '库内启停与 Connect 实际一致';
+          runStatus = 'ok';
+        }
+      } catch (reason) {
+        runDetail = `实时状态查询失败：${errorMessage(reason)}`;
+      }
     }
 
-    // 配置与实时列表并行取：任一失败都能给出具体原因
-    const [actual, liveList] = await Promise.all([
-      kafkaConnectorApi.config(record.kafkaConnectId, record.connectorName),
-      kafkaConnectorApi.list(record.kafkaConnectId),
-    ]);
-
-    const diffs = configDiffOf(stored, actual.config);
-    const live = liveList.find((item) => item.name === record.connectorName);
-    let runIssue: string | null = null;
-    if (!live) {
-      runIssue = 'Connect 上不存在该连接器，库内仍在纳管，未比对启停';
-    } else if (record.enabled && live.state !== 0) {
-      const stateLabel =
-        kafkaConnectorStatusDic.find((dic) => dic.value === live.state)?.label ??
-        `状态 ${live.state}`;
-      runIssue = `库内为启用，Connect 实际为「${stateLabel}」`;
-    } else if (!record.enabled && live.state === 0) {
-      runIssue = '库内为停用，但 Connect 上连接器仍在运行';
-    }
+    const changedKeys = result.changedKeys ?? [];
+    const configDetail = !result.configValid
+      ? result.reason ?? '库内 connectorConfig 不是合法的 JSON 对象，无法逐项比对'
+      : !result.remoteExists
+        ? result.reason ?? '远端已不存在，无法逐项比对'
+        : result.changed > 0
+          ? `${result.changed} 处不一致：${changedKeys.join('；')}`
+          : result.inconsistent
+            ? result.reason ?? '配置无法逐项比对，已标记不一致'
+            : '库内配置与 Connect 实际一致（连接信息、topic 范围等全部关键项）';
 
     const outcome: DetectOutcome = {
       nodeKey: node.key,
@@ -1576,39 +1461,55 @@ export default function ControlPanelPage() {
         {
           key: 'stored',
           label: '库内配置格式',
-          status: 'ok',
-          detail: '库内 connectorConfig 可正常解析',
+          status: result.configValid ? 'ok' : 'error',
+          detail: result.configValid
+            ? '库内 connectorConfig 可正常解析'
+            : '库内 connectorConfig 不是合法的 JSON 对象；请先在编辑表单里修正配置',
         },
         {
           key: 'exists',
           label: '远端连接器',
-          status: live ? 'ok' : 'error',
-          detail: live
-            ? `Connect 上存在连接器 ${record.connectorName}`
-            : 'Connect 上不存在该连接器，但库内仍在纳管',
+          status: result.remoteExists ? 'ok' : 'error',
+          detail: result.remoteExists
+            ? `Connect 上存在连接器 ${result.connectorName}`
+            : 'Connect 上不存在该连接器，库内记录已置为禁用并标记不一致',
         },
         {
           key: 'config',
           label: '关键配置比对',
-          status: diffs.length > 0 ? 'error' : 'ok',
-          detail:
-            diffs.length > 0
-              ? `${diffs.length} 处不一致：${diffs.join('；')}`
-              : '连接器类、连接信息、topic 范围等关键项与远端一致',
+          status: result.inconsistent ? 'error' : 'ok',
+          detail: configDetail,
         },
         {
           key: 'run',
           label: '启停状态',
-          status: runIssue ? 'warning' : 'ok',
-          detail: runIssue ?? '库内启停与 Connect 实际一致',
+          status: runStatus,
+          detail: runDetail,
+        },
+        {
+          key: 'flag',
+          label: '检测标记',
+          status: 'ok',
+          detail: result.inconsistent
+            ? result.updated
+              ? '已刷新「不一致」标记与对比快照，点卡片标签可逐项对比并双向同步'
+              : '「不一致」标记与快照已是本次结论'
+            : result.updated
+              ? '库内与远端一致，已清除不一致标记与快照'
+              : '标记原本就是一致，无需改动',
         },
       ],
-      reason:
-        diffs.length > 0
-          ? `库内记录与 Connect 实际有 ${diffs.length} 处配置不一致`
-          : undefined,
+      reason: !result.configValid
+        ? '库内配置不是合法 JSON 对象'
+        : !result.remoteExists
+          ? 'Connect 上已不存在该连接器'
+          : result.changed > 0
+            ? `库内记录与 Connect 实际有 ${result.changed} 处配置不一致`
+            : undefined,
     };
     recordDetect(outcome);
+    // 后端已落库标记与快照：刷新四张表让卡片标签、对比弹窗都用最新数据
+    state.reload();
     return outcome;
   };
 
@@ -1898,8 +1799,8 @@ export default function ControlPanelPage() {
         break;
       case 'inspect-inconsistent':
         setInspectTarget(node);
-        // 升级前的不一致标记没有快照：打开即补一次检测，但不弹检测结果弹窗，
-        // 避免两个弹窗叠在一起
+        // 升级前的不一致标记没有快照：打开即补一次检测（后端会落库最新快照），
+        // 但不弹检测结果弹窗，避免两个弹窗叠在一起
         if (!(node.record as ManagedConnectorRecord).inconsistentDetail) {
           setCheckingKey(node.key);
           void runCheck(node).finally(() => setCheckingKey(null));

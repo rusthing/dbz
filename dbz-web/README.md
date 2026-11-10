@@ -349,7 +349,7 @@ scripts/smoke.mjs        # 冒烟测试
 | 页面 | 用到的接口 |
 | --- | --- |
 | 总览 | 四张表的 `/list`（含 Kafka 集群），在浏览器里算统计与异常；异常清单里消息集群排在集群之前一起列 |
-| 控制面板 | 四张表的 `/list` + 每台 Connect 的 `GET /dbz/kafka-connector/list`（实时连接器）、`GET /dbz/kafka-connect/health`（Connect 自身健康）、`GET /dbz/kafka-connector/config`（属性框里的集群侧配置）；`POST /restart`；上游/下游 `PUT`（启用/停用）；`POST /kafka-broker/check` |
+| 控制面板 | 四张表的 `/list` + 每台 Connect 的 `GET /dbz/kafka-connector/list`（实时连接器）、`GET /dbz/kafka-connector/plugins`（插件）、`GET /dbz/kafka-connect/health`（Connect 自身健康）；`POST /restart`；上游/下游 `PUT`（启用/停用）；`POST /kafka-broker/check`（Kafka 卡片检测）、`POST /kafka-connect/detect`（Connect 卡片检测）、`POST /control-plane/connector-config/detect`（上/下游卡片一致性检测）、`POST /control-plane/connector-config/sync`（不一致双向同步） |
 | Kafka 集群 | `/dbz/kafka-broker` 的 `/page`、`POST`、`PUT`、`DELETE /{id}` + `POST /check` |
 | Kafka Connect | `/dbz/kafka-connect` 的 `/page`、`POST`、`PUT`、`DELETE /{id}` |
 | 上游连接器 | `/dbz/source-connector` 同上 + `GET /snapshot/preview`、`POST /snapshot` |
@@ -367,12 +367,20 @@ scripts/smoke.mjs        # 冒烟测试
 - **Connect 自身健康**：`GET /dbz/kafka-connect/health` 返回可达性、版本、commit、
   Kafka 集群 ID、worker 数与连接器数；卡片上显示 `v3.x · N worker · M 连接器`，
   顶部汇总「x/y 可达」，不可达时带上原因。
-- **不一致判定**：只比「是否在运行中」这一层。启用但集群上没部署、禁用却还在跑、
-  库内运行中而实时不是（或相反），都会提示；实时查询失败时不参与比对，避免误报。
+- **不一致判定**：由后端按「库内 `connectorConfig` vs Connect 实际配置 + 远端是否存在」
+  落库 `inconsistent` 标记，前端只读展示，运行状态不参与判断（任务重启、rebalance
+  的抖动不该天天误报）。Connect 卡片的「检测」会遍历整台 Connect 并补录/禁用纳管记录；
+  上游 / 下游卡片自己的「检测」只处理这一条记录，用同一套判定刷新标记与脱敏对比快照，
+  所以点完卡片就能看到「不一致」标签、点开逐项对比并双向同步。
+- **卡片检测**：四类卡片共用同一个结果弹窗，属性面板保留最近一次结论。连接器卡片的
+  一致性检测走 `POST /dbz/control-plane/connector-config/detect`，后端回写
+  `inconsistent` / `inconsistent_detail` 后前端刷新列表；「启停状态」只是弹窗里的补充
+  诊断，不参与一致性判定。
 - **图上动作**：详情抽屉（集群实时配置、实时任务、异常原因）、启用/停用、重启；未纳管的
   连接器不进入画布，统一到 `/kafka-connector` 页查看全量列表（该页入口已从左侧菜单移除，直接访问 URL 仍可用）。
-- **配置来源**：详情抽屉优先展示 `GET /connectors/{name}/config` 的集群侧配置；
-  连接器不存在（404）或 Connect 不可达（500）时回落到库内 `connector_config`，并说明原因。
+- **配置来源**：详情抽屉展示库内 `connectorConfig`；Connect 上的实际配置由后端在
+  `POST /control-plane/connector-config/detect` / `sync` 里直接读取并比对，前端不再单独拉
+  `GET /dbz/kafka-connector/config`（该接口仍保留给运维排查，控制面板不依赖它）。
 - **刷新**：刷新按钮会重新拉四张表并对每台 Connect 实时采集 `list` 与 `health`；单台 Connect
   15 秒不返回只影响它自己的实时状态，不会拖住整页。
 - **死信角标**：同一轮还会拉 `GET /dbz/dead-letter/pending-count`，连接器卡片显示待处理条数，
@@ -384,11 +392,13 @@ scripts/smoke.mjs        # 冒烟测试
   （仅补齐缺失 / 覆盖已存在）→ 二次确认 → 结果明细。导入用于目标环境还没有该集群时把
   集群、Connect 与连接器一次建出来，恢复用于往已有集群补记录；两者都只写库，不向远端
   注册或删除连接器，导入成功后自动切到新集群 tab。
-- **配置比对口径**：只比库内出现过的键（`name` 除外），对象键序无关、数字按数值比较，
-  文本与数字能解析成同一数值时视为一致（库内 `"3306"` 与远端 `3306` 不算差异）；
-  敏感项的值一律脱敏，只留「变了 / 没变」。
+- **配置比对口径**：只有一份，在后端（`config_mismatch` / `compare_detail_text`），
+  整集群检测、单条连接器检测、双向同步后重算标记、对比快照都复用它。只比库内出现过的
+  键（`name` 除外），对象键序无关、数字按数值比较，文本与数字能解析成同一数值时视为
+  一致（库内 `"3306"` 与远端 `3306` 不算差异）；敏感项的值一律脱敏，只留「变了 / 没变」。
+  前端不再自己镜像一份比较逻辑，避免「弹窗说一致、标签说不一致」。
 
-后端缺口（本次未新增接口，也没有在前端伪造数据）：
+其它后端缺口（前端不伪造数据）：
 
 | 缺口 | 现状与影响 |
 | --- | --- |

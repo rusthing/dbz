@@ -5,19 +5,22 @@
 //! - `DELETE /dbz/control-plane/edges`：恢复某条连线的默认走线
 //! - `POST   /dbz/control-plane/node-delete`：校验当前用户口令后删除节点
 //! - `POST   /dbz/control-plane/connector-config/sync`：对比弹窗里的双向配置同步
+//! - `POST   /dbz/control-plane/connector-config/detect`：单条连接器的一致性检测
 //!
 //! 删除与同步远端都要求口令：必须带 `Authorization`（口令校验身份）与 `X-User-Id`
 //! （审计操作人）；口令摘要放在请求体里，服务端不落库、只转发给 adm-rs。
 
 use crate::dto::{
-    DbzConnectorConfigSyncDto, DbzControlPlaneEdgeBendDeleteDto,
+    DbzConnectorConfigSyncDto, DbzConnectorDetectDto, DbzControlPlaneEdgeBendDeleteDto,
     DbzControlPlaneEdgeBendUpsertDto, DbzControlPlaneNodeDeleteDto,
 };
 use crate::svc::{
     DbzConnectorConfigSyncSvc, DbzControlPlaneDeleteSvc, DbzControlPlaneEdgeLayoutSvc,
+    DbzKafkaConnectSvc,
 };
 use crate::vo::{
-    DbzConnectorConfigSyncVo, DbzControlPlaneEdgeBendVo, DbzControlPlaneNodeDeleteVo,
+    DbzConnectorConfigSyncVo, DbzConnectorDetectVo, DbzControlPlaneEdgeBendVo,
+    DbzControlPlaneNodeDeleteVo,
 };
 use axum::debug_handler;
 use axum::extract::Query;
@@ -136,5 +139,27 @@ pub async fn sync_connector_config(
         authorization_of(&headers),
     )
     .await?;
+    Ok(Json(ro))
+}
+
+/// # 检测单条上游 / 下游连接器的配置一致性
+///
+/// 与整台 Connect 的 `POST /dbz/kafka-connect/detect` 判定同源，但只处理
+/// `nodeType` + `nodeId` 指定的这一条记录：比对库内配置与 Connect 实际配置，
+/// 回写 `inconsistent` 与脱敏对比快照；远端已不存在时置禁用并标记。
+/// 成功后 `extra` 带本次结论、差异项键名与最新标记，前端刷新即可看到
+/// 「不一致」标签并点开逐项对比。
+#[utoipa::path(
+    post,
+    path = "/dbz/control-plane/connector-config/detect",
+    request_body = DbzConnectorDetectDto,
+    responses((status = OK, body = Ro<DbzConnectorDetectVo>))
+)]
+#[debug_handler]
+#[log_call]
+pub async fn detect_connector(
+    Json(dto): Json<DbzConnectorDetectDto>,
+) -> Result<Json<Ro<DbzConnectorDetectVo>>, CtrlError> {
+    let ro = DbzKafkaConnectSvc::detect_connector(dto).await?;
     Ok(Json(ro))
 }

@@ -195,6 +195,38 @@ export interface DbzConnectorConfigSyncInput {
   auditPswd?: string;
 }
 
+/** # 检测单条连接器配置一致性的请求体 */
+export interface DbzConnectorDetectInput {
+  nodeType: 'source' | 'sink';
+  nodeId: Id;
+}
+
+/** # 单条连接器一致性检测的结果（后端判定并已回写库内标记与快照） */
+export interface DbzConnectorDetectVo {
+  /** 节点类型：source / sink */
+  nodeType: 'source' | 'sink';
+  /** Connect 上使用的连接器名 */
+  connectorName: string;
+  /** 库内 connectorConfig 是否为合法 JSON 对象 */
+  configValid: boolean;
+  /** 检测时 Connect 上是否还存在该连接器 */
+  remoteExists: boolean;
+  /** 检测后库内的不一致标记 */
+  inconsistent: boolean;
+  /** 检测后库内的脱敏对比快照（JSON 文本）；一致时为空 */
+  inconsistentDetail?: string | null;
+  /** 差异项数量 */
+  changed: number;
+  /** 差异项键名（敏感项只给键名，不给值） */
+  changedKeys: string[];
+  /** 无法逐项比对或远端不存在的原因 */
+  reason?: string | null;
+  /** 本次检测时间（毫秒时间戳） */
+  checkedAt: number;
+  /** 本次是否改动了库内标记或快照 */
+  updated: boolean;
+}
+
 /** # 同步连接器配置的结果 */
 export interface DbzConnectorConfigSyncVo {
   /** 本次实际校验的口令类型；toLocal 为空 */
@@ -217,7 +249,7 @@ export interface DbzSourceConnectorVo extends AuditFields {
   runMsg?: string | null;
   remark?: string | null;
   enabled: boolean;
-  /** 检测标记：库内配置与 Connect 实际不一致，或远端已不存在（由 Connect 卡片「检测」写入） */
+  /** 检测标记：库内配置与 Connect 实际不一致，或远端已不存在（由 Connect / 连接器卡片「检测」写入） */
   inconsistent: boolean;
   /** 检测不一致时的脱敏对比快照（JSON 文本，由检测/同步写入） */
   inconsistentDetail?: string | null;
@@ -236,7 +268,7 @@ export interface DbzSinkConnectorVo extends AuditFields {
   runMsg?: string | null;
   remark?: string | null;
   enabled: boolean;
-  /** 检测标记：库内配置与 Connect 实际不一致，或远端已不存在（由 Connect 卡片「检测」写入） */
+  /** 检测标记：库内配置与 Connect 实际不一致，或远端已不存在（由 Connect / 连接器卡片「检测」写入） */
   inconsistent: boolean;
   /** 检测不一致时的脱敏对比快照（JSON 文本，由检测/同步写入） */
   inconsistentDetail?: string | null;

@@ -373,7 +373,7 @@ function NodeActions({
         ? '集群检测：Kafka 连通性与 topic 清单'
         : node.kind === 'connect'
           ? 'Connect 检测：可达性 / 版本 / worker / 插件'
-          : '一致性检测：库内配置与 Connect 实际状态是否一致',
+          : '一致性检测：库内配置与 Connect 实际配置是否一致，并刷新「不一致」标记与对比快照',
     icon: <ThunderboltOutlined />,
     loading: checkingKey === node.key,
   });

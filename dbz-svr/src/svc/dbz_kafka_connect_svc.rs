@@ -17,8 +17,8 @@
 use crate::dao::{DbzSinkConnectorDao, DbzSourceConnectorDao};
 use crate::dic::{ConnectorRunStatus, KafkaConnectStatus, KafkaConnectorStatus};
 use crate::dto::{
-    DbzKafkaConnectDetectDto, DbzKafkaConnectHealthDto, DbzSinkConnectorQueryDto,
-    DbzSourceConnectorQueryDto,
+    DbzConnectorDetectDto, DbzKafkaConnectDetectDto, DbzKafkaConnectHealthDto,
+    DbzSinkConnectorQueryDto, DbzSourceConnectorQueryDto,
 };
 use crate::mo::dbz_sink_connector::ActiveModel as SinkActiveModel;
 use crate::mo::dbz_source_connector::ActiveModel as SourceActiveModel;
@@ -29,7 +29,8 @@ use crate::utils::{
 };
 use crate::vo::{
     DbzConnectorCompareDetail, DbzConnectorCompareRow, DbzConnectorDetectItemVo,
-    DbzKafkaConnectDetectVo, DbzKafkaConnectHealthVo, DbzSinkConnectorVo, DbzSourceConnectorVo,
+    DbzConnectorDetectVo, DbzKafkaConnectDetectVo, DbzKafkaConnectHealthVo, DbzSinkConnectorVo,
+    DbzSourceConnectorVo,
 };
 use anyhow::anyhow;
 use robotech::db::get_db_conn;
@@ -705,6 +706,219 @@ impl DbzKafkaConnectSvc {
             out.added, out.marked, out.disabled, out.cleared, out.skipped
         ))
         .extra(Some(out)))
+    }
+
+    /// # 检测单条上游 / 下游连接器的配置一致性
+    ///
+    /// 控制面板里连接器卡片上的「检测」：与 {@link detect} 用同一套判定与同一份
+    /// 脱敏快照，但作用范围只有这一条纳管记录 —— 不补录、不牵连同一台 Connect
+    /// 上的其它连接器。检测结论会回写 `inconsistent` 与 `inconsistent_detail`，
+    /// 前端刷新后「不一致」标签和对比弹窗就能看到本次结果。
+    ///
+    /// * 远端存在：比库内配置里出现过的键（`name` 除外），有差异 → 标记，一致 → 清除；
+    /// * 远端不存在（404）：置禁用并标记，快照只留原因，与整台 Connect 检测一致；
+    /// * 取不到远端配置（Connect 不可达等）：报错，不改动任何库内标记。
+    ///
+    /// 不看运行状态：任务重启、rebalance 造成的抖动不该被判成配置不一致。
+    #[log_call]
+    pub async fn detect_connector(
+        dto: DbzConnectorDetectDto,
+    ) -> Result<Ro<DbzConnectorDetectVo>, anyhow::Error> {
+        let node_type = dto.node_type.trim().to_lowercase();
+        if !matches!(node_type.as_str(), "source" | "sink") {
+            return Err(anyhow!("nodeType 只支持 source / sink"));
+        }
+        if dto.node_id.value() == 0 {
+            return Err(anyhow!("nodeId 必须为正数"));
+        }
+
+        /// 一条纳管记录里检测要用到的字段，上游与下游取法一致
+        struct DetectTarget {
+            id: i64,
+            kafka_connect_id: U64,
+            name: String,
+            connector_name: String,
+            connector_config: String,
+            inconsistent: bool,
+            inconsistent_detail: Option<String>,
+            enabled: bool,
+        }
+
+        let local = if node_type == "source" {
+            let one = DbzSourceConnectorSvc::get_by_id::<DatabaseConnection>(dto.node_id, None)
+                .await?
+                .extra
+                .ok_or_else(|| anyhow!("上游连接器<{}>不存在", dto.node_id.value()))?;
+            DetectTarget {
+                id: one.id.value() as i64,
+                kafka_connect_id: one.kafka_connect_id,
+                name: one.name,
+                connector_name: one.connector_name,
+                connector_config: one.connector_config,
+                inconsistent: one.inconsistent,
+                inconsistent_detail: one.inconsistent_detail,
+                enabled: one.enabled,
+            }
+        } else {
+            let one = DbzSinkConnectorSvc::get_by_id::<DatabaseConnection>(dto.node_id, None)
+                .await?
+                .extra
+                .ok_or_else(|| anyhow!("下游连接器<{}>不存在", dto.node_id.value()))?;
+            DetectTarget {
+                id: one.id.value() as i64,
+                kafka_connect_id: one.kafka_connect_id,
+                name: one.name,
+                connector_name: one.connector_name,
+                connector_config: one.connector_config,
+                inconsistent: one.inconsistent,
+                inconsistent_detail: one.inconsistent_detail,
+                enabled: one.enabled,
+            }
+        };
+
+        let connect = Self::get_by_id::<DatabaseConnection>(local.kafka_connect_id, None)
+            .await?
+            .extra
+            .ok_or_else(|| {
+                anyhow!(
+                    "连接器<{}>所属 Kafka Connect 不存在",
+                    local.name
+                )
+            })?;
+        if !connect.enabled {
+            return Err(anyhow!(
+                "所属 Kafka Connect<{}>已停用，无法检测；请先启用后再试",
+                connect.name
+            ));
+        }
+        let url = normalize_url(&connect.url);
+        if url.is_empty() {
+            return Err(anyhow!(
+                "Kafka Connect<{}>未配置地址，无法检测",
+                connect.name
+            ));
+        }
+
+        let db = get_db_conn().map_err(|e| anyhow!("获取数据库连接失败: {e}"))?;
+        let checked_at = now_ms();
+        let config_valid = serde_json::from_str::<Value>(&local.connector_config)
+            .map(|value| value.is_object())
+            .unwrap_or(false);
+
+        let (remote_exists, mismatch, detail_text, changed_keys, reason) =
+            match KafkaConnectorUtils::fetch_connector_config(&url, &local.connector_name).await {
+                Ok(remote) => {
+                    let mismatch = config_mismatch(&local.connector_config, &remote);
+                    let detail_text = compare_detail_text(
+                        &local.connector_config,
+                        &remote,
+                        mismatch,
+                        checked_at,
+                        &local.name,
+                    )?;
+                    let DbzConnectorCompareDetail { rows, reason, .. } =
+                        build_compare_detail(&local.connector_config, &remote, checked_at);
+                    let changed_keys = rows
+                        .into_iter()
+                        .filter(|row| row.changed)
+                        .map(|row| row.key)
+                        .collect::<Vec<String>>();
+                    (true, mismatch, detail_text, changed_keys, reason)
+                }
+                Err(KafkaConnectorError::NotFound) => (
+                    false,
+                    true,
+                    missing_detail_text(checked_at, &local.name)?,
+                    Vec::new(),
+                    Some("检测时 Connect 上已不存在该连接器，已自动置为禁用".to_string()),
+                ),
+                Err(e) => {
+                    return Err(anyhow!(
+                        "读取连接器<{}>在 Connect 上的配置失败: {e}",
+                        local.connector_name
+                    ))
+                }
+            };
+
+        let flag_changed = mismatch != local.inconsistent;
+        let snapshot_changed = local.inconsistent_detail.as_deref() != detail_text.as_deref();
+        // 远端不存在时还要置禁用并回写状态，即使标记已经是 true、快照也没变
+        let need_disable = !remote_exists && local.enabled;
+        let updated = flag_changed || snapshot_changed || need_disable;
+        if updated {
+            if node_type == "source" {
+                let mut active = SourceActiveModel {
+                    id: Set(local.id),
+                    ..Default::default()
+                };
+                if flag_changed {
+                    active.inconsistent = Set(mismatch);
+                }
+                active.inconsistent_detail = Set(detail_text.clone());
+                active.updater_id = Set(0);
+                if need_disable {
+                    active.enabled = Set(false);
+                    active.run_status = Set(ConnectorRunStatus::Disabled.value());
+                    active.run_msg = Set(Some("检测：Connect 上已不存在该连接器".to_string()));
+                }
+                DbzSourceConnectorDao::update(active, db.as_ref())
+                    .await
+                    .map_err(|e| anyhow!("回写上游连接器<{}>检测标记失败: {e}", local.name))?;
+            } else {
+                let mut active = SinkActiveModel {
+                    id: Set(local.id),
+                    ..Default::default()
+                };
+                if flag_changed {
+                    active.inconsistent = Set(mismatch);
+                }
+                active.inconsistent_detail = Set(detail_text.clone());
+                active.updater_id = Set(0);
+                if need_disable {
+                    active.enabled = Set(false);
+                    active.run_status = Set(ConnectorRunStatus::Disabled.value());
+                    active.run_msg = Set(Some("检测：Connect 上已不存在该连接器".to_string()));
+                }
+                DbzSinkConnectorDao::update(active, db.as_ref())
+                    .await
+                    .map_err(|e| anyhow!("回写下游连接器<{}>检测标记失败: {e}", local.name))?;
+            }
+        }
+
+        let changed = changed_keys.len() as u32;
+        info!(
+            "{}连接器<{}>(id={}) 一致性检测完成: exists={}, inconsistent={}, changed={}, updated={}",
+            if node_type == "source" { "上游" } else { "下游" },
+            local.name,
+            local.id,
+            remote_exists,
+            mismatch,
+            changed,
+            updated
+        );
+        let msg = if !remote_exists {
+            format!("检测完成：Connect 上已不存在「{}」，记录已置为禁用并标记不一致", local.name)
+        } else if mismatch {
+            format!(
+                "检测完成：「{}」有 {} 处配置不一致，已刷新检测标记与对比快照",
+                local.name, changed
+            )
+        } else {
+            format!("检测完成：「{}」库内配置与 Connect 实际一致，标记已清除", local.name)
+        };
+        Ok(Ro::success(msg).extra(Some(DbzConnectorDetectVo {
+            node_type,
+            connector_name: local.connector_name,
+            config_valid,
+            remote_exists,
+            inconsistent: mismatch,
+            inconsistent_detail: detail_text,
+            changed,
+            changed_keys,
+            reason,
+            checked_at,
+            updated,
+        })))
     }
 
     /// # 定时检查所有 Kafka Connect 与连接器
@@ -1722,5 +1936,75 @@ mod tests {
         ));
         assert!(json_eq(&json!(["1", 2]), &json!([1, "2"])));
         assert!(!json_eq(&json!({"tasks.max": 4}), &json!({"tasks.max": 5})));
+    }
+
+    /// 卡片检测与整台检测共用判定：库内键的值不同才标记，changedKeys 与快照同源
+    #[test]
+    fn single_detect_reports_only_changed_local_keys() {
+        let local = r#"{"connector.class":"MySqlConnector","database.hostname":"10.0.0.9","table.include.list":"dbz.orders_archive","database.password":"dbz-secret"}"#;
+        let remote = json!({
+            "connector.class": "MySqlConnector",
+            "database.hostname": "10.0.0.11",
+            "table.include.list": "dbz.orders",
+            "database.password": "dbz-secret"
+        });
+        assert!(config_mismatch(local, &remote));
+
+        let detail = build_compare_detail(local, &remote, 1760000000000);
+        let changed_keys = detail
+            .rows
+            .iter()
+            .filter(|row| row.changed)
+            .map(|row| row.key.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(changed_keys, vec!["database.hostname", "table.include.list"]);
+        // 敏感项只给键名，不回显明文
+        let password = detail
+            .rows
+            .iter()
+            .find(|row| row.key == "database.password")
+            .expect("库内键都应出现在快照里");
+        assert!(password.sensitive);
+        assert!(!password.local.contains("dbz-secret"));
+
+        let text = compare_detail_text(local, &remote, true, 1760000000000, "订单库增量")
+            .expect("快照序列化不应失败")
+            .expect("不一致时必须有快照");
+        let parsed = serde_json::from_str::<DbzConnectorCompareDetail>(&text)
+            .expect("inconsistentDetail 必须是可解析的对比快照");
+        assert!(parsed.remote_exists);
+        assert_eq!(parsed.rows.len(), detail.rows.len());
+    }
+
+    /// 远端多出来的键不参与判定：不能出现「检测说一致、弹窗却列一堆差异」
+    #[test]
+    fn remote_only_keys_do_not_mark_inconsistent() {
+        let local = r#"{"connector.class":"MySqlConnector","database.port":"3306"}"#;
+        let remote = json!({
+            "connector.class": "MySqlConnector",
+            "database.port": 3306,
+            "table.include.list": "dbz.orders"
+        });
+        assert!(!config_mismatch(local, &remote));
+        let detail = build_compare_detail(local, &remote, 1);
+        assert_eq!(detail.rows.len(), 2);
+        assert!(detail.rows.iter().all(|row| !row.changed));
+        assert!(
+            compare_detail_text(local, &remote, false, 1, "订单库增量")
+                .expect("序列化不应失败")
+                .is_none(),
+            "一致时快照要清空"
+        );
+    }
+
+    /// 库内配置不是合法 JSON 对象时标记不一致，但快照只留原因、不列伪差异
+    #[test]
+    fn broken_local_config_marks_inconsistent_without_rows() {
+        let local = "not-a-json-object";
+        let remote = json!({"connector.class": "MySqlConnector"});
+        assert!(config_mismatch(local, &remote));
+        let detail = build_compare_detail(local, &remote, 1);
+        assert!(detail.rows.is_empty());
+        assert!(detail.reason.is_some());
     }
 }

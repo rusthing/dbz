@@ -126,7 +126,7 @@ const sources = [
     name: '订单库增量',
     connectorName: 'mysql-orders-source',
     connectorConfig:
-      '{"connector.class":"io.debezium.connector.mysql.MySqlConnector","snapshot.mode":"when_needed","database.password":"dbz-secret"}',
+      '{"connector.class":"io.debezium.connector.mysql.MySqlConnector","snapshot.mode":"when_needed","database.password":"dbz-secret","database.hostname":"10.0.0.9","table.include.list":"dbz.orders_archive"}',
     runStatus: 1,
     remark: '',
     enabled: true,
@@ -171,6 +171,87 @@ const sinks = [
     updateMs: '1760000300000',
   },
 ];
+
+/**
+ * 模拟 Connect 上的「实际配置」：只有 mysql-orders-source 的两个键与库内不同。
+ *
+ * 这两个键必须同样出现在库内 connectorConfig 里 —— 后端 compare_entries 只比
+ * 库内出现过的键（name 除外），远端多出来的键不算差异，避免「检测说一致、
+ * 弹窗却列一堆差异」的错位。整台 Connect 检测与单条卡片检测共用这份远端配置。
+ */
+const remoteConnectorOverrides = {
+  'mysql-orders-source': {
+    'database.hostname': '10.0.0.11',
+    'table.include.list': 'dbz.orders',
+  },
+};
+
+/** 与后端 is_sensitive_key 同口径的敏感键（夹具里只覆盖常见形式） */
+const sensitiveConfigKey = (key) =>
+  /password|passwd|secret|token|credential|passphrase|private\.key|access\.key|api\.?key|sasl\.jaas\.config|basic\.auth\.user\.info|ssl\.(keystore|truststore)/i.test(
+    key,
+  );
+
+/**
+ * 模拟后端 `POST /dbz/control-plane/connector-config/detect` 的判定与落库：
+ * 逐项比对库内键、生成脱敏快照，并把标记/快照写回夹具记录，让随后的
+ * `state.reload()` 能像真实后端一样刷新卡片标签与对比弹窗。
+ */
+function applyConnectorDetection(item, nodeType) {
+  let local = null;
+  try {
+    local = JSON.parse(item.connectorConfig);
+  } catch {
+    local = null;
+  }
+  const configValid =
+    Boolean(local) && typeof local === 'object' && !Array.isArray(local);
+  const remote = configValid
+    ? { ...local, ...(remoteConnectorOverrides[item.connectorName] ?? {}) }
+    : {};
+  const rows = configValid
+    ? Object.entries(local)
+        .filter(([key]) => key !== 'name')
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, value]) => {
+          const changed = remote[key] === undefined || String(value) !== String(remote[key]);
+          const sensitive = sensitiveConfigKey(key);
+          const masked = changed ? '***（已变更，已脱敏）' : '***（已脱敏）';
+          return {
+            key,
+            local: sensitive ? masked : String(value),
+            remote: sensitive
+              ? masked
+              : remote[key] === undefined
+                ? null
+                : String(remote[key]),
+            changed,
+            sensitive,
+          };
+        })
+    : [];
+  const changedKeys = rows.filter((row) => row.changed).map((row) => row.key);
+  const inconsistent = !configValid || changedKeys.length > 0;
+  const checkedAt = Date.now();
+  const inconsistentDetail = inconsistent
+    ? JSON.stringify({ checkedAt, remoteExists: true, reason: null, rows })
+    : null;
+  item.inconsistent = inconsistent;
+  item.inconsistentDetail = inconsistentDetail;
+  return {
+    nodeType,
+    connectorName: item.connectorName,
+    configValid,
+    remoteExists: true,
+    inconsistent,
+    inconsistentDetail,
+    changed: changedKeys.length,
+    changedKeys,
+    reason: null,
+    checkedAt,
+    updated: true,
+  };
+}
 
 /** 死信：901/903 为可改报文的确定性字段不合规，902 为传输类（禁止改报文） */
 const deadLetters = [
@@ -561,6 +642,8 @@ const page = await context.newPage();
 const pageErrors = [];
 const consoleErrors = [];
 const posted = [];
+/** 单条连接器一致性检测的返回结果：断言后端判定与落库结论用 */
+const connectorDetectResults = [];
 /** 只读接口单独记录：`posted` 只装写请求，GET 断言不能从它里翻 */
 const getRequests = [];
 /** 控制面板画布布局：PUT 落库、GET 读取，用来验证「刷新后位置保持」 */
@@ -982,7 +1065,8 @@ await page.route('**/dbz/**', async (route) => {
       brokers.push(record);
       return route.fulfill({ json: ro(record) });
     }
-    // Connect 卡片检测：模拟「库内配置与远端不一致」的同步结果，并把标记写回夹具
+    // Connect 卡片检测：遍历整台 Connect 的纳管记录；逐项判定与单条卡片检测共用
+    // applyConnectorDetection，保证两种入口写回的标记/快照形状完全一致
     if (path === '/dbz/kafka-connect/detect') {
       const body = request.postDataJSON();
       const managed = sources.filter((item) => item.kafkaConnectId === body.kafkaConnectId);
@@ -990,37 +1074,8 @@ await page.route('**/dbz/**', async (route) => {
       let marked = 0;
       let unchanged = 0;
       for (const item of managed) {
-        if (item.connectorName === 'mysql-orders-source') {
-          item.inconsistent = true;
-          // 对比快照与标记同源：标签点开必须能看出具体差异（敏感项已脱敏）
-          item.inconsistentDetail = JSON.stringify({
-            checkedAt: Date.now(),
-            remoteExists: true,
-            reason: null,
-            rows: [
-              {
-                key: 'database.password',
-                local: '***（已变更，已脱敏）',
-                remote: '***（已变更，已脱敏）',
-                changed: true,
-                sensitive: true,
-              },
-              {
-                key: 'snapshot.mode',
-                local: 'when_needed',
-                remote: 'initial',
-                changed: true,
-                sensitive: false,
-              },
-              {
-                key: 'connector.class',
-                local: 'io.debezium.connector.mysql.MySqlConnector',
-                remote: 'io.debezium.connector.mysql.MySqlConnector',
-                changed: false,
-                sensitive: false,
-              },
-            ],
-          });
+        const result = applyConnectorDetection(item, 'source');
+        if (result.inconsistent) {
           marked += 1;
           items.push({
             connectorName: item.connectorName,
@@ -1035,6 +1090,25 @@ await page.route('**/dbz/**', async (route) => {
       return route.fulfill({
         json: ro({ added: 0, marked, disabled: 0, cleared: 0, unchanged, skipped: 0, items }),
       });
+    }
+    // 连接器卡片自己的「检测」：只处理 body 指定的一条 source / sink 记录，
+    // 由后端判定并回写 inconsistent / inconsistentDetail，前端检测完再 reload
+    if (path === '/dbz/control-plane/connector-config/detect') {
+      const body = request.postDataJSON();
+      const list = body.nodeType === 'source' ? sources : body.nodeType === 'sink' ? sinks : null;
+      const item = list?.find((entry) => String(entry.id) === String(body.nodeId));
+      if (!item) {
+        return route.fulfill({
+          json: {
+            result: -1,
+            msg: `未模拟的连接器记录 ${body.nodeType}:${body.nodeId}`,
+            timestamp: Date.now(),
+          },
+        });
+      }
+      const result = applyConnectorDetection(item, body.nodeType);
+      connectorDetectResults.push(result);
+      return route.fulfill({ json: ro(result) });
     }
     // 集群恢复 / 导入的预览与执行：回一份合法计划，集群 → Connect → 连接器三层各一条
     if (path === '/dbz/backup/restore') {
@@ -1105,7 +1179,8 @@ await page.route('**/dbz/**', async (route) => {
       }),
     });
   }
-  // 集群侧连接器配置：一致性检测拿它和库内 connectorConfig 比对
+  // 集群侧连接器实际配置：卡片检测已统一交给后端 detect，这里只留给配置排查；
+  // 返回值与 applyConnectorDetection 用的「远端配置」保持同一份，避免夹具两套口径
   if (path === '/dbz/kafka-connector/config') {
     const connectorName = url.searchParams.get('connectorName');
     const stored = [...sources, ...sinks].find((item) => item.connectorName === connectorName);
@@ -1115,15 +1190,12 @@ await page.route('**/dbz/**', async (route) => {
     } catch {
       config = {};
     }
-    // 上游额外多出两个连接键：模拟「库内配置缺字段，Connect 实际有」
-    if (connectorName === 'mysql-orders-source') {
-      config = {
-        ...config,
-        'database.hostname': '10.0.0.11',
-        'table.include.list': 'dbz.orders',
-      };
-    }
-    return route.fulfill({ json: ro({ connectorName, config }) });
+    return route.fulfill({
+      json: ro({
+        connectorName,
+        config: { ...config, ...(remoteConnectorOverrides[connectorName] ?? {}) },
+      }),
+    });
   }
   if (path === '/dbz/dead-letter/page') return route.fulfill({ json: pageOf(deadLetters) });
   if (path === '/dbz/control-plane/status/refresh') {
@@ -1843,23 +1915,59 @@ try {
     )
     .catch(() => {});
 
-  // C. 连接器一致性检测：下游一致 → 结论正常；上游库内缺字段 → 异常并列出具体原因
+  // C. 连接器一致性检测：卡片的「检测」改走后端单条检测接口，判定与快照都由后端落库。
+  //    下游配置一致 → 结论正常且不带标记；上游两项配置不同 → 异常并列出差异键名。
+  const sinkDetectFrom = posted.length;
   await page.locator('.dbz-graph-node[data-node-key="4:301"] [data-node-action="check"]').click();
   await page.waitForSelector('[data-detect-dialog]', { timeout: 5000 }).catch(() => {});
+  const sinkDetectRequests = posted
+    .slice(sinkDetectFrom)
+    .filter(
+      (item) =>
+        item.method === 'POST' && item.path === '/dbz/control-plane/connector-config/detect',
+    );
+  check(
+    '下游卡片检测调用后端单条一致性检测接口并带节点类型与 ID',
+    sinkDetectRequests.length === 1 &&
+      sinkDetectRequests[0].body?.nodeType === 'sink' &&
+      String(sinkDetectRequests[0].body?.nodeId) === '301',
+    JSON.stringify(sinkDetectRequests.map((item) => item.body)),
+  );
   const okModal = page.locator('.ant-modal:has([data-detect-dialog])').last();
   const okText = (await okModal.innerText().catch(() => '')).replace(/\s+/g, ' ');
   check(
     '下游一致性检测弹出弹窗且结论为正常',
     okText.includes('正常') &&
       okText.includes('关键配置比对') &&
-      okText.includes('启停状态'),
+      okText.includes('启停状态') &&
+      okText.includes('检测标记'),
     okText.slice(0, 220),
   );
   await okModal.locator('.ant-modal-footer .ant-btn-primary').click();
   await okModal.waitFor({ state: 'hidden' }).catch(() => {});
+  check(
+    '后端判定一致后下游卡片不展示「不一致」标记',
+    (await page
+      .locator('.dbz-graph-node[data-node-key="4:301"] .dbz-graph-inconsistent-tag')
+      .count()) === 0,
+  );
 
+  const sourceDetectFrom = posted.length;
   await page.locator('.dbz-graph-node[data-node-key="3:201"] [data-node-action="check"]').click();
   await page.waitForSelector('[data-detect-dialog]', { timeout: 5000 }).catch(() => {});
+  const sourceDetectRequests = posted
+    .slice(sourceDetectFrom)
+    .filter(
+      (item) =>
+        item.method === 'POST' && item.path === '/dbz/control-plane/connector-config/detect',
+    );
+  check(
+    '上游卡片检测同样调用后端单条一致性检测接口',
+    sourceDetectRequests.length === 1 &&
+      sourceDetectRequests[0].body?.nodeType === 'source' &&
+      String(sourceDetectRequests[0].body?.nodeId) === '201',
+    JSON.stringify(sourceDetectRequests.map((item) => item.body)),
+  );
   const consistencyModal = page.locator('.ant-modal:has([data-detect-dialog])').last();
   await consistencyModal.waitFor({ state: 'visible' });
   const consistencyText = (await consistencyModal.innerText()).replace(/\s+/g, ' ');
@@ -1870,8 +1978,55 @@ try {
       consistencyText.includes('table.include.list'),
     consistencyText.slice(0, 240),
   );
+  const lastDetect = connectorDetectResults.at(-1);
+  check(
+    '后端返回差异键名并回写不一致标记与对比快照',
+    lastDetect?.nodeType === 'source' &&
+      lastDetect.inconsistent === true &&
+      lastDetect.changed === 2 &&
+      lastDetect.changedKeys.includes('database.hostname') &&
+      lastDetect.changedKeys.includes('table.include.list') &&
+      typeof lastDetect.inconsistentDetail === 'string',
+    JSON.stringify(lastDetect),
+  );
   await consistencyModal.locator('.ant-modal-footer .ant-btn-primary').click();
   await consistencyModal.waitFor({ state: 'hidden' });
+
+  check(
+    '检测后刷新数据：上游保留「不一致」标记，下游一致不带标记',
+    (await page
+      .locator('.dbz-graph-node[data-node-key="3:201"] .dbz-graph-inconsistent-tag')
+      .count()) === 1 &&
+      (await page
+        .locator('.dbz-graph-node[data-node-key="4:301"] .dbz-graph-inconsistent-tag')
+        .count()) === 0,
+  );
+  // 卡片检测写回的快照要能直接被对比弹窗读到，不必先跑整台 Connect 检测
+  await page.locator('.dbz-graph-node[data-node-key="3:201"] .dbz-graph-inconsistent-tag').click();
+  await page.waitForSelector('[data-diff-dialog]', { timeout: 5000 }).catch(() => {});
+  const cardDiffModal = page.locator('.ant-modal:has([data-diff-dialog])');
+  const cardDiffText = (await cardDiffModal.innerText().catch(() => '')).replace(/\s+/g, ' ');
+  check(
+    '卡片检测落库的快照可在对比弹窗逐项查看并双向同步',
+    cardDiffText.includes('database.hostname') &&
+      cardDiffText.includes('table.include.list') &&
+      cardDiffText.includes('同步方向') &&
+      (await cardDiffModal.locator('.dbz-diff-row-changed').count()) >= 2,
+    cardDiffText.slice(0, 240),
+  );
+  await cardDiffModal.locator('.ant-modal-close').click({ force: true });
+  await cardDiffModal.waitFor({ state: 'hidden' }).catch(() => {});
+  await page
+    .waitForFunction(
+      () =>
+        Array.from(document.querySelectorAll('.ant-modal-wrap')).every((element) => {
+          const style = window.getComputedStyle(element);
+          return style.display === 'none' || style.visibility === 'hidden';
+        }),
+      null,
+      { timeout: 5000 },
+    )
+    .catch(() => {});
 
   // 卡片上的重启：确认后请求要打到 Connect 的 restart 接口
   await page.locator('.dbz-graph-node[data-node-key="3:201"] [data-node-action="restart"]').click();

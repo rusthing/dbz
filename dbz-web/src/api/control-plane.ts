@@ -1,8 +1,8 @@
 /**
  * # 控制面画布接口
  *
- * 只有布局位置读写。节点本身仍由 broker / connect / source / sink 四套 CRUD 管理，
- * 这里不重复造节点接口。
+ * 画布布局位置读写、状态刷新、节点删除、重置位点与连接器配置对比/同步/检测。
+ * 节点本身仍由 broker / connect / source / sink 四套 CRUD 管理，这里不重复造节点接口。
  */
 
 import { apiDelete, apiGet, apiGetList, apiPost, apiPut } from './client';
@@ -10,6 +10,8 @@ import type {
   ControlPlaneNodeType,
   DbzConnectorConfigSyncInput,
   DbzConnectorConfigSyncVo,
+  DbzConnectorDetectInput,
+  DbzConnectorDetectVo,
   DbzControlPlaneEdgeBendUpsertInput,
   DbzControlPlaneEdgeBendVo,
   DbzControlPlaneLayoutUpsertInput,
@@ -107,4 +109,17 @@ export const controlPlaneApi = {
     input: DbzConnectorConfigSyncInput,
   ): Promise<DbzConnectorConfigSyncVo> =>
     apiPost<DbzConnectorConfigSyncVo>('/dbz/control-plane/connector-config/sync', input),
+
+  /**
+   * 检测单条上游 / 下游连接器的配置一致性
+   *
+   * 与整台 Connect 的 `detect` 判定同源，但只处理这一条记录：比对库内配置与
+   * Connect 实际配置，回写 `inconsistent` 与脱敏对比快照；远端不存在时置禁用。
+   * 返回的结论、差异项键名与最新标记供检测弹窗展示，调用方随后刷新列表即可
+   * 让卡片出现「不一致」标签并点开逐项对比。
+   */
+  detectConnectorConfig: (
+    input: DbzConnectorDetectInput,
+  ): Promise<DbzConnectorDetectVo> =>
+    apiPost<DbzConnectorDetectVo>('/dbz/control-plane/connector-config/detect', input),
 };
