@@ -736,6 +736,73 @@ await page.route('**/dbz/**', async (route) => {
     getRequests.push({ path, query: url.search, headers: request.headers() });
   }
 
+  // 集群导出：按 kafkaBrokerId 回一份备份结构（集群 → Connect → 连接器三层）。
+  // 前端只负责下载，脱敏由后端决定，这里照后端口径固定 included
+  if (path === '/dbz/backup/export') {
+    const brokerId = url.searchParams.get('kafkaBrokerId');
+    const broker = brokers.find((item) => String(item.id) === String(brokerId));
+    if (!broker) {
+      return route.fulfill({
+        json: { result: -1, msg: `未模拟的 Kafka 集群 ${brokerId}`, timestamp: Date.now() },
+      });
+    }
+    const brokerClusters = clusters.filter(
+      (item) => String(item.kafkaBrokerId) === String(broker.id),
+    );
+    const connectIds = new Set(brokerClusters.map((item) => String(item.id)));
+    const connectorVo = (item, direction) => ({
+      direction,
+      name: item.name,
+      connectorName: item.connectorName,
+      connectorConfig: item.connectorConfig,
+      remark: item.remark || null,
+      enabled: item.enabled !== false,
+      upstream:
+        direction === 'sink'
+          ? {
+              id: item.sourceConnectorId ? String(item.sourceConnectorId) : null,
+              name: '',
+              connectorName:
+                sources.find((entry) => String(entry.id) === String(item.sourceConnectorId))
+                  ?.connectorName ?? '',
+            }
+          : null,
+      sensitiveConfigKeys: [],
+    });
+    return route.fulfill({
+      json: ro({
+        format: 'dbz-cluster-backup',
+        version: 1,
+        exportedAt: '2026-11-10T00:00:00.000Z',
+        credentialMode: 'included',
+        broker: {
+          name: broker.name,
+          bootstrapServers: broker.bootstrapServers,
+          securityProtocol: broker.securityProtocol,
+          saslMechanism: broker.saslMechanism,
+          saslUsername: broker.saslUsername,
+          saslPassword: 'dbz-secret',
+          remark: broker.remark || null,
+          enabled: broker.enabled !== false,
+        },
+        connects: brokerClusters.map((cluster) => ({
+          name: cluster.name,
+          url: cluster.url,
+          remark: cluster.remark || null,
+          enabled: cluster.enabled !== false,
+          connectors: [
+            ...sources
+              .filter((item) => connectIds.has(String(item.kafkaConnectId)))
+              .map((item) => connectorVo(item, 'source')),
+            ...sinks
+              .filter((item) => connectIds.has(String(item.kafkaConnectId)))
+              .map((item) => connectorVo(item, 'sink')),
+          ],
+        })),
+      }),
+    });
+  }
+
   // 令牌失效：返回 401，前端应清会话并跳登录页
   if (failNext401 && path === '/dbz/control-plane/status/refresh') {
     failNext401 = false;
@@ -3029,6 +3096,74 @@ try {
   // 导入会写进夹具：恢复原始记录，后面的死信与列表用例继续按原数据断言
   sources.splice(0, sources.length, ...sourcesBeforeTransfer);
   sinks.splice(0, sinks.length, ...sinksBeforeTransfer);
+
+  // 顶栏「导出集群」：导出当前 tab 的集群，与卡片上的「备份」共用同一个确认弹窗
+  const exportChooser = page.locator('[data-cluster-export]');
+  check(
+    '顶栏有导出集群入口，当前集群可导出',
+    (await exportChooser.count()) === 1 && (await exportChooser.isEnabled()),
+  );
+  const exportGetBefore = getRequests.length;
+  await exportChooser.click();
+  await page.waitForSelector('[data-backup-dialog]', { timeout: 15000 });
+  const clusterExportDialog = page.locator('[data-backup-dialog]');
+  const clusterExportTitle = await visibleModal().last().locator('.ant-modal-title').innerText();
+  const clusterExportText = (await clusterExportDialog.innerText()).replace(/\s+/g, ' ');
+  // 前面的用例会改写夹具（改过集群名、加过连接器），期望值从弹窗文本反推，
+  // 只验证「弹窗计数 == 导出文件内容」这一条口径
+  const exportedClusterName = /「(.+)」/.exec(clusterExportTitle)?.[1] ?? '';
+  const exportedConnectCount = Number(/(\d+) 台 Kafka Connect/.exec(clusterExportText)?.[1] ?? -1);
+  const exportedConnectorCount = Number(/(\d+) 个连接器/.exec(clusterExportText)?.[1] ?? -1);
+  check(
+    '导出弹窗按当前 tab 的集群给出 Connect 与连接器数量',
+    /^导出 Kafka 集群「.+」$/.test(clusterExportTitle) &&
+      exportedConnectCount > 0 &&
+      exportedConnectorCount > 0,
+    `${clusterExportTitle} / ${clusterExportText.slice(0, 160)}`,
+  );
+  const [clusterExportDownload] = await Promise.all([
+    page.waitForEvent('download'),
+    visibleModal().last().locator('.ant-modal-footer .ant-btn-primary').click(),
+  ]);
+  const clusterExportPath = join(SHOTS, 'cluster-export.json');
+  await clusterExportDownload.saveAs(clusterExportPath);
+  const clusterExportFile = JSON.parse(readFileSync(clusterExportPath, 'utf8'));
+  const exportedConnectorTotal = clusterExportFile.connects.reduce(
+    (sum, item) => sum + item.connectors.length,
+    0,
+  );
+  check(
+    '导出文件是集群 → Connect → 连接器三层结构，与弹窗计数一致',
+    clusterExportFile.format === 'dbz-cluster-backup' &&
+      clusterExportFile.broker.name === exportedClusterName &&
+      clusterExportFile.connects.length === exportedConnectCount &&
+      exportedConnectorTotal === exportedConnectorCount &&
+      clusterExportFile.connects.every((item) => Array.isArray(item.connectors)),
+    JSON.stringify({
+      format: clusterExportFile.format,
+      broker: clusterExportFile.broker?.name,
+      dialogs: [exportedConnectCount, exportedConnectorCount],
+      file: [clusterExportFile.connects?.length, exportedConnectorTotal],
+    }),
+  );
+  const clusterExportGet = getRequests
+    .slice(exportGetBefore)
+    .find((item) => item.path === '/dbz/backup/export');
+  const expectedFileName = `dbz-cluster-${exportedClusterName.replace(
+    /[\\/:*?"<>|\s]+/g,
+    '_',
+  )}-`;
+  const exportedFileName = await clusterExportDownload.suggestedFilename();
+  check(
+    '导出按 kafkaBrokerId 走后端，文件名带集群名且文件含凭据',
+    clusterExportGet?.query.includes('kafkaBrokerId=401') &&
+      /^dbz-cluster-.+-\d{8}-\d{6}\.json$/.test(exportedFileName) &&
+      exportedFileName.startsWith(expectedFileName) &&
+      clusterExportFile.credentialMode === 'included' &&
+      clusterExportFile.broker.saslPassword === 'dbz-secret',
+    `${clusterExportGet?.query} / ${exportedFileName}`,
+  );
+  await waitNoVisibleModal();
 
   // 顶栏「导入集群」：目标环境还没有该集群时，整颗集群连 Connect 与连接器一起导入
   const clusterImportPath = join(SHOTS, 'cluster-import.json');

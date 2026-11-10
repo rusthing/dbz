@@ -423,11 +423,11 @@ function NodeActions({
     });
   }
 
-  // Kafka 集群：备份/恢复按整个集群处理，包含其下全部 Connect 与连接器
+  // Kafka 集群：导出/恢复按整个集群处理，包含其下全部 Connect 与连接器
   if (node.kind === 'broker') {
     rightItems.push({
       action: 'backup-cluster',
-      title: '备份整个 Kafka 集群（含 Connect 与连接器，文件含 sasl_password 等敏感信息）',
+      title: '导出整个 Kafka 集群（含 Connect 与连接器，文件含 sasl_password 等敏感信息）',
       icon: <DownloadOutlined />,
     });
     rightItems.push({

@@ -15,12 +15,15 @@
  * 节点位置按「节点类型 + 记录 ID」存 `dbz_control_plane_layout`，拖动松手即保存，
  * 多人打开同一套连接器看到一致布局。
  *
- * 顶层集群有两个入口：顶栏「新增 Kafka 集群」建一条空记录，「导入集群」按备份 JSON
- * 一次建出集群、Connect 与连接器。导入和集群卡片上的「恢复」是同一套预览/执行流程
- * （都走 `POST /dbz/backup/restore`），只有入口与措辞不同；导入成功后自动切到新集群 tab。
+ * 顶层集群有三个入口：顶栏「新增 Kafka 集群」建一条空记录，「导出集群」把当前 tab
+ * 的集群导出成备份 JSON，「导入集群」按备份 JSON 一次建出集群、Connect 与连接器。
+ * 导出与集群卡片上的「备份」共用同一个确认弹窗（都走 `GET /dbz/backup/export`）；
+ * 导入和集群卡片上的「恢复」是同一套预览/执行流程（都走 `POST /dbz/backup/restore`），
+ * 只有入口与措辞不同；导入成功后自动切到新集群 tab。
  */
 
 import {
+  DownloadOutlined,
   DownOutlined,
   PlusOutlined,
   ReloadOutlined,
@@ -744,8 +747,13 @@ export default function ControlPanelPage() {
   const importFileRef = useRef<HTMLInputElement>(null);
   const pendingImportTarget = useRef<CanvasNode | null>(null);
 
-  /** 集群备份：确认导出整个 Kafka 集群 */
-  const [backupTarget, setBackupTarget] = useState<CanvasNode | null>(null);
+  /**
+   * 集群导出：确认后整颗集群导出成备份 JSON
+   *
+   * 存 broker 记录而不是画布节点，顶栏「导出集群」（当前 tab）与集群卡片上的
+   * 「备份」才能共用同一个弹窗 —— 节点只用于画布定位，导出只关心集群本身。
+   */
+  const [backupTarget, setBackupTarget] = useState<DbzKafkaBrokerVo | null>(null);
   const [backupRunning, setBackupRunning] = useState(false);
 
   /** 集群恢复 / 导入：文件、策略与预览/执行结果 */
@@ -898,6 +906,17 @@ export default function ControlPanelPage() {
     }
     return brokerTabs[0]?.id ?? null;
   }, [activeBrokerKey, brokerTabs]);
+
+  /**
+   * 当前 tab 的集群记录：顶栏「导出集群」的目标
+   *
+   * 导出按集群走，所以不看画布节点，直接在 broker 列表里按当前 tab 取，集群被删掉
+   * 或还没加载时为空，按钮随之禁用。
+   */
+  const currentBroker = useMemo(
+    () => state.data.brokers.find((item) => item.id === resolvedBrokerId) ?? null,
+    [state.data.brokers, resolvedBrokerId],
+  );
 
   /** 画布只拿当前集群的节点，切 tab 不串数据 */
   const scopeNodes = useMemo(
@@ -1782,7 +1801,8 @@ export default function ControlPanelPage() {
         }
         break;
       case 'backup-cluster':
-        setBackupTarget(node);
+        // 与顶栏「导出集群」共用同一个确认弹窗，只是目标从节点里取
+        setBackupTarget(node.record as DbzKafkaBrokerVo);
         break;
       case 'restore-cluster':
         // 恢复以文件里的集群为准，卡片只负责触发文件选择
@@ -2194,13 +2214,13 @@ export default function ControlPanelPage() {
    * # 导出整个 Kafka 集群
    *
    * 备份由后端按库内记录生成，前端只负责下载：`sasl_password` 照常导出，界面上必须
-   * 明确提示文件含敏感信息。
+   * 明确提示文件含敏感信息。顶栏「导出集群」与集群卡片上的「备份」都走这里。
    */
   const executeBackupCluster = async () => {
     if (!backupTarget) {
       return;
     }
-    const broker = backupTarget.record as DbzKafkaBrokerVo;
+    const broker = backupTarget;
     setBackupRunning(true);
     try {
       const file = await backupApi.exportCluster(broker.id);
@@ -3065,6 +3085,23 @@ export default function ControlPanelPage() {
             新增 Kafka 集群
           </Button>
           <Button
+            icon={<DownloadOutlined />}
+            title={
+              currentBroker
+                ? `导出当前集群「${currentBroker.name}」（含 Connect 与连接器，文件含 sasl_password 等敏感信息）`
+                : '先选中一个 Kafka 集群再导出'
+            }
+            data-cluster-export
+            disabled={!currentBroker}
+            onClick={() => {
+              if (currentBroker) {
+                setBackupTarget(currentBroker);
+              }
+            }}
+          >
+            导出集群
+          </Button>
+          <Button
             icon={<UploadOutlined />}
             title="从备份 JSON 导入整颗集群（含 Connect 与连接器），目标环境还没有该集群时用它"
             data-cluster-import
@@ -3522,10 +3559,10 @@ export default function ControlPanelPage() {
         )}
       </Modal>
 
-      {/* Kafka 集群备份：确认后由后端导出，前端只负责下载 */}
+      {/* Kafka 集群导出：确认后由后端生成备份，前端只负责下载 */}
       <Modal
         open={backupTarget !== null}
-        title={backupTarget ? `备份 Kafka 集群「${backupTarget.name}」` : '备份 Kafka 集群'}
+        title={backupTarget ? `导出 Kafka 集群「${backupTarget.name}」` : '导出 Kafka 集群'}
         onCancel={() => {
           if (!backupRunning) {
             setBackupTarget(null);
