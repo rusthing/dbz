@@ -64,8 +64,9 @@ async fn setup(
     setup_web_server(app_config.web.clone(), port, old_pid, changed).await?;
 
     // 死信由 Kafka Connect 的 DLQ 承载，坏记录的重试交给 Connect；dbz 侧的 DLQ
-    // 增量同步挂在 jobx 健康检查计划上（见 utils::dbz_config_utils），不再单独
-    // spawn 后台 worker —— 写库类周期任务统一由 jobx 调度，避免多副本重复投递。
+    // 增量同步是独立的 jobx 死信同步计划（见 utils::dbz_config_utils 的
+    // DeadLetterSyncHandler），不再挂在健康检查里、也不再单独 spawn 后台 worker ——
+    // 写库类周期任务统一由 jobx 调度，避免多副本重复投递。
     setup_dbz_config(app_config.dbz.clone(), changed).await?;
 
     Ok(())

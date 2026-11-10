@@ -74,6 +74,15 @@ timeout = "800ms"
 #retention-days = 30               # 页面索引保留天数
 #max-per-connector = 50000
 
+# DLQ 增量同步计划（对应 `[dbz.dead-letter.sync-job]`）：独立 jobx 计划，与健康检查
+# 解耦，可单独调频率与执行器。默认值：计划名「Debezium死信同步」、每 60s 一次、
+# 只处理最新消息、历史保留 7 天。要改频率，在此段覆盖对应字段即可。
+#[dbz.dead-letter.sync-job]
+#executor-code = "dbz.dead-letter-sync"
+#interval = "60s"                  # 健康检查同频；要更慢只改这一处
+#stream-max-len = 100
+#task-expire = "168h"              # 同步历史保留 7 天
+
 [micro-svc.consul]
 base-url = "http://consul:8500"
 [micro-svc.consul.registry]

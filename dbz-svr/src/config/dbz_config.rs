@@ -120,6 +120,9 @@ pub struct DeadLetterConfig {
     /// 单个连接器在页面索引里最多保留多少条
     #[serde(default = "dead_letter_max_per_connector_default")]
     pub max_per_connector: u32,
+    /// DLQ 增量同步计划：独立 jobx 计划，与健康检查解耦，可单独调频率与执行器
+    #[serde(default)]
+    pub sync_job: DeadLetterSyncJobConfig,
 }
 
 impl Default for DeadLetterConfig {
@@ -137,8 +140,82 @@ impl Default for DeadLetterConfig {
             sync_batch_size: dead_letter_sync_batch_size_default(),
             retention_days: dead_letter_retention_days_default(),
             max_per_connector: dead_letter_max_per_connector_default(),
+            sync_job: DeadLetterSyncJobConfig::default(),
         }
     }
+}
+
+/// # DLQ 增量同步计划配置
+///
+/// 对应 `[dbz.dead-letter.sync-job]`。DLQ 同步是写库类周期任务，按 dbz 周期任务约定
+/// 必须走独立 jobx 计划（不再像早期那样挂在健康检查计划里顺带跑）：它的频率可与健康
+/// 检查分开调，健康检查是否成功也不影响死信同步，二者语义各自干净。
+#[derive(Debug, Serialize, Deserialize, Clone)]
+#[serde(rename_all = "kebab-case")]
+pub struct DeadLetterSyncJobConfig {
+    /// 任务执行器的编码
+    #[serde(default = "dead_letter_sync_executor_code_default")]
+    pub executor_code: String,
+    /// 任务计划配置
+    #[serde(default = "dead_letter_sync_job_default")]
+    pub job: JobxJobConfig,
+    /// 任务执行器配置
+    #[serde(default = "dead_letter_sync_executor_default")]
+    pub executor: JobxExecutorConfig,
+}
+
+/// 默认 DLQ 同步计划的执行器编码
+const DEAD_LETTER_SYNC_EXECUTOR_CODE_DEFAULT: &str = "dbz.dead-letter-sync";
+/// 默认 DLQ 同步计划的名称
+const DEAD_LETTER_SYNC_JOB_NAME_DEFAULT: &str = "Debezium死信同步";
+/// 默认 DLQ 同步计划的间隔时间
+///
+/// 与健康检查同频（60s）以保持既有行为；现在两者解耦，需要更慢只需改这一个配置。
+const DEAD_LETTER_SYNC_INTERVAL_DEFAULT: Duration = Duration::from_secs(60);
+/// 默认 DLQ 同步计划的「任务保留时长」
+///
+/// 与健康检查一致：同步历史只用来排查「最近有没有同步过 / 出没出过错」，7 天足够。
+const DEAD_LETTER_SYNC_TASK_EXPIRE_DEFAULT: Duration = Duration::from_hours(24 * 7);
+/// 默认 DLQ 同步计划的 Stream 长度上限
+///
+/// 同步计划同样只关心「当前立刻跑一次」，历史堆积无意义，压到 100 让故障重启后的
+/// 积压最小化（与健康检查一致，100 也是 MAXLEN 的实际地板）。
+const DEAD_LETTER_SYNC_STREAM_MAX_LEN_DEFAULT: u32 = 100;
+/// 默认 DLQ 同步计划的执行器一次接收最大消息数
+const DEAD_LETTER_SYNC_MAX_MESSAGES_DEFAULT: usize = 100000;
+/// 默认 DLQ 同步计划的执行器是否只处理最新消息
+const DEAD_LETTER_SYNC_LAST_ONLY_DEFAULT: bool = true;
+
+impl Default for DeadLetterSyncJobConfig {
+    fn default() -> Self {
+        Self {
+            executor_code: dead_letter_sync_executor_code_default(),
+            job: dead_letter_sync_job_default(),
+            executor: dead_letter_sync_executor_default(),
+        }
+    }
+}
+
+fn dead_letter_sync_job_default() -> JobxJobConfig {
+    JobxJobConfig::builder()
+        .name(DEAD_LETTER_SYNC_JOB_NAME_DEFAULT.to_string())
+        .executor_code(dead_letter_sync_executor_code_default())
+        .interval_duration(Some(DEAD_LETTER_SYNC_INTERVAL_DEFAULT))
+        .stream_max_len(Some(DEAD_LETTER_SYNC_STREAM_MAX_LEN_DEFAULT))
+        .task_expire_duration(Some(DEAD_LETTER_SYNC_TASK_EXPIRE_DEFAULT))
+        .build()
+}
+
+fn dead_letter_sync_executor_default() -> JobxExecutorConfig {
+    JobxExecutorConfig::builder()
+        .executor_code(dead_letter_sync_executor_code_default())
+        .max_messages(DEAD_LETTER_SYNC_MAX_MESSAGES_DEFAULT)
+        .last_only(DEAD_LETTER_SYNC_LAST_ONLY_DEFAULT)
+        .build()
+}
+
+fn dead_letter_sync_executor_code_default() -> String {
+    DEAD_LETTER_SYNC_EXECUTOR_CODE_DEFAULT.to_string()
 }
 
 fn dead_letter_enabled_default() -> bool {
