@@ -5,7 +5,7 @@ use strum::{AsRefStr, Display, EnumString};
 ///
 /// 由 DLQ 记录头 `__connect.errors.exception.class.name` 与异常消息推导，**只用于
 /// 页面筛选、一句话说明与「能否改报文」白名单**，不参与任何重试决策 —— 重试由
-/// Kafka Connect 的 `errors.retry.*` 与连接器自己的 `max.retries` 决定。
+/// Kafka Connect 的 `errors.retry.*` 与连接器自己的请求级重试参数决定。
 ///
 /// - `Deterministic`：数据/格式/配置类异常（DataException、序列化失败等），重投
 ///   结果通常不变；

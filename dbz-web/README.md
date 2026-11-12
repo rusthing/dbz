@@ -433,7 +433,7 @@ dbz 的后台 worker 按 `1s → 5s → 30s → 2m → 10m` 退避重投、10 �
 
 ```
 下游接口返回非 2xx / 记录转换失败
-  → Kafka Connect 按 errors.retry.* 与 max.retries 重试
+  → Kafka Connect 按 errors.retry.* 与连接器的请求级重试参数重试
   → 仍失败：原始记录 + __connect.errors.* 头写进 DLQ topic，正常提交偏移
   → dbz（jobx 健康检查计划 / 页面「同步 DLQ」）增量拉取，按四列坐标幂等落库
   → 死信页查询、改报文、重投、废弃、标记已处理
@@ -445,7 +445,9 @@ dbz 的后台 worker 按 `1s → 5s → 30s → 2m → 10m` 退避重投、10 �
   `errors.deadletterqueue.topic.replication.factor`、
   `errors.deadletterqueue.context.headers.enable=true`、
   `errors.retry.timeout`、`errors.retry.delay.max.ms`、`errors.log.*`；
-  HTTP Sink 另外补 `max.retries` / `retry.backoff.ms`。上游（source）连接器不注入
+  HTTP Sink 另外补请求级重试参数，键名按实现区分：rebue 2.x 用
+  `http.retry.max` / `http.retry.backoff.ms`，Confluent 用 `max.retries` / `retry.backoff.ms`
+  （写错不会报错，只会变成一条 unused 告警）。上游（source）连接器不注入
   —— Connect 的 DLQ 只适用于 sink。
 - **事实来源**：`dbz_dead_letter` 只是页面索引 + 人工处置结论（状态、备注、处理人），
   唯一键是 `(connector_id, topic, partition, offset)` —— 带上连接器是因为同一源 topic
@@ -488,8 +490,8 @@ dbz 的后台 worker 按 `1s → 5s → 30s → 2m → 10m` 退避重投、10 �
 | `replication-factor` | `3` | Connect 自动建 DLQ topic 的副本数 |
 | `retry-timeout-ms` | `300000` | `errors.retry.timeout` |
 | `retry-delay-max-ms` | `30000` | `errors.retry.delay.max.ms` |
-| `http-max-retries` | `10` | HTTP Sink 的 `max.retries` |
-| `http-retry-backoff-ms` | `3000` | HTTP Sink 的 `retry.backoff.ms` |
+| `http-max-retries` | `10` | HTTP Sink 的重试次数（rebue `http.retry.max` / Confluent `max.retries`） |
+| `http-retry-backoff-ms` | `3000` | HTTP Sink 的首次退避（rebue `http.retry.backoff.ms`） |
 | `log-enable` / `log-include-messages` | `true` / `false` | `errors.log.*` |
 | `sync-batch-size` | `200` | 每轮每分区最多同步条数 |
 | `retention-days` | `30` | 页面索引保留天数（DLQ topic 由 Kafka retention 管） |

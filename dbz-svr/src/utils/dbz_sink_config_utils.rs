@@ -74,6 +74,23 @@ impl ConnectorClass {
     pub fn has_known_http_keys(self) -> bool {
         matches!(self, Self::RebueHttpSink | Self::ConfluentHttpSink)
     }
+
+    /// # 这一类的请求级重试参数键名
+    ///
+    /// 两家实现的键名不同，而且都**只认自己的**：写错了不会报错，只会变成一条
+    /// unused 告警，页面上的重试配置看上去生效、实际没人读。
+    ///
+    /// * rebue 2.x：`http.retry.max` / `http.retry.backoff.ms`
+    /// * Confluent：`max.retries` / `retry.backoff.ms`
+    ///
+    /// 认不出的实现返回 `None`：宁可不写，也不写一份假配置。
+    pub fn retry_keys(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            Self::RebueHttpSink => Some(("http.retry.max", "http.retry.backoff.ms")),
+            Self::ConfluentHttpSink => Some(("max.retries", "retry.backoff.ms")),
+            Self::OtherHttpSink | Self::JdbcSink | Self::Unknown => None,
+        }
+    }
 }
 
 /// # 校验下游连接器配置里的必填项

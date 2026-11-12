@@ -99,10 +99,10 @@ pub struct DeadLetterConfig {
     /// `errors.retry.delay.max.ms`：框架层重试的最大退避间隔（毫秒）
     #[serde(default = "dead_letter_retry_delay_max_ms_default")]
     pub retry_delay_max_ms: u64,
-    /// `max.retries`：HTTP Sink 自身对失败请求的重试次数
+    /// 请求级重试次数：rebue 实现写 `http.retry.max`，Confluent 实现写 `max.retries`
     #[serde(default = "dead_letter_http_max_retries_default")]
     pub http_max_retries: u32,
-    /// `retry.backoff.ms`：HTTP Sink 自身重试的初始退避（毫秒）
+    /// 请求级首次退避：rebue 实现写 `http.retry.backoff.ms`，Confluent 写 `retry.backoff.ms`
     #[serde(default = "dead_letter_http_retry_backoff_ms_default")]
     pub http_retry_backoff_ms: u64,
     /// `errors.log.enable`：把错误上下文写进 Connect 日志

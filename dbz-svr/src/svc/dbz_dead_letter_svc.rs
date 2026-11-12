@@ -25,7 +25,7 @@
 //!   dbz 写死信。脚本漏报、崩溃、网络断都会静默丢数据，而且 Kafka 里没有原始报文。
 //!   **新机制的前提是下游把业务失败表达成非 2xx**，否则 Connect 层看不到失败。
 //! - 不再有自建重试队列与退避 worker：Connect 的 `errors.retry.timeout`、
-//!   `errors.retry.delay.max.ms` 与 HTTP Sink 的 `max.retries` / `retry.backoff.ms`
+//!   `errors.retry.delay.max.ms` 与 HTTP Sink 自己的请求级重试参数（按实现区分键名）
 //!   已经覆盖，dbz 再投一遍只会绕过框架、且无法保证顺序与幂等。
 //! - 不再按 `(connector_type, connector_id, topic, recordKey)` 合并失败：DLQ 里
 //!   每条 Kafka 记录都是独立事件，唯一键改成

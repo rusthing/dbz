@@ -64,7 +64,8 @@ pub const HDR_CONNECTOR_NAME: &str = "connector.name";
 ///
 /// 这些 key 由控制面统一决定并**强制覆盖**：只要有一条连接器没开 DLQ，
 /// 页面就会少一类坏记录，退回到「静默丢数据」。用户手写的其它 key 一个不丢。
-/// HTTP Sink 额外补 `max.retries` / `retry.backoff.ms`，把请求级重试也交给 Connect。
+/// HTTP Sink 额外补请求级重试参数，键名按实现区分（见
+/// [`ConnectorClass::retry_keys`]）：只有键名对得上，页面上的重试配置才是真的生效。
 ///
 /// ## 返回值
 /// * `Ok(String)` - 补齐后的配置（pretty JSON）
@@ -104,13 +105,15 @@ pub fn ensure_sink_dlq_config(
         json!(cfg.log_include_messages.to_string()),
     );
 
-    if ConnectorClass::detect(&object).is_http_sink() {
+    // 重试参数的键名因实现而异，写错不会报错、只会变成 unused 告警 ——
+    // 页面上看着生效、实际没人读，比不写更坏
+    if let Some((max_retries_key, backoff_key)) = ConnectorClass::detect(&object).retry_keys() {
         object.insert(
-            "max.retries".into(),
+            max_retries_key.into(),
             json!(cfg.http_max_retries.to_string()),
         );
         object.insert(
-            "retry.backoff.ms".into(),
+            backoff_key.into(),
             json!(cfg.http_retry_backoff_ms.to_string()),
         );
     }
@@ -288,6 +291,17 @@ mod tests {
     }
 
     #[test]
+    fn rebue_http_sink_gets_its_own_retry_keys() {
+        let source = r#"{"connector.class":"rebue.kafka.httpsink.HttpSinkConnector","topics":"dbz.orders","http.url":"http://magic/sync"}"#;
+        let result = ensure_sink_dlq_config(source, &config()).unwrap();
+        let value: Value = serde_json::from_str(&result).unwrap();
+        assert_eq!(value["http.retry.max"], "10");
+        assert_eq!(value["http.retry.backoff.ms"], "3000");
+        // Confluent 的键名不能被塞进 rebue 实现：那只会产生 unused 告警
+        assert!(value.get("max.retries").is_none());
+    }
+
+    #[test]
     fn overrides_user_supplied_tolerance_and_topic() {
         let source = r#"{"connector.class":"io.confluent.connect.jdbc.JdbcSinkConnector","errors.tolerance":"none","errors.deadletterqueue.topic.name":"other-dlq"}"#;
         let result = ensure_sink_dlq_config(source, &config()).unwrap();
@@ -296,6 +310,7 @@ mod tests {
         assert_eq!(value[KEY_DLQ_TOPIC], "dbz-connect-dlq");
         // 非 HTTP Sink 不写 HTTP Sink 专有的重试参数
         assert!(value.get("max.retries").is_none());
+        assert!(value.get("http.retry.max").is_none());
     }
 
     #[test]
