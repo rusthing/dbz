@@ -429,7 +429,13 @@ dbz 的后台 worker 按 `1s → 5s → 30s → 2m → 10m` 退避重投、10 �
    缺陷，而是失败没有被表达出来。
 
 `errors.tolerance=all` 会跳过错误继续消费，因此 DLQ 与 context headers 必须同时开，
-否则同样等于丢数据。
+否则同样等于丢数据。但它只兜**框架层**错误（转换、反序列化）：KIP-610 把 `put()` 里的
+记录级失败交给 task 自己上报后，自研 HTTP Sink（`rebue.kafka.*`）还得让
+`behavior.on.error=report`，坏记录才会逐条进 DLQ、任务继续、offset 正常提交。
+`behavior.on.error=fail`（旧版 jar 的默认值）会把异常抛回 `put()`，一条 4xx 就能让
+task 退出、死信为空、offset 不提交，重启后反复重放同一条。插件默认值现已改成
+`report`；库内老配置显式写着 `fail`、或 worker 还跑旧 jar 时，连接器编辑页会给出
+「容错配置提示」（只提示、不阻断保存），显式改成 `report` 即可。
 
 ### 现在的链路
 

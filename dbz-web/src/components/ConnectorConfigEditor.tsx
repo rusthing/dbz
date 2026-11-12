@@ -109,8 +109,10 @@ interface Profile {
   numberKeys: Set<string>;
   /** 从当前配置认出方言，用来隐藏另一家的专属项；认不出（自定义类）时全部展示 */
   dialect?: (config: Record<string, unknown>) => Dialect | null;
-  /** 必填项之外的提醒：取值组合不对时给一句人话 */
+  /** 必填项之外的提醒：取值组合不对时给一句人话；会挡住保存 */
   warnings?: (config: Record<string, unknown>) => string[];
+  /** 同样取值组合，但只展示不阻断保存：用户可能有理由坚持这个配置 */
+  hints?: (config: Record<string, unknown>) => string[];
 }
 
 /** 序列化那 4 项在上下游都一样，抽出来复用 */
@@ -461,7 +463,7 @@ const SINK_GROUPS: FieldGroup[] = [
         label: '记录级失败',
         kind: 'select',
         options: ['fail', 'report', 'skip'],
-        help: 'fail 抛给框架（errors.tolerance=all 时进 DLQ）；report 逐条进 DLQ 且任务继续；skip 直接丢弃。',
+        help: 'fail 抛给框架（一条 4xx 会杀掉任务，errors.tolerance=all 不兜 put() 异常）；report 逐条进 DLQ 且任务继续（新版插件默认）；skip 直接丢弃。',
       },
       {
         key: 'http.batch.enabled',
@@ -660,14 +662,26 @@ const HTTP_GROUPS: FieldGroup[] = [
   },
   {
     title: '容错（Kafka Connect DLQ）',
-    desc: '以下各项在部署时由 dbz 按 [dbz.dead-letter] 强制下发，手改不会生效。',
+    desc: 'errors.* 在部署时由 dbz 按 [dbz.dead-letter] 强制下发，手改不会生效；behavior.on.error 是插件自己的键，不受强制下发影响，要在这里显式设置。',
     fields: [
+      {
+        key: 'behavior.on.error',
+        label: '记录级失败',
+        kind: 'select',
+        options: ['report', 'fail', 'skip'],
+        optionHints: {
+          report: '坏记录逐条进 DLQ，任务继续（新版插件默认）',
+          fail: '抛给框架：4xx 会杀掉任务，别和 all 搭着用',
+          skip: '直接丢弃，不进 DLQ',
+        },
+        help: '不填走插件默认值：新版 report、旧版 fail。集群里若还混跑旧 jar，建议显式写 report，避免换版前后行为不一致。',
+      },
       {
         key: 'errors.tolerance',
         label: '错误容忍',
         kind: 'select',
         options: ['none', 'all'],
-        help: '固定为 all：一条坏消息不能停掉整个任务；必须配合死信 topic，否则等于丢数据。',
+        help: '固定为 all：框架层的一条坏消息不能停掉整个任务；但 KIP-610 之后它不兜插件 put() 抛出的异常，那条路径由 behavior.on.error 决定。',
       },
       {
         key: 'errors.deadletterqueue.topic.name',
@@ -729,6 +743,37 @@ function httpWarnings(config: Record<string, unknown>): string[] {
     warnings.push('behavior.on.error=skip 会直接丢弃失败记录，且不会进入死信队列');
   }
   return warnings;
+}
+
+/**
+ * # HTTP Sink 的容错组合提示（只展示，不阻断保存）
+ *
+ * `errors.tolerance=all` 由 dbz 部署时强制下发，表单里没写也是 all。KIP-610 把记录级
+ * 错误的容错交给 task 自己上报后，Connect 不再用它兜 `put()` 抛出的异常 —— 于是
+ * `behavior.on.error=fail` 的实际表现是：一条 4xx 杀掉 task、DLQ 为空、offset 不提交，
+ * 重启后反复重放同一条坏记录。这个组合从配置上看完全「正常」，极难自查。
+ *
+ * 插件默认值已改成 `report`，但库内老配置显式写着 `fail`、或者 worker 还跑旧 jar
+ * （默认 fail）时仍会踩到，所以显式 `fail` 与「未填」两种情况都提示。
+ * 不放进 `warnings`：那是保存时的强校验，用户可能有理由坚持 `fail`。
+ */
+function httpHints(config: Record<string, unknown>): string[] {
+  const tolerance = toText(config['errors.tolerance']).trim();
+  if (tolerance !== '' && tolerance !== 'all') {
+    return [];
+  }
+  const behavior = toText(config['behavior.on.error']).trim();
+  if (behavior === 'fail') {
+    return [
+      'errors.tolerance=all + behavior.on.error=fail：Connect 不会用 errors.tolerance 兜住 put() 抛出的异常，一条 4xx 会让任务退出、DLQ 为空且 offset 不提交，坏记录每轮重启都会重放；改成 report 让坏记录逐条进死信',
+    ];
+  }
+  if (behavior === '') {
+    return [
+      '没写 behavior.on.error：新版插件默认 report（坏记录逐条进 DLQ），旧版 jar 默认 fail（会杀任务）；建议显式写 report',
+    ];
+  }
+  return [];
 }
 
 const SINK_TEMPLATES: Template[] = [
@@ -815,6 +860,7 @@ function profileFor(kind: ConnectorKind, config: Record<string, unknown> | null)
     templates: HTTP_TEMPLATES,
     numberKeys: base.numberKeys,
     warnings: httpWarnings,
+    hints: httpHints,
   };
 }
 
@@ -910,6 +956,20 @@ export function checkConnectorConfig(kind: ConnectorKind, text: string): string 
 
   const warnings = profile.warnings?.(parsed) ?? [];
   return warnings.length > 0 ? warnings.join('；') : null;
+}
+
+/**
+ * # 非阻断的运行前提提示
+ *
+ * 与 {@link checkConnectorConfig} 分开：后者返回的字符串会被表单校验当成错误、直接
+ * 挡住保存；这里只是把「这么配会出什么事」讲清楚，用户仍可以坚持自己的选择。
+ * 单独导出也便于冒烟直接复核规则，不必为了看一句提示去开弹窗、点下拉。
+ */
+export function connectorConfigHints(
+  kind: ConnectorKind,
+  config: Record<string, unknown>,
+): string[] {
+  return profileFor(kind, config).hints?.(config) ?? [];
 }
 
 /** 把 JSON 里的值转成输入框能显示的字符串 */
@@ -1038,6 +1098,10 @@ export default function ConnectorConfigEditor({
   }, [parsed, visibleGroups]);
 
   const warnings = useMemo(() => (parsed ? (profile.warnings?.(parsed) ?? []) : []), [parsed, profile]);
+  const hints = useMemo(
+    () => (parsed ? connectorConfigHints(kind, parsed) : []),
+    [kind, parsed],
+  );
 
   const renderField = (field: FieldSpec) => {
     const current = toText(parsed?.[field.key]);
@@ -1215,6 +1279,14 @@ export default function ConnectorConfigEditor({
               showIcon
               message="配置前后矛盾"
               description={warnings.join('；')}
+            />
+          )}
+          {hints.length > 0 && (
+            <Alert
+              type="info"
+              showIcon
+              message="容错配置提示"
+              description={hints.join('；')}
             />
           )}
           {visibleGroups.map((group) => {

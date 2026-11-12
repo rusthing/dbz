@@ -1869,6 +1869,40 @@ try {
     JSON.stringify(addSinkRequest?.body),
   );
 
+  // HTTP Sink 的容错组合提示：errors.tolerance=all + behavior.on.error=fail 会让一条
+  // 4xx 杀掉任务，必须给一句人话；但提示不能挡住保存（有人可能有理由坚持 fail）。
+  const httpSinkHints = await page.evaluate(async () => {
+    const mod = await import('/src/components/ConnectorConfigEditor.tsx');
+    const base = {
+      'connector.class': 'rebue.kafka.httpsink.HttpSinkConnector',
+      topics: 'orders.orders.t_order',
+      'http.url': 'http://magic:9999/sync/orders',
+      'errors.tolerance': 'all',
+    };
+    const hints = (extra) => mod.connectorConfigHints('sink', { ...base, ...extra });
+    return {
+      fail: hints({ 'behavior.on.error': 'fail' }),
+      report: hints({ 'behavior.on.error': 'report' }),
+      absent: hints({}),
+      toleranceNone: hints({ 'errors.tolerance': 'none', 'behavior.on.error': 'fail' }),
+      failSave: mod.checkConnectorConfig(
+        'sink',
+        JSON.stringify({ ...base, 'behavior.on.error': 'fail' }),
+      ),
+    };
+  });
+  check(
+    'HTTP Sink：all+fail 给容错提示，report/none 不给，且提示不阻断保存',
+    httpSinkHints.fail.length === 1 &&
+      httpSinkHints.fail[0].includes('errors.tolerance=all') &&
+      httpSinkHints.fail[0].includes('report') &&
+      httpSinkHints.report.length === 0 &&
+      httpSinkHints.absent.length === 1 &&
+      httpSinkHints.toleranceNone.length === 0 &&
+      httpSinkHints.failSave === null,
+    JSON.stringify(httpSinkHints),
+  );
+
   // 属性检查器随选中节点切换：库内配置、统一状态、任务与异常都在这里
   await selectNode('1:401');
   await page.waitForSelector('.dbz-graph-inspector .dbz-inspector-panel');
