@@ -157,16 +157,18 @@ export interface DbzKafkaConnectVo extends AuditFields {
 
 /** # 一次配置比对的单行结果 */
 export interface DbzConnectorCompareRow {
-  /** 配置项名（服务端已按字典序排列） */
+  /** 配置项名（库内键按字典序在前，远端独有项按字典序排在其后） */
   key: string;
-  /** 库内配置的值（敏感项已脱敏） */
-  local: string;
+  /** 库内配置的值（敏感项已脱敏）；`null` 表示库内没有这一项 */
+  local?: string | null;
   /** 远端配置的值；`null` 表示远端缺少该配置项（敏感项已脱敏） */
   remote?: string | null;
-  /** 是否差异：远端缺键或值不同 */
+  /** 是否差异：远端缺键、值不同，或只在远端存在 */
   changed: boolean;
   /** 是否敏感项（值已脱敏，不落明文） */
   sensitive: boolean;
+  /** 是否只在远端存在（库内没纳管这一项，只能随同步整体收敛） */
+  remoteOnly?: boolean;
 }
 
 /** # 检测不一致时的对比快照 */

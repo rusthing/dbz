@@ -1602,25 +1602,38 @@ impl DbzKafkaConnectSvc {
 /// 单个配置项的比对中间结果
 struct ComparedEntry {
     key: String,
-    local: Value,
+    /// 库内值；只在远端存在该项时为 `None`
+    local: Option<Value>,
+    /// 远端值；远端缺少该项时为 `None`
     remote: Option<Value>,
+    /// 是否只在远端存在（库内没有纳管这一项）
+    remote_only: bool,
 }
 
 impl ComparedEntry {
-    /// 与 {@link config_mismatch} 完全同源的差异判定：远端缺键或值不同
+    /// 与 {@link config_mismatch} 完全同源的差异判定：值不同，或只有一侧存在
     fn changed(&self) -> bool {
-        match &self.remote {
-            Some(remote) => !json_eq(&self.local, remote),
-            None => true,
+        match (&self.local, &self.remote) {
+            (Some(local), Some(remote)) => !json_eq(local, remote),
+            // 只有一侧存在：远端缺键，或远端多出一项而库内没纳管
+            _ => true,
         }
     }
 }
 
 /// # 逐项列出参与比对的配置
 ///
-/// 口径与检测一致：只看库内配置里出现的键（`name` 属于记录名，不参与比对），
-/// 远端多出来的键不影响结论，也不在对比弹窗里展示，避免出现「检测说一致、
-/// 弹窗却列出一堆差异」的错位。
+/// 口径与检测一致，两侧的键集合都参与（都排除 `name`，它是记录名）：
+///
+/// * 库内出现的键 —— 远端缺键或值不同即为差异；
+/// * 只在远端出现的键 —— 库内没有纳管这一项，同样是差异。
+///
+/// 远端独有项必须列出来，而且必须算差异：它正式意味着「拿库内配置重建不出这个
+/// 连接器」（有人在 Connect 上直接加过配置，或者插件升级换了键名）。只展示库内键
+/// 会让人把「远端已有等价的新键」读成「远端少配了几项」，判定也会漏掉这类漂移。
+///
+/// 这些行排在库内键之后、`remote_only` 为真：下发会以库内为基准整体覆盖远端，
+/// 所以它们只能随同步一起消失，不能逐项编辑。
 ///
 /// 库内配置或远端配置不是合法 JSON 对象时返回 `None`（此时检测判定为不一致）。
 fn compare_entries(local_config: &str, remote_config: &Value) -> Option<Vec<ComparedEntry>> {
@@ -1632,12 +1645,27 @@ fn compare_entries(local_config: &str, remote_config: &Value) -> Option<Vec<Comp
         .filter(|(key, _)| key.as_str() != "name")
         .map(|(key, local)| ComparedEntry {
             key: key.clone(),
-            local: local.clone(),
+            local: Some(local.clone()),
             remote: remote_obj.get(key).cloned(),
+            remote_only: false,
         })
         .collect();
     // 字段顺序稳定：按键名排序，与库内 JSON 的书写顺序无关
     entries.sort_by(|a, b| a.key.cmp(&b.key));
+
+    let mut remote_only: Vec<ComparedEntry> = remote_obj
+        .iter()
+        .filter(|(key, _)| key.as_str() != "name" && !local_obj.contains_key(*key))
+        .map(|(key, remote)| ComparedEntry {
+            key: key.clone(),
+            local: None,
+            remote: Some(remote.clone()),
+            remote_only: true,
+        })
+        .collect();
+    remote_only.sort_by(|a, b| a.key.cmp(&b.key));
+    // 库内键在前、远端独有项在后，两类差异一眼分得开
+    entries.extend(remote_only);
     Some(entries)
 }
 
@@ -1707,14 +1735,17 @@ fn build_compare_detail(
         .map(|entry| {
             let changed = entry.changed();
             let sensitive = is_sensitive_key(&entry.key);
-            let local = if sensitive {
-                if changed { MASKED_CHANGED } else { MASKED }.to_string()
-            } else {
-                json_text(&entry.local)
-            };
+            let masked = if changed { MASKED_CHANGED } else { MASKED };
+            let local = entry.local.as_ref().map(|value| {
+                if sensitive {
+                    masked.to_string()
+                } else {
+                    json_text(value)
+                }
+            });
             let remote = entry.remote.as_ref().map(|value| {
                 if sensitive {
-                    if changed { MASKED_CHANGED } else { MASKED }.to_string()
+                    masked.to_string()
                 } else {
                     json_text(value)
                 }
@@ -1725,6 +1756,7 @@ fn build_compare_detail(
                 remote,
                 changed,
                 sensitive,
+                remote_only: entry.remote_only,
             }
         })
         .collect();
@@ -1965,7 +1997,7 @@ mod tests {
             .find(|row| row.key == "database.password")
             .expect("库内键都应出现在快照里");
         assert!(password.sensitive);
-        assert!(!password.local.contains("dbz-secret"));
+        assert!(!password.local.as_deref().unwrap_or_default().contains("dbz-secret"));
 
         let text = compare_detail_text(local, &remote, true, 1760000000000, "订单库增量")
             .expect("快照序列化不应失败")
@@ -1976,25 +2008,54 @@ mod tests {
         assert_eq!(parsed.rows.len(), detail.rows.len());
     }
 
-    /// 远端多出来的键不参与判定：不能出现「检测说一致、弹窗却列一堆差异」
+    /// 只在远端出现的键同样算差异，并且必须出现在快照里
+    ///
+    /// 这类键意味着「拿库内配置重建不出这个连接器」：插件升级换键名（`http.api.url`
+    /// → `http.url`）、有人在 Connect 上直接加过配置，都属于这种情况。藏起来会让人
+    /// 把「远端已有等价的新键」误读成「远端少配了几项」。
     #[test]
-    fn remote_only_keys_do_not_mark_inconsistent() {
+    fn remote_only_keys_are_reported_in_snapshot() {
         let local = r#"{"connector.class":"MySqlConnector","database.port":"3306"}"#;
         let remote = json!({
             "connector.class": "MySqlConnector",
             "database.port": 3306,
             "table.include.list": "dbz.orders"
         });
-        assert!(!config_mismatch(local, &remote));
+        assert!(config_mismatch(local, &remote), "库内没纳管的远端键同样是不一致");
+
         let detail = build_compare_detail(local, &remote, 1);
-        assert_eq!(detail.rows.len(), 2);
-        assert!(detail.rows.iter().all(|row| !row.changed));
-        assert!(
-            compare_detail_text(local, &remote, false, 1, "订单库增量")
-                .expect("序列化不应失败")
-                .is_none(),
-            "一致时快照要清空"
+        // 库内键在前、远端独有项在最后，顺序稳定
+        let keys = detail
+            .rows
+            .iter()
+            .map(|row| row.key.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            keys,
+            vec!["connector.class", "database.port", "table.include.list"]
         );
+        // 值相同的库内项不算差异
+        assert!(detail.rows[..2].iter().all(|row| !row.changed));
+        let extra = detail.rows.last().expect("远端独有项必须在快照里");
+        assert!(extra.remote_only);
+        assert!(extra.changed);
+        assert_eq!(extra.local, None, "库内没有这一项，值为空而不是空字符串");
+        assert_eq!(extra.remote.as_deref(), Some("dbz.orders"));
+    }
+
+    /// 远端独有项也不回显明文：脱敏口径与库内键一致
+    #[test]
+    fn remote_only_sensitive_keys_stay_masked() {
+        let local = r#"{"connector.class":"MySqlConnector"}"#;
+        let remote = json!({
+            "connector.class": "MySqlConnector",
+            "database.password": "dbz-secret"
+        });
+        let detail = build_compare_detail(local, &remote, 1);
+        let extra = detail.rows.last().expect("远端独有敏感项也要列出来");
+        assert!(extra.remote_only);
+        assert!(extra.sensitive);
+        assert!(!extra.remote.as_deref().unwrap_or_default().contains("dbz-secret"));
     }
 
     /// 库内配置不是合法 JSON 对象时标记不一致，但快照只留原因、不列伪差异

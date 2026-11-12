@@ -173,16 +173,18 @@ const sinks = [
 ];
 
 /**
- * 模拟 Connect 上的「实际配置」：只有 mysql-orders-source 的两个键与库内不同。
+ * 模拟 Connect 上的「实际配置」：mysql-orders-source 有两个键与库内不同，
+ * 外加一个库内没有纳管的键（只有远端有），用于覆盖「仅远端」这一类差异。
  *
- * 这两个键必须同样出现在库内 connectorConfig 里 —— 后端 compare_entries 只比
- * 库内出现过的键（name 除外），远端多出来的键不算差异，避免「检测说一致、
- * 弹窗却列一堆差异」的错位。整台 Connect 检测与单条卡片检测共用这份远端配置。
+ * 口径与后端 compare_entries 一致：库内键逐项比对，只在远端出现的键同样算差异、
+ * 同样进快照（否则弹窗里只会看到库内旧键「远端缺少该配置项」）。整台 Connect
+ * 检测与单条卡片检测共用这份远端配置。
  */
 const remoteConnectorOverrides = {
   'mysql-orders-source': {
     'database.hostname': '10.0.0.11',
     'table.include.list': 'dbz.orders',
+    'schema.history.internal.kafka.topic': 'dbz.schema-changes',
   },
 };
 
@@ -209,19 +211,19 @@ function applyConnectorDetection(item, nodeType) {
   const remote = configValid
     ? { ...local, ...(remoteConnectorOverrides[item.connectorName] ?? {}) }
     : {};
-  const rows = configValid
+  const maskOf = (changed) => (changed ? '***（已变更，已脱敏）' : '***（已脱敏）');
+  const localRows = configValid
     ? Object.entries(local)
         .filter(([key]) => key !== 'name')
         .sort(([left], [right]) => left.localeCompare(right))
         .map(([key, value]) => {
           const changed = remote[key] === undefined || String(value) !== String(remote[key]);
           const sensitive = sensitiveConfigKey(key);
-          const masked = changed ? '***（已变更，已脱敏）' : '***（已脱敏）';
           return {
             key,
-            local: sensitive ? masked : String(value),
+            local: sensitive ? maskOf(changed) : String(value),
             remote: sensitive
-              ? masked
+              ? maskOf(changed)
               : remote[key] === undefined
                 ? null
                 : String(remote[key]),
@@ -230,6 +232,24 @@ function applyConnectorDetection(item, nodeType) {
           };
         })
     : [];
+  // 只在远端存在的键：库内没纳管，同样是差异，排在库内键之后
+  const remoteOnlyRows = configValid
+    ? Object.entries(remote)
+        .filter(([key]) => key !== 'name' && !(key in local))
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, value]) => {
+          const sensitive = sensitiveConfigKey(key);
+          return {
+            key,
+            local: null,
+            remote: sensitive ? maskOf(true) : String(value),
+            changed: true,
+            sensitive,
+            remoteOnly: true,
+          };
+        })
+    : [];
+  const rows = [...localRows, ...remoteOnlyRows];
   const changedKeys = rows.filter((row) => row.changed).map((row) => row.key);
   const inconsistent = !configValid || changedKeys.length > 0;
   const checkedAt = Date.now();
@@ -2054,9 +2074,10 @@ try {
     '后端返回差异键名并回写不一致标记与对比快照',
     lastDetect?.nodeType === 'source' &&
       lastDetect.inconsistent === true &&
-      lastDetect.changed === 2 &&
+      lastDetect.changed === 3 &&
       lastDetect.changedKeys.includes('database.hostname') &&
       lastDetect.changedKeys.includes('table.include.list') &&
+      lastDetect.changedKeys.includes('schema.history.internal.kafka.topic') &&
       typeof lastDetect.inconsistentDetail === 'string',
     JSON.stringify(lastDetect),
   );
@@ -2083,6 +2104,14 @@ try {
       cardDiffText.includes('table.include.list') &&
       cardDiffText.includes('同步方向') &&
       (await cardDiffModal.locator('.dbz-diff-row-changed').count()) >= 2,
+    cardDiffText.slice(0, 240),
+  );
+  // 只在远端存在的键必须看得见，否则用户只会看到库内旧键「远端缺少该配置项」
+  check(
+    '对比弹窗列出只在远端存在的配置项并标「仅远端」',
+    cardDiffText.includes('schema.history.internal.kafka.topic') &&
+      cardDiffText.includes('仅远端') &&
+      cardDiffText.includes('库内没有这一项'),
     cardDiffText.slice(0, 240),
   );
   await cardDiffModal.locator('.ant-modal-close').click({ force: true });

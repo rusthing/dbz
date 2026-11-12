@@ -5,8 +5,12 @@
  * 实际配置，差异项高亮；两边都来自检测时持久化的脱敏快照，判定口径与检测同源，
  * 保证「标签说不一致」时这里一定能看出是哪个字段。
  *
+ * 两侧的键集合都展示：只在远端出现的项（比如插件升级把 `http.api.url` 换成了
+ * `http.url`）排在库内键之后、带「仅远端」标记，否则用户只会看到库内旧键「远端
+ * 缺少该配置项」，把「远端已有等价的新键」误读成「远端没配地址」。
+ *
  * 弹窗内可以：
- * - 按方向就地编辑要作为基准的那份配置（库内 / 远端）；
+ * - 按方向就地编辑要作为基准的那份配置（库内 / 远端；「仅远端」项不可编辑）；
  * - 以库内为准下发远端（`PUT /connectors/{name}/config`，需审核口令）；
  * - 以远端为准写回库内记录（不校验口令）。
  *
@@ -176,9 +180,13 @@ export default function InconsistentDiffModal({
   }, [open, remoteMissing]);
 
   const editableValueOf = (row: DbzConnectorCompareRow): string =>
-    direction === 'toRemote' ? row.local : (row.remote ?? '');
+    direction === 'toRemote' ? (row.local ?? '') : (row.remote ?? '');
 
   const dirty = rows.some((row) => {
+    if (row.remoteOnly) {
+      // 「仅远端」项不可编辑，随同步整体收敛
+      return false;
+    }
     const edit = edits[row.key];
     if (edit === undefined) {
       return false;
@@ -199,6 +207,10 @@ export default function InconsistentDiffModal({
   const buildPatch = (): Record<string, unknown> => {
     const patch: Record<string, unknown> = {};
     for (const row of rows) {
+      // 「仅远端」项不在基准配置里，后端也会拒绝这类键
+      if (row.remoteOnly) {
+        continue;
+      }
       const edit = edits[row.key];
       if (edit === undefined) {
         continue;
@@ -323,13 +335,29 @@ export default function InconsistentDiffModal({
 
   const renderValue = (row: DbzConnectorCompareRow, side: 'local' | 'remote') => {
     const editable =
-      (direction === 'toRemote' && side === 'local') ||
-      (direction === 'toLocal' && side === 'remote');
-    const missing = side === 'remote' && row.remote === null;
+      !row.remoteOnly &&
+      ((direction === 'toRemote' && side === 'local') ||
+        (direction === 'toLocal' && side === 'remote'));
+    // 只看「有没有这一项」，空字符串是合法的配置值
+    const remoteMissing =
+      side === 'remote' && (row.remote === null || row.remote === undefined);
+    const localMissing =
+      side === 'local' &&
+      (row.remoteOnly === true || row.local === null || row.local === undefined);
 
-    if (missing) {
+    if (remoteMissing) {
       return (
         <Typography.Text type="secondary">（远端缺少该配置项）</Typography.Text>
+      );
+    }
+
+    if (localMissing) {
+      return (
+        <Typography.Text type="secondary">
+          {direction === 'toRemote'
+            ? '（库内没有这一项，下发会移除）'
+            : '（库内没有这一项，写回后补齐）'}
+        </Typography.Text>
       );
     }
 
@@ -370,7 +398,12 @@ export default function InconsistentDiffModal({
           <Typography.Text className="dbz-mono" strong={row.changed}>
             {key}
           </Typography.Text>
-          {row.changed && <Tag color="warning">差异</Tag>}
+          {row.changed && !row.remoteOnly && <Tag color="warning">差异</Tag>}
+          {row.remoteOnly && (
+            <Tooltip title="该项只在远端 Connect 上存在，库内没有纳管：下发会以库内为准整体覆盖（这一项被移除），写回则把它补进库内">
+              <Tag color="geekblue">仅远端</Tag>
+            </Tooltip>
+          )}
           {row.sensitive && (
             <Tooltip title="含凭据类字段，值已脱敏，不在页面与快照中回显明文">
               <Tag>敏感</Tag>
@@ -395,8 +428,8 @@ export default function InconsistentDiffModal({
 
   const impact =
     direction === 'toRemote'
-      ? '以库内配置为基准，把编辑后的配置下发到远端 Connect：远端连接器会被更新并重新加载，可能有短暂中断或任务重平衡。此操作需要审核口令。'
-      : '以远端 Connect 的实际配置为基准，覆盖库内纳管记录：库内当前配置会被替换，远端不做任何修改。';
+      ? '以库内配置为基准，把编辑后的配置下发到远端 Connect：远端连接器会被更新并重新加载，可能有短暂中断或任务重平衡；远端独有的配置项（标记「仅远端」）不在库内配置里，会被一并移除。此操作需要审核口令。'
+      : '以远端 Connect 的实际配置为基准，覆盖库内纳管记录：库内当前配置会被替换，远端不做任何修改；远端独有的配置项会一起写进库内。';
 
   return (
     <Modal
