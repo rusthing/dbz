@@ -25,6 +25,7 @@
 
 use crate::config::DeadLetterConfig;
 use crate::dic::{DeadLetterFailureCategory, DeadLetterFailureSubtype};
+use crate::utils::dbz_sink_config_utils::ConnectorClass;
 use anyhow::{anyhow, bail};
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
@@ -58,9 +59,6 @@ pub const HDR_EXCEPTION_CLASS: &str = "exception.class.name";
 pub const HDR_EXCEPTION_MESSAGE: &str = "exception.message";
 pub const HDR_EXCEPTION_STACKTRACE: &str = "exception.stacktrace";
 pub const HDR_CONNECTOR_NAME: &str = "connector.name";
-
-/// HTTP Sink 的 connector.class 片段（不同打包版本包名略有差异）
-const HTTP_SINK_CLASS_MARKERS: [&str; 2] = ["HttpSinkConnector", "connect.http"];
 
 /// # 把 DLQ 配置合并进下游连接器配置
 ///
@@ -106,7 +104,7 @@ pub fn ensure_sink_dlq_config(
         json!(cfg.log_include_messages.to_string()),
     );
 
-    if is_http_sink(&object) {
+    if ConnectorClass::detect(&object).is_http_sink() {
         object.insert(
             "max.retries".into(),
             json!(cfg.http_max_retries.to_string()),
@@ -167,18 +165,6 @@ fn reject_dlq_in_subscriptions(config: &Map<String, Value>, topic: &str) -> anyh
         bail!("连接器的 topics.regex<{pattern}>会匹配到 DLQ topic<{topic}>，会造成循环消费");
     }
     Ok(())
-}
-
-/// 只有 HTTP Sink 才补它自己的重试参数，其它 sink 塞进去只会产生无效配置告警
-fn is_http_sink(config: &Map<String, Value>) -> bool {
-    config
-        .get("connector.class")
-        .and_then(Value::as_str)
-        .is_some_and(|class| {
-            HTTP_SINK_CLASS_MARKERS
-                .iter()
-                .any(|marker| class.contains(marker))
-        })
 }
 
 /// # 读取一个 DLQ 上下文头

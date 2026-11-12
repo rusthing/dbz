@@ -15,10 +15,13 @@
 use crate::config::get_dbz_config;
 use crate::dic::ConnectorRunStatus;
 use crate::svc::{DbzKafkaConnectSvc, DbzSourceConnectorSvc};
-use crate::utils::{KafkaConnectorUtils, ensure_sink_dlq_config, normalize_url, should_deploy};
+use crate::utils::{
+    KafkaConnectorUtils, ensure_sink_dlq_config, normalize_url, should_deploy, validate_sink_config,
+};
 use anyhow::anyhow;
 use robotech::macros::svc;
 use sea_orm::DatabaseConnection;
+use serde_json::{Map, Value};
 use tracing::{info, warn};
 use wheel_rs::time_utils::now_ms;
 
@@ -34,12 +37,23 @@ pub struct DbzSinkConnectorSvc;
 // 无法改成 Box 包裹，这里统一放行该 lint
 #[allow(clippy::result_large_err)]
 impl DbzSinkConnectorSvc {
-    /// # 给一份连接器配置补齐 Kafka Connect 原生 DLQ 配置
+    /// # 保存与下发前的配置准备：必填校验 + 补齐 DLQ
     ///
-    /// 这是死信链路的开关：库里存的、下发到 Connect 的都是补齐后的配置，一致性
-    /// 检测才不会把注入项当成「远端多出来的配置」。配置未加载（单测、启动早期）
-    /// 时按默认配置补齐，保证任何路径都不会漏下发。
-    fn merge_dlq_config(connector_config: &str) -> Result<String, SvcError> {
+    /// 两件事有先后：配置本身跑不起来（例如 HTTP Sink 漏了 `http.url`）时，补再多容错项
+    /// 也没用 —— task 会在 `start()` 就 FAILED，然后被健康检查反复重启。所以先校验，
+    /// 而且校验与 `[dbz.dead-letter] enabled` 无关，关掉死信也照样拦。
+    ///
+    /// 补齐后的配置同时写库和下发，一致性检测才不会把注入项当成「远端多出来的配置」。
+    ///
+    /// ## 返回值
+    /// * `Ok(String)` - 校验通过、必要时已补齐 DLQ 的配置
+    /// * `Err(SvcError)` - 配置不是 JSON 对象，或 HTTP Sink 的地址不合法
+    fn prepare_config(connector_config: &str) -> Result<String, SvcError> {
+        let object: Map<String, Value> = serde_json::from_str(connector_config)
+            .map_err(|e| SvcError::from(anyhow!("连接器配置不是合法的 JSON 对象: {e}")))?;
+        validate_sink_config(&object)
+            .map_err(|e| SvcError::from(anyhow!("连接器配置校验失败: {e}")))?;
+
         let cfg = get_dbz_config()
             .map(|config| config.dead_letter.clone())
             .unwrap_or_default();
@@ -101,7 +115,7 @@ impl DbzSinkConnectorSvc {
         // 死信由 Kafka Connect 的 DLQ 承载：新建时就补上标准容错配置，避免「先跑起来、
         // 等出事再改配置」期间坏记录被静默跳过。
         if let Some(text) = add_dto.connector_config.as_deref() {
-            add_dto.connector_config = Some(Self::merge_dlq_config(text)?);
+            add_dto.connector_config = Some(Self::prepare_config(text)?);
         }
         if add_dto.enabled == Some(false) {
             add_dto.run_status = Some(ConnectorRunStatus::Disabled);
@@ -172,7 +186,7 @@ impl DbzSinkConnectorSvc {
             one.id.value(),
             one.connector_name
         );
-        let config = Self::merge_dlq_config(&one.connector_config).map_err(|e| anyhow!("{e}"))?;
+        let config = Self::prepare_config(&one.connector_config).map_err(|e| anyhow!("{e}"))?;
         KafkaConnectorUtils::deploy_connector(&url, &one.connector_name, &config)
             .await
             .map_err(|e| anyhow!("下发下游连接器<{}>配置失败: {e}", one.name))
@@ -231,7 +245,7 @@ impl DbzSinkConnectorSvc {
         // 用户提交的配置先补齐 DLQ 项再落库，库内与 Connect 上保持一致；
         // 历史记录（改造前建的）在重新下发时也会被补齐。
         if let Some(text) = modify_dto.connector_config.as_deref() {
-            modify_dto.connector_config = Some(Self::merge_dlq_config(text)?);
+            modify_dto.connector_config = Some(Self::prepare_config(text)?);
         }
 
         // 上游或所属 Connect 被改动时，按改动后的最终归属校验一次
@@ -286,7 +300,7 @@ impl DbzSinkConnectorSvc {
         // 否则会把连接器重新创建出来
         if should_deploy(enabled_after, config_changed, relocated, enabling) && !new_url.is_empty()
         {
-            let config = Self::merge_dlq_config(
+            let config = Self::prepare_config(
                 modify_dto
                     .connector_config
                     .as_deref()

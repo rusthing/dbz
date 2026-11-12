@@ -139,11 +139,14 @@ impl DbzDeadLetterSvc {
 
         let mut seen = HashSet::new();
         let mut total = 0u64;
+        // 保留期起点本轮只算一次：同步与清理必须用同一口径，否则「刚入库就被清掉」
+        // 或「清掉了又被重扫插回来」
+        let cutoff_ms = retention_cutoff(&cfg);
         for broker in brokers {
             if !seen.insert(broker.bootstrap_servers.clone()) {
                 continue;
             }
-            match Self::sync_one_cluster(db.as_ref(), &broker, &topic, &cfg).await {
+            match Self::sync_one_cluster(db.as_ref(), &broker, &topic, &cfg, cutoff_ms).await {
                 Ok(count) => total += count,
                 Err(e) => warn!("从 Kafka 集群<{}>同步 DLQ<{}>失败: {e}", broker.name, topic),
             }
@@ -161,6 +164,7 @@ impl DbzDeadLetterSvc {
         broker: &BrokerModel,
         topic: &str,
         cfg: &DeadLetterConfig,
+        cutoff_ms: i64,
     ) -> anyhow::Result<u64> {
         let conn = BrokerConn::from_model(broker);
         let client = KafkaBrokerUtils::connect(&conn).await?;
@@ -203,7 +207,7 @@ impl DbzDeadLetterSvc {
                 .collect();
             for record in &batch {
                 // 只数真正新落库的条数：重扫命中的旧记录不该算进「已同步 N 条」
-                if Self::upsert_from_dlq(db, topic, *partition, record).await? {
+                if Self::upsert_from_dlq(db, topic, *partition, record, cutoff_ms).await? {
                     total += 1;
                 }
             }
@@ -227,8 +231,16 @@ impl DbzDeadLetterSvc {
         dlq_topic: &str,
         dlq_partition: i32,
         entry: &rskafka::record::RecordAndOffset,
+        cutoff_ms: i64,
     ) -> anyhow::Result<bool> {
         let headers = &entry.record.headers;
+        // 早于保留期的记录直接跳过。清理只删页面索引，而游标在进程内 —— 重启后游标回到
+        // earliest 重扫，被清掉的行会以「待处理」重新插回来，人工处置结论白做一遍。
+        // 用同一条时间线拦掉，重扫才真的幂等。
+        let occurred_ms = entry.record.timestamp.timestamp_millis();
+        if occurred_ms < cutoff_ms {
+            return Ok(false);
+        }
         // 没开 context headers 时拿不到源坐标，用 DLQ 自身坐标兜底，保证仍能入库
         let source_topic =
             header_text(headers, HDR_TOPIC).unwrap_or_else(|| format!("{dlq_topic}:no-context"));
@@ -273,7 +285,6 @@ impl DbzDeadLetterSvc {
             .as_deref()
             .map(|bytes| truncate(&String::from_utf8_lossy(bytes), 512))
             .unwrap_or_default();
-        let occurred_ms = entry.record.timestamp.timestamp_millis();
         let now = now_ms() as i64;
 
         let active = DeadLetterActiveModel {
@@ -879,7 +890,7 @@ impl DbzDeadLetterSvc {
             *last = now;
         }
 
-        let cutoff = now - cfg.retention_days as i64 * 24 * 60 * 60 * 1_000;
+        let cutoff = retention_cutoff(cfg);
         DeadLetterEntity::delete_many()
             .filter(DeadLetterColumn::LastSeenMs.lt(cutoff))
             .exec(db)
@@ -903,6 +914,14 @@ impl DbzDeadLetterSvc {
         .await?;
         Ok(())
     }
+}
+
+/// # 死信保留期的起点（毫秒）
+///
+/// 同步与清理共用这一个口径：早于它的记录既不入库，也会被删掉。两边算法一旦分叉，
+/// 就会出现「同步插进来、清理删掉、重启重扫再插进来」的来回抖动。
+fn retention_cutoff(cfg: &DeadLetterConfig) -> i64 {
+    now_ms() as i64 - cfg.retention_days as i64 * 24 * 60 * 60 * 1_000
 }
 
 /// 读取当前死信配置；尚未加载配置时回落默认值
