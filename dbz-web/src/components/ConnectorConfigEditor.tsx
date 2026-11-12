@@ -525,6 +525,192 @@ const SINK_GROUPS: FieldGroup[] = [
   },
 ];
 
+/* ---------------------------------------------------------------- HTTP Sink */
+
+/** 类名是否 HTTP Sink（与后端 dbz_sink_config_utils::ConnectorClass 同一套判定） */
+function isHttpSinkClass(className: string): boolean {
+  const lower = className.toLowerCase();
+  return lower.includes('httpsinkconnector') || lower.includes('connect.http');
+}
+
+/**
+ * HTTP Sink 的配置分组。
+ *
+ * 与 JDBC 的差别不是「少几个字段」，而是键名完全不同：HTTP Sink 没有
+ * `connection.url` / `insert.mode`，只有目标地址与请求语义。把 JDBC 的字段摆在这里，
+ * 用户会以为要填库地址，实际这些键会被插件当成未知配置忽略。
+ */
+const HTTP_GROUPS: FieldGroup[] = [
+  {
+    title: '基本信息',
+    desc: '连接器类与要消费的 topic：topic 名对不上就收不到数据，也不报错。',
+    fields: [
+      {
+        key: 'connector.class',
+        label: '连接器类',
+        kind: 'select',
+        freeform: true,
+        required: true,
+        options: [
+          'rebue.kafka.httpsink.HttpSinkConnector',
+          'rebue.wheel.kafka.httpsink.HttpSinkConnector',
+          'io.confluent.connect.http.HttpSinkConnector',
+        ],
+        help: 'rebue.* 为自研实现（1.0.0 起才会把 4xx/5xx 抛给框架）；Confluent 版键名用 http.api.url。',
+      },
+      {
+        key: 'topics',
+        label: '消费的 topic',
+        kind: 'text',
+        required: true,
+        placeholder: 'orders.orders.t_order',
+      },
+      {
+        key: 'tasks.max',
+        label: '任务数',
+        kind: 'number',
+        placeholder: '1',
+        help: 'HTTP 投递可以多任务并行；只保证单分区内有序，需要全局有序时填 1。',
+      },
+    ],
+  },
+  {
+    title: '目标地址',
+    desc: 'http.url 与 http.api.url 至少填一个；支持 ${topic} 占位符，按记录所属 topic 路由。',
+    fields: [
+      {
+        key: 'http.url',
+        label: 'HTTP 地址',
+        kind: 'text',
+        placeholder: 'http://magic-api:9999/sync/${topic}',
+      },
+      {
+        key: 'http.api.url',
+        label: 'HTTP 地址（已废弃）',
+        kind: 'text',
+        placeholder: 'http://magic-api:9999/sync',
+        help: '老配置（Confluent 与 rebue 旧版）用这个键；http.url 为空时才生效。',
+      },
+      {
+        key: 'http.version',
+        label: 'HTTP 版本',
+        kind: 'select',
+        options: ['HTTP_1_1', 'HTTP_2'],
+        help: '默认 HTTP_1_1；明文 HTTP/2 需要服务端支持，否则直接连不上。',
+      },
+      {
+        key: 'http.header.content-type',
+        label: 'Content-Type',
+        kind: 'text',
+        placeholder: 'application/json',
+      },
+      {
+        key: 'http.request.timeout.ms',
+        label: '读超时(ms)',
+        kind: 'text',
+        placeholder: '30000',
+      },
+    ],
+  },
+  converterGroup,
+  {
+    title: '重试',
+    desc: '4xx 直接失败进 DLQ；408/429/5xx 与超时才重试，重试由插件与框架两层承担。',
+    fields: [
+      {
+        key: 'max.retries',
+        label: '重试次数',
+        kind: 'text',
+        placeholder: '10',
+        help: '与 Confluent HTTP Sink 同名，插件内生效，不是框架的 errors.retry.*。',
+      },
+      {
+        key: 'retry.backoff.ms',
+        label: '重试退避(ms)',
+        kind: 'text',
+        placeholder: '3000',
+      },
+      {
+        key: 'http.retry.total.timeout.ms',
+        label: '重试总预算(ms)',
+        kind: 'text',
+        placeholder: '120000',
+        help: '必须小于 consumer 的 max.poll.interval.ms，否则重试期间会被踢出消费组。',
+      },
+    ],
+  },
+  {
+    title: '容错（Kafka Connect DLQ）',
+    desc: '以下各项在部署时由 dbz 按 [dbz.dead-letter] 强制下发，手改不会生效。',
+    fields: [
+      {
+        key: 'errors.tolerance',
+        label: '错误容忍',
+        kind: 'select',
+        options: ['none', 'all'],
+        help: '固定为 all：一条坏消息不能停掉整个任务；必须配合死信 topic，否则等于丢数据。',
+      },
+      {
+        key: 'errors.deadletterqueue.topic.name',
+        label: '死信 topic',
+        kind: 'text',
+        placeholder: 'dbz-connect-dlq',
+      },
+    ],
+  },
+];
+
+const HTTP_TEMPLATES: Template[] = [
+  {
+    label: 'HTTP Sink 模板',
+    desc: '每行一条记录 POST 到下游，靠 X-Kafka-* 头做幂等。',
+    overwrite: {
+      'connector.class': 'rebue.kafka.httpsink.HttpSinkConnector',
+    },
+    // 从 JDBC 切过来时，库连接的键全是无效配置，留着只会让人以为还要填库
+    stale: [
+      'connection.url',
+      'connection.username',
+      'connection.password',
+      'insert.mode',
+      'primary.key.mode',
+      'primary.key.fields',
+      'delete.enabled',
+      'table.name.format',
+    ],
+    fill: {
+      'tasks.max': '1',
+      'http.version': 'HTTP_1_1',
+      'http.request.timeout.ms': '30000',
+      ...CONVERTER_FILL,
+    },
+  },
+];
+
+/**
+ * HTTP Sink 的运行前提提示。
+ *
+ * 第一条最要紧：`rebue.wheel.kafka.httpsink.HttpSinkConnector` 这个类名新旧两版都叫这个，
+ * dbz 从配置上看不出装的是哪一版。旧版对 4xx/5xx 只打日志，死信页永远不会有记录。
+ */
+function httpWarnings(config: Record<string, unknown>): string[] {
+  const warnings: string[] = [];
+  const className = toText(config['connector.class']).toLowerCase();
+  if (className.includes('rebue')) {
+    warnings.push(
+      '若集群上装的是旧版 http-sink-connector（≤3.9.65），4xx/5xx 不会进 DLQ：需要升级到 1.0.0+',
+    );
+  }
+  if (toText(config['http.url']).trim() === '' && toText(config['http.api.url']).trim() === '') {
+    warnings.push('没填 http.url 或 http.api.url：连接器一启动就会失败');
+  }
+  const behavior = toText(config['behavior.on.error']).trim();
+  if (behavior !== '' && behavior !== 'fail') {
+    warnings.push(`behavior.on.error=${behavior} 会吞掉失败并照常提交 offset，等于丢数据`);
+  }
+  return warnings;
+}
+
 const SINK_TEMPLATES: Template[] = [
   {
     label: 'JDBC Sink 模板',
@@ -589,6 +775,29 @@ const PROFILES: Record<ConnectorKind, Profile> = {
   },
 };
 
+/**
+ * # 按连接器类选档案
+ *
+ * 决定「该怎么配」的是 `connector.class`，不是上下游方向：同样是 sink，JDBC 要库地址、
+ * HTTP 要目标 URL，键名完全不重叠。把 JDBC 的字段摆给 HTTP Sink，用户会以为要填库地址，
+ * 而那些键会被插件当成未知配置忽略 —— 配完部署，才发现少的是 `http.url`。
+ */
+function profileFor(kind: ConnectorKind, config: Record<string, unknown> | null): Profile {
+  const base = PROFILES[kind];
+  if (kind !== 'sink' || !config) {
+    return base;
+  }
+  if (!isHttpSinkClass(toText(config['connector.class']))) {
+    return base;
+  }
+  return {
+    groups: HTTP_GROUPS,
+    templates: HTTP_TEMPLATES,
+    numberKeys: base.numberKeys,
+    warnings: httpWarnings,
+  };
+}
+
 interface ConnectorConfigEditorProps {
   /** 上游还是下游；默认上游 */
   kind?: ConnectorKind;
@@ -639,7 +848,7 @@ export function checkConnectorConfig(kind: ConnectorKind, text: string): string 
     return '连接器配置必须是 JSON 对象（不能是数组或 null）';
   }
 
-  const profile = PROFILES[kind];
+  const profile = profileFor(kind, parsed);
   const dialect = profile.dialect?.(parsed) ?? null;
   const fields = profile.groups
     .flatMap((group) => group.fields)
@@ -664,6 +873,18 @@ export function checkConnectorConfig(kind: ConnectorKind, text: string): string 
     const value = Number(tasks);
     if (!Number.isInteger(value) || value < 1) {
       return '任务数必须是正整数';
+    }
+  }
+
+  // 后端保存时也会拦（dbz_sink_config_utils::validate_sink_config），这里提前一句，
+  // 免得填完一圈才在接口上报错
+  if (kind === 'sink' && isHttpSinkClass(toText(parsed['connector.class']))) {
+    const url = toText(parsed['http.url']).trim() || toText(parsed['http.api.url']).trim();
+    if (url === '') {
+      return 'HTTP Sink 必须填 http.url（老配置用 http.api.url）：缺了连接器一启动就失败';
+    }
+    if (!/^https?:\/\//i.test(url)) {
+      return 'HTTP 地址必须以 http:// 或 https:// 开头';
     }
   }
 
@@ -696,12 +917,12 @@ export default function ConnectorConfigEditor({
   value = '',
   onChange,
 }: ConnectorConfigEditorProps) {
-  const profile = PROFILES[kind];
   const [mode, setMode] = useState<'gui' | 'json'>('gui');
   const [applied, setApplied] = useState<TemplateResult | null>(null);
   const parsed = useMemo(() => parseObject(value), [value]);
-  const canUseGui = parsed !== null;
-  const dialect = parsed ? (profile.dialect?.(parsed) ?? null) : null;
+  // 档案依赖 connector.class，必须在 parsed 之后选：否则切模板时字段组不会跟着换
+  const profile = useMemo(() => profileFor(kind, parsed), [kind, parsed]);
+  const canUseGui = parsed !== null;  const dialect = parsed ? (profile.dialect?.(parsed) ?? null) : null;
 
   /** 数值键写成数字；其余原样写字符串 */
   const write = (draft: Record<string, unknown>, key: string, next: string) => {
