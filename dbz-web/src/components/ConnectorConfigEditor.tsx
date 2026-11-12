@@ -453,6 +453,32 @@ const SINK_GROUPS: FieldGroup[] = [
   },
   converterGroup,
   {
+    title: '失败处理与批量',
+    desc: '记录级失败怎么落地，以及是否把多条记录拼成一次请求。',
+    fields: [
+      {
+        key: 'behavior.on.error',
+        label: '记录级失败',
+        kind: 'select',
+        options: ['fail', 'report', 'skip'],
+        help: 'fail 抛给框架（errors.tolerance=all 时进 DLQ）；report 逐条进 DLQ 且任务继续；skip 直接丢弃。',
+      },
+      {
+        key: 'http.batch.enabled',
+        label: '批量投递',
+        kind: 'select',
+        options: ['false', 'true'],
+        help: '一次请求发一个 JSON 数组；批量下需要幂等就同时打开 http.batch.envelope。',
+      },
+      {
+        key: 'http.batch.max.records',
+        label: '单批最多条数',
+        kind: 'text',
+        placeholder: '100',
+      },
+    ],
+  },
+  {
     title: '容错（Kafka Connect DLQ）',
     desc: '坏消息由 Kafka Connect 写进 DLQ topic，dbz 从 DLQ 同步到死信页。以下各项在部署连接器时由 dbz 按 [dbz.dead-letter] 强制下发，手改不会生效；重试也由 Connect 负责。',
     fields: [
@@ -556,7 +582,7 @@ const HTTP_GROUPS: FieldGroup[] = [
           'rebue.wheel.kafka.httpsink.HttpSinkConnector',
           'io.confluent.connect.http.HttpSinkConnector',
         ],
-        help: 'rebue.* 为自研实现（1.0.0 起才会把 4xx/5xx 抛给框架）；Confluent 版键名用 http.api.url。',
+        help: 'rebue.kafka.* 为自研 2.0，键名统一用 http.*；rebue.wheel.* 与 Confluent 版的键名不同，选错会得到一堆无效配置。',
       },
       {
         key: 'topics',
@@ -576,7 +602,7 @@ const HTTP_GROUPS: FieldGroup[] = [
   },
   {
     title: '目标地址',
-    desc: 'http.url 与 http.api.url 至少填一个；支持 ${topic} 占位符，按记录所属 topic 路由。',
+    desc: 'http.url 必填；支持 ${topic} 占位符，按记录所属 topic 路由。',
     fields: [
       {
         key: 'http.url',
@@ -585,21 +611,14 @@ const HTTP_GROUPS: FieldGroup[] = [
         placeholder: 'http://magic-api:9999/sync/${topic}',
       },
       {
-        key: 'http.api.url',
-        label: 'HTTP 地址（已废弃）',
-        kind: 'text',
-        placeholder: 'http://magic-api:9999/sync',
-        help: '老配置（Confluent 与 rebue 旧版）用这个键；http.url 为空时才生效。',
-      },
-      {
-        key: 'http.version',
+        key: 'http.protocol',
         label: 'HTTP 版本',
         kind: 'select',
         options: ['HTTP_1_1', 'HTTP_2'],
         help: '默认 HTTP_1_1；明文 HTTP/2 需要服务端支持，否则直接连不上。',
       },
       {
-        key: 'http.header.content-type',
+        key: 'http.content.type',
         label: 'Content-Type',
         kind: 'text',
         placeholder: 'application/json',
@@ -618,24 +637,24 @@ const HTTP_GROUPS: FieldGroup[] = [
     desc: '4xx 直接失败进 DLQ；408/429/5xx 与超时才重试，重试由插件与框架两层承担。',
     fields: [
       {
-        key: 'max.retries',
+        key: 'http.retry.max',
         label: '重试次数',
         kind: 'text',
-        placeholder: '10',
-        help: '与 Confluent HTTP Sink 同名，插件内生效，不是框架的 errors.retry.*。',
+        placeholder: '8',
+        help: '插件内生效，不是框架的 errors.retry.*；框架那层仍作为兜底。',
       },
       {
-        key: 'retry.backoff.ms',
+        key: 'http.retry.backoff.ms',
         label: '重试退避(ms)',
         kind: 'text',
-        placeholder: '3000',
+        placeholder: '500',
       },
       {
-        key: 'http.retry.total.timeout.ms',
-        label: '重试总预算(ms)',
+        key: 'http.delivery.budget.ms',
+        label: '单次投递预算(ms)',
         kind: 'text',
-        placeholder: '120000',
-        help: '必须小于 consumer 的 max.poll.interval.ms，否则重试期间会被踢出消费组。',
+        placeholder: '60000',
+        help: '必须明显小于 consumer 的 max.poll.interval.ms，否则重试期间会被踢出消费组并触发重复投递。',
       },
     ],
   },
@@ -663,7 +682,7 @@ const HTTP_GROUPS: FieldGroup[] = [
 const HTTP_TEMPLATES: Template[] = [
   {
     label: 'HTTP Sink 模板',
-    desc: '每行一条记录 POST 到下游，靠 X-Kafka-* 头做幂等。',
+    desc: '每行一条记录 POST 到下游，靠 X-Idempotency-Key 与 X-Kafka-* 头做幂等。',
     overwrite: {
       'connector.class': 'rebue.kafka.httpsink.HttpSinkConnector',
     },
@@ -680,8 +699,9 @@ const HTTP_TEMPLATES: Template[] = [
     ],
     fill: {
       'tasks.max': '1',
-      'http.version': 'HTTP_1_1',
+      'http.protocol': 'HTTP_1_1',
       'http.request.timeout.ms': '30000',
+      'http.delivery.budget.ms': '60000',
       ...CONVERTER_FILL,
     },
   },
@@ -696,17 +716,17 @@ const HTTP_TEMPLATES: Template[] = [
 function httpWarnings(config: Record<string, unknown>): string[] {
   const warnings: string[] = [];
   const className = toText(config['connector.class']).toLowerCase();
-  if (className.includes('rebue')) {
+  if (className.includes('rebue.wheel')) {
     warnings.push(
-      '若集群上装的是旧版 http-sink-connector（≤3.9.65），4xx/5xx 不会进 DLQ：需要升级到 1.0.0+',
+      'rebue.wheel.* 是 3.5.x 的类名，对 4xx/5xx 只记日志、不进 DLQ；迁移到 rebue.kafka.* 需要同时改类名与键名',
     );
   }
-  if (toText(config['http.url']).trim() === '' && toText(config['http.api.url']).trim() === '') {
-    warnings.push('没填 http.url 或 http.api.url：连接器一启动就会失败');
+  if (toText(config['http.url']).trim() === '') {
+    warnings.push('没填 http.url：连接器一启动就会失败');
   }
   const behavior = toText(config['behavior.on.error']).trim();
-  if (behavior !== '' && behavior !== 'fail') {
-    warnings.push(`behavior.on.error=${behavior} 会吞掉失败并照常提交 offset，等于丢数据`);
+  if (behavior === 'skip') {
+    warnings.push('behavior.on.error=skip 会直接丢弃失败记录，且不会进入死信队列');
   }
   return warnings;
 }
@@ -881,7 +901,7 @@ export function checkConnectorConfig(kind: ConnectorKind, text: string): string 
   if (kind === 'sink' && isHttpSinkClass(toText(parsed['connector.class']))) {
     const url = toText(parsed['http.url']).trim() || toText(parsed['http.api.url']).trim();
     if (url === '') {
-      return 'HTTP Sink 必须填 http.url（老配置用 http.api.url）：缺了连接器一启动就失败';
+      return 'HTTP Sink 必须填 http.url：缺了连接器一启动就失败';
     }
     if (!/^https?:\/\//i.test(url)) {
       return 'HTTP 地址必须以 http:// 或 https:// 开头';
