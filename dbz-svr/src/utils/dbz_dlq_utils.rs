@@ -290,15 +290,32 @@ mod tests {
         assert_eq!(value["retry.backoff.ms"], "3000");
     }
 
+    /// 新实现改了键名：写旧键不会报错，只会变成一条 unused 告警
     #[test]
-    fn rebue_http_sink_gets_its_own_retry_keys() {
+    fn rebue_sink_gets_http_retry_keys() {
         let source = r#"{"connector.class":"rebue.kafka.httpsink.HttpSinkConnector","topics":"dbz.orders","http.url":"http://magic/sync"}"#;
         let result = ensure_sink_dlq_config(source, &config()).unwrap();
         let value: Value = serde_json::from_str(&result).unwrap();
         assert_eq!(value["http.retry.max"], "10");
         assert_eq!(value["http.retry.backoff.ms"], "3000");
-        // Confluent 的键名不能被塞进 rebue 实现：那只会产生 unused 告警
+        // 旧键名不能被塞进新实现：那只会产生 unused 告警
         assert!(value.get("max.retries").is_none());
+        assert!(value.get("retry.backoff.ms").is_none());
+    }
+
+    /// 反过来也要对：插件还没升级时按新键名注入，重试配置就静默失效了
+    #[test]
+    fn rebue_legacy_sink_keeps_old_retry_keys() {
+        for class in ["rebue.wheel.kafka.httpsink.HttpSinkConnector"] {
+            let source = format!(
+                r#"{{"connector.class":"{class}","topics":"dbz.orders","http.url":"http://magic/sync"}}"#
+            );
+            let result = ensure_sink_dlq_config(&source, &config()).unwrap();
+            let value: Value = serde_json::from_str(&result).unwrap();
+            assert_eq!(value["max.retries"], "10", "{class}");
+            assert_eq!(value["retry.backoff.ms"], "3000", "{class}");
+            assert!(value.get("http.retry.max").is_none(), "{class}");
+        }
     }
 
     #[test]

@@ -21,14 +21,17 @@ static PLACEHOLDER: LazyLock<Regex> =
 
 /// # 下游连接器的能力分类
 ///
-/// 分类只用于「该注入什么配置、该校验什么必填项」，不代表运行时行为。同一个类名
-/// 可能对应不同实现版本（`rebue.wheel.kafka.httpsink.HttpSinkConnector` 的 1.0.0
-/// 前后行为不同），所以这里不做「是否支持 DLQ」的结论 —— 那需要插件版本，
-/// 而版本只有 Connect 的 `/connector-plugins` 才知道。
+/// 分类只用于「该注入什么配置、该校验什么必填项」，不代表运行时行为。自研实现有两代
+/// 类名：`rebue.wheel.*`（3.5.x，4xx/5xx 不进 DLQ）与 `rebue.kafka.*`（本版）。
+/// **配置键名**也按两代分开（旧的 `max.retries`、新的 `http.retry.*`），因为写错
+/// 不报错、只是静默失效；至于实际装的是哪一版，只有 Connect 的 `/connector-plugins`
+/// 才知道。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConnectorClass {
-    /// rebue 自研 HTTP Sink（`rebue.*.HttpSinkConnector`）
+    /// rebue 自研 HTTP Sink（`rebue.kafka.*`，键名已统一到 `http.*`）
     RebueHttpSink,
+    /// rebue 旧实现（`rebue.wheel.*` 3.5.x，键名还是 `max.retries` 那一套）
+    RebueLegacyHttpSink,
     /// Confluent HTTP Sink（`io.confluent.connect.http.HttpSinkConnector`）
     ConfluentHttpSink,
     /// 其它 HTTP Sink（类名带 HttpSinkConnector，但不是上面两家）
@@ -48,7 +51,10 @@ impl ConnectorClass {
             .unwrap_or_default()
             .to_ascii_lowercase();
         if class.contains("httpsinkconnector") || class.contains("connect.http") {
-            if class.contains("rebue") {
+            if class.contains("rebue.wheel") {
+                // 3.5.x：对 4xx/5xx 只记日志，而且只认 max.retries 这一套键名
+                Self::RebueLegacyHttpSink
+            } else if class.contains("rebue") {
                 Self::RebueHttpSink
             } else if class.contains("confluent") {
                 Self::ConfluentHttpSink
@@ -66,13 +72,19 @@ impl ConnectorClass {
     pub fn is_http_sink(self) -> bool {
         matches!(
             self,
-            Self::RebueHttpSink | Self::ConfluentHttpSink | Self::OtherHttpSink
+            Self::RebueHttpSink
+                | Self::RebueLegacyHttpSink
+                | Self::ConfluentHttpSink
+                | Self::OtherHttpSink
         )
     }
 
     /// 键名是否可预期：只有这一类才值得做必填校验
     pub fn has_known_http_keys(self) -> bool {
-        matches!(self, Self::RebueHttpSink | Self::ConfluentHttpSink)
+        matches!(
+            self,
+            Self::RebueHttpSink | Self::RebueLegacyHttpSink | Self::ConfluentHttpSink
+        )
     }
 
     /// # 这一类的请求级重试参数键名
@@ -80,14 +92,19 @@ impl ConnectorClass {
     /// 两家实现的键名不同，而且都**只认自己的**：写错了不会报错，只会变成一条
     /// unused 告警，页面上的重试配置看上去生效、实际没人读。
     ///
-    /// * rebue 2.x：`http.retry.max` / `http.retry.backoff.ms`
-    /// * Confluent：`max.retries` / `retry.backoff.ms`
+    /// * rebue 新版：`http.retry.max` / `http.retry.backoff.ms`
+    /// * rebue 3.5.x 与 Confluent：`max.retries` / `retry.backoff.ms`
+    ///
+    /// 3.5.x 必须单独列出：插件没换、dbz 先上线的那段时间里，线上跑的还是旧实现，
+    /// 一律按新键名注入会让重试配置静默失效。
     ///
     /// 认不出的实现返回 `None`：宁可不写，也不写一份假配置。
     pub fn retry_keys(self) -> Option<(&'static str, &'static str)> {
         match self {
             Self::RebueHttpSink => Some(("http.retry.max", "http.retry.backoff.ms")),
-            Self::ConfluentHttpSink => Some(("max.retries", "retry.backoff.ms")),
+            Self::RebueLegacyHttpSink | Self::ConfluentHttpSink => {
+                Some(("max.retries", "retry.backoff.ms"))
+            }
             Self::OtherHttpSink | Self::JdbcSink | Self::Unknown => None,
         }
     }
@@ -159,7 +176,7 @@ mod tests {
             ConnectorClass::detect(&object(
                 json!({"connector.class": "rebue.wheel.kafka.httpsink.HttpSinkConnector"})
             )),
-            ConnectorClass::RebueHttpSink
+            ConnectorClass::RebueLegacyHttpSink
         );
         assert_eq!(
             ConnectorClass::detect(&object(

@@ -582,7 +582,7 @@ const HTTP_GROUPS: FieldGroup[] = [
           'rebue.wheel.kafka.httpsink.HttpSinkConnector',
           'io.confluent.connect.http.HttpSinkConnector',
         ],
-        help: 'rebue.kafka.* 为自研 2.0，键名统一用 http.*；rebue.wheel.* 与 Confluent 版的键名不同，选错会得到一堆无效配置。',
+        help: 'rebue.kafka.* 为自研实现，键名统一用 http.*；rebue.wheel.*（3.5.x）与 Confluent 版的键名不同，选错会得到一堆无效配置。',
       },
       {
         key: 'topics',
@@ -710,8 +710,8 @@ const HTTP_TEMPLATES: Template[] = [
 /**
  * HTTP Sink 的运行前提提示。
  *
- * 第一条最要紧：`rebue.wheel.kafka.httpsink.HttpSinkConnector` 这个类名新旧两版都叫这个，
- * dbz 从配置上看不出装的是哪一版。旧版对 4xx/5xx 只打日志，死信页永远不会有记录。
+ * 第一条最要紧：旧实现的连接器配置看上去完全正常，但 4xx/5xx 只打日志、不进 DLQ，
+ * 死信页永远是空的。2.x 换了包名，从 `connector.class` 就能一眼分辨装的是哪一版。
  */
 function httpWarnings(config: Record<string, unknown>): string[] {
   const warnings: string[] = [];
