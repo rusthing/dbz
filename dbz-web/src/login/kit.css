@@ -1,0 +1,487 @@
+/* ==========================================================================
+   Robotech Suite · 统一登录骨架（E2 光轴穿联 · 定稿）
+   --------------------------------------------------------------------------
+   七个控制台共用同一份文件，禁止在单个项目里改这份样式。
+   站点差异只有四处：主题色（data-brand）、业务图形、字标、一句业务标语。
+
+   构图硬约束：
+   1. 一张卡内左 60% 纯插画 / 右 40% 纯表单，两区是兄弟节点、各自
+      overflow:hidden，插画绝不越界，图和表没有任何像素重叠；
+   2. 插画不带窗体框（brands.tsx 里已剥掉 g-win / 标题栏 / 三色圆点）；
+   3. 卡外有 45° 斜线 + 点阵 + 实线/虚线双圆弧 + 两处主色光晕；
+   4. 中缝是一条上下淡入淡出的主色发光竖轴 + 三个节点，只做视觉穿联；
+   5. 页面上没有系统切换按钮，没有说明卡、要点列表、统计浮卡。
+   ========================================================================== */
+
+.sl-shell,
+.sl-shell *,
+.sl-shell *::before,
+.sl-shell *::after {
+  box-sizing: border-box;
+}
+
+/* antd 项目的 body 可能带默认 margin；登录页是全屏画面，这里兜底清掉 */
+body:has(.sl-shell) {
+  margin: 0;
+  background: #070d18;
+}
+
+.sl-shell {
+  /* 七站共用中性色与字体阶梯 */
+  --sl-ink: #ffffff;
+  --sl-font: ui-sans-serif, -apple-system, "SF Pro Text", "PingFang SC",
+    "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  --sl-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo,
+    Consolas, monospace;
+
+  position: relative;
+  isolation: isolate;
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+  width: 100%;
+  padding: 32px 24px;
+  overflow: hidden;
+  background:
+    radial-gradient(660px 500px at 82% 18%, rgba(var(--sl-rgb), 0.26), transparent 72%),
+    radial-gradient(620px 460px at 10% 90%, rgba(var(--sl-rgb), 0.20), transparent 72%),
+    linear-gradient(145deg, var(--sl-deep1), var(--sl-deep2));
+  color: var(--sl-ink);
+  color-scheme: dark;
+  font-family: var(--sl-font);
+  font-size: 14px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* 七套主题：只改强调色与深色底，版式与控件完全一致 */
+.sl-shell[data-brand="adm"]   { --sl-a1:#7f9bff; --sl-a2:#a78bfa; --sl-a3:#4f6ee8; --sl-rgb:127,155,255; --sl-deep1:#0b1230; --sl-deep2:#1a2450; }
+.sl-shell[data-brand="jobx"]  { --sl-a1:#3ad39f; --sl-a2:#7ee0b8; --sl-a3:#128f6c; --sl-rgb:58,211,159;  --sl-deep1:#041a15; --sl-deep2:#0b3a2c; }
+.sl-shell[data-brand="msg"]   { --sl-a1:#58b6ff; --sl-a2:#7dd3fc; --sl-a3:#2563eb; --sl-rgb:88,182,255;  --sl-deep1:#06172f; --sl-deep2:#0d3358; }
+.sl-shell[data-brand="alarm"] { --sl-a1:#ff8a5c; --sl-a2:#ffc46b; --sl-a3:#ef4444; --sl-rgb:255,138,92;  --sl-deep1:#22100a; --sl-deep2:#4a1c11; }
+.sl-shell[data-brand="dbz"]   { --sl-a1:#a78bfa; --sl-a2:#f0abfc; --sl-a3:#7c3aed; --sl-rgb:167,139,250; --sl-deep1:#150b2b; --sl-deep2:#2d1b55; }
+.sl-shell[data-brand="dtw"]   { --sl-a1:#3ee0d0; --sl-a2:#5eead4; --sl-a3:#0e7490; --sl-rgb:62,224,208;  --sl-deep1:#03202a; --sl-deep2:#0a3d46; }
+.sl-shell[data-brand="syn"]   { --sl-a1:#fbbf24; --sl-a2:#fcd34d; --sl-a3:#b45309; --sl-rgb:251,191,36;  --sl-deep1:#211503; --sl-deep2:#47300c; }
+
+/* ------------------------------------------------------- 卡外质感层 */
+
+.sl-shell::before {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background-image:
+    repeating-linear-gradient(45deg, rgba(255, 255, 255, 0.028) 0 1px, transparent 1px 16px),
+    radial-gradient(rgba(255, 255, 255, 0.09) 1px, transparent 1px);
+  background-size: auto, 27px 27px;
+  mask-image: radial-gradient(800px 540px at 50% 50%, #000, transparent 90%);
+  content: "";
+}
+
+.sl-bg {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.sl-arc,
+.sl-arc2 {
+  position: absolute;
+  display: block;
+  border-radius: 50%;
+}
+
+.sl-arc {
+  width: 900px;
+  height: 900px;
+  left: -330px;
+  top: -260px;
+  border: 1px solid rgba(var(--sl-rgb), 0.14);
+}
+
+.sl-arc2 {
+  width: 620px;
+  height: 620px;
+  right: -220px;
+  bottom: -250px;
+  border: 1px dashed rgba(var(--sl-rgb), 0.12);
+}
+
+/* ------------------------------------------------------------- 一体卡 */
+
+.sl-card {
+  position: relative;
+  z-index: 2;
+  display: flex;
+  width: min(1040px, 100%);
+  min-height: 520px;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  border-radius: 22px;
+  background: linear-gradient(120deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.018));
+  box-shadow: 0 48px 110px -46px rgba(0, 0, 0, 0.92), inset 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+/* 左区：只有插画，绝不越界 */
+.sl-art {
+  position: relative;
+  width: 60%;
+  flex: none;
+  overflow: hidden;
+  background: radial-gradient(500px 380px at 46% 50%, rgba(var(--sl-rgb), 0.22), transparent 76%);
+}
+
+.sl-art::before {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 420px;
+  height: 420px;
+  border-radius: 50%;
+  transform: translate(-50%, -50%);
+  background: radial-gradient(circle, rgba(var(--sl-rgb), 0.10), transparent 70%);
+  pointer-events: none;
+  content: "";
+}
+
+.sl-art svg {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 94%;
+  height: auto;
+  transform: translate(-50%, -50%);
+  opacity: 0.97;
+}
+
+/* 右缘渐暗：只做羽化衔接，不是分割线、也不盖住表单 */
+.sl-art::after {
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent 64%, rgba(8, 14, 28, 0.34) 88%, rgba(8, 14, 28, 0.58) 100%);
+  pointer-events: none;
+  content: "";
+}
+
+.sl-cap {
+  position: absolute;
+  z-index: 2;
+  left: 30px;
+  bottom: 24px;
+  color: rgba(255, 255, 255, 0.5);
+  font-family: var(--sl-mono);
+  font-size: 9.5px;
+  letter-spacing: 0.16em;
+  white-space: nowrap;
+}
+
+/* 中缝：发光竖轴 + 三个节点 */
+.sl-axis {
+  position: absolute;
+  z-index: 5;
+  left: 60%;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: linear-gradient(180deg, transparent, var(--sl-a1) 20%, var(--sl-a1) 80%, transparent);
+  box-shadow: 0 0 18px var(--sl-a1);
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.sl-node {
+  position: absolute;
+  z-index: 6;
+  left: calc(60% - 4px);
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--sl-a2);
+  box-shadow: 0 0 14px var(--sl-a1);
+  pointer-events: none;
+}
+
+/* 右区：只有表单 */
+.sl-pane {
+  position: relative;
+  width: 40%;
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 40px 38px;
+  background: linear-gradient(90deg, rgba(8, 14, 28, 0.58), rgba(8, 14, 28, 0.91) 40%, rgba(8, 14, 28, 0.95));
+}
+
+.sl-pane::before {
+  position: absolute;
+  left: 38px;
+  right: 38px;
+  top: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(var(--sl-rgb), 0.5), transparent);
+  content: "";
+}
+
+/* --------------------------------------------------------- 字标与标语 */
+
+.sl-top {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sl-mark {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: none;
+  place-items: center;
+  border-radius: 10px;
+  background: linear-gradient(140deg, var(--sl-a1), var(--sl-a3));
+  color: #0b1020;
+  font-family: var(--sl-mono);
+  font-size: 12px;
+  font-weight: 800;
+  letter-spacing: 0.01em;
+}
+
+.sl-name {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+.sl-tagline {
+  margin: 26px 0 0;
+  font-size: 23px;
+  font-weight: 700;
+  line-height: 1.45;
+  letter-spacing: -0.035em;
+  /* 右栏只有 40% 宽，balanced 避免第二行只剩两三个孤字 */
+  text-wrap: balance;
+}
+
+.sl-rule {
+  width: 42px;
+  height: 3px;
+  margin: 18px 0 2px;
+  border-radius: 2px;
+  background: var(--sl-a1);
+}
+
+/* ------------------------------------------------------------- 表单 */
+
+.sl-banner {
+  margin-top: 18px;
+  padding: 9px 12px;
+  border: 1px solid rgba(var(--sl-rgb), 0.38);
+  border-radius: 10px;
+  background: rgba(var(--sl-rgb), 0.12);
+  color: rgba(255, 255, 255, 0.86);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.sl-form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.sl-field {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.sl-label {
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 11.5px;
+  font-weight: 600;
+}
+
+.sl-input-wrap {
+  position: relative;
+  display: block;
+  width: 100%;
+}
+
+.sl-input {
+  display: block;
+  width: 100%;
+  height: 44px;
+  margin: 0;
+  padding: 0 42px 0 13px;
+  border: 1px solid rgba(255, 255, 255, 0.20);
+  border-radius: 11px;
+  outline: none;
+  background: rgba(255, 255, 255, 0.07);
+  color: #fff;
+  font-family: var(--sl-font);
+  font-size: 13px;
+  line-height: 42px;
+  transition: border-color 0.16s, box-shadow 0.16s, background-color 0.16s;
+}
+
+.sl-input::placeholder {
+  color: rgba(255, 255, 255, 0.36);
+}
+
+.sl-input:focus {
+  border-color: var(--sl-a1);
+  background: rgba(255, 255, 255, 0.10);
+  box-shadow: 0 0 0 3px rgba(var(--sl-rgb), 0.22);
+}
+
+.sl-input:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.sl-eye {
+  position: absolute;
+  top: 0;
+  right: 4px;
+  display: grid;
+  width: 36px;
+  height: 44px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.5);
+  cursor: pointer;
+}
+
+.sl-eye:hover {
+  color: var(--sl-a1);
+}
+
+.sl-error {
+  padding: 9px 12px;
+  border: 1px solid rgba(251, 113, 133, 0.42);
+  border-radius: 10px;
+  background: rgba(251, 113, 133, 0.12);
+  color: #ffd7dd;
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.sl-submit {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: 100%;
+  height: 46px;
+  margin-top: 4px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 11px;
+  background: var(--sl-a1);
+  color: #0b1020;
+  font-family: var(--sl-font);
+  font-size: 13.5px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: filter 0.16s, transform 0.16s;
+}
+
+.sl-submit:hover:not(:disabled) {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+}
+
+.sl-submit:disabled {
+  opacity: 0.68;
+  cursor: not-allowed;
+}
+
+.sl-spinner {
+  animation: sl-spin 0.9s linear infinite;
+}
+
+/* ------------------------------------------------------- 业务插画样式 */
+/* 全部 scoped 在 .sl-shell 下，不会影响各项目站内页面 */
+
+.sl-shell .g-scene { display: block; width: 100%; height: auto; }
+.sl-shell .g-stroke { stroke: rgba(255,255,255,.18); stroke-width: 1; }
+.sl-shell .g-card { fill: rgba(255,255,255,.055); stroke: rgba(255,255,255,.10); stroke-width: 1; }
+.sl-shell .g-card-a { fill: rgba(var(--sl-rgb), .16); stroke: rgba(var(--sl-rgb), .45); stroke-width: 1; }
+.sl-shell .g-card-b { fill: rgba(var(--sl-rgb), .09); stroke: rgba(var(--sl-rgb), .22); stroke-width: 1; }
+.sl-shell .g-a { fill: var(--sl-a1); }
+.sl-shell .g-b { fill: var(--sl-a2); }
+.sl-shell .g-c { fill: var(--sl-a3); }
+.sl-shell .g-ok { fill: #4ade80; }
+.sl-shell .g-warn { fill: #fbbf24; }
+.sl-shell .g-bad { fill: #fb7185; }
+.sl-shell .g-line { fill: none; stroke: rgba(255,255,255,.14); stroke-width: 1; }
+.sl-shell .g-line-a { fill: none; stroke: var(--sl-a1); stroke-width: 1.4; opacity: .7; }
+.sl-shell .g-grid-line { fill: none; stroke: rgba(255,255,255,.07); stroke-width: 1; }
+.sl-shell .g-flow { fill: none; stroke: var(--sl-a1); stroke-width: 1.8; stroke-dasharray: 5 6; opacity: .8; animation: g-dash 9s linear infinite; }
+.sl-shell .g-dot { fill: var(--sl-a1); }
+.sl-shell .g-pulse { fill: rgba(var(--sl-rgb), .25); stroke: var(--sl-a1); stroke-width: 1; animation: g-pulse 2.6s ease-in-out infinite; }
+.sl-shell .g-t { fill: rgba(255,255,255,.92); font-size: 12px; font-weight: 600; }
+.sl-shell .g-t2 { fill: rgba(255,255,255,.74); font-size: 11.5px; }
+.sl-shell .g-tiny { fill: rgba(255,255,255,.48); font-size: 10px; }
+.sl-shell .g-mono { fill: rgba(255,255,255,.6); font-size: 10.5px; font-family: var(--sl-mono); }
+.sl-shell .g-label { fill: var(--sl-a1); font-size: 10px; letter-spacing: .12em; font-weight: 700; }
+.sl-shell .g-foot { fill: rgba(255,255,255,.34); font-size: 9.5px; letter-spacing: .1em; font-family: var(--sl-mono); }
+.sl-shell .g-track { fill: rgba(255,255,255,.10); }
+.sl-shell .g-hollow { fill: none; stroke: rgba(255,255,255,.25); stroke-width: 1; }
+.sl-shell .g-bar { fill: rgba(255,255,255,.22); }
+.sl-shell .g-pill { fill: rgba(var(--sl-rgb), .16); stroke: rgba(var(--sl-rgb), .42); stroke-width: 1; }
+.sl-shell .g-ring { fill: none; stroke: var(--sl-a1); stroke-width: 1.2; opacity: .55; }
+.sl-shell .g-core { fill: #fff; }
+.sl-shell .g-fence { stroke: var(--sl-a1); stroke-width: 2; opacity: .85; }
+.sl-shell .g-fence-dash { fill: none; stroke: var(--sl-a1); stroke-width: 1.4; stroke-dasharray: 6 5; }
+.sl-shell .g-road { fill: none; stroke: rgba(255,255,255,.10); stroke-width: 6; }
+.sl-shell .g-trajectory { fill: none; stroke: var(--sl-a2); stroke-width: 1.6; stroke-dasharray: 4 5; }
+.sl-shell .g-threshold { fill: none; stroke: #ff7a5c; stroke-width: 1.2; stroke-dasharray: 6 5; }
+.sl-shell .g-wave { fill: none; stroke: #ffa06b; stroke-width: 2; }
+.sl-shell .g-sev-p1 { fill: rgba(255,95,61,.18); stroke: rgba(255,95,61,.42); stroke-width: 1; }
+
+@keyframes g-dash { to { stroke-dashoffset: -110; } }
+@keyframes g-pulse { 0%, 100% { opacity: .45; } 50% { opacity: 1; } }
+@keyframes sl-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+  .sl-shell .g-flow,
+  .sl-shell .g-pulse,
+  .sl-spinner { animation: none; }
+  .sl-submit:hover:not(:disabled) { transform: none; }
+}
+
+/* ------------------------------------------------------------ 响应式 */
+/* 窄屏改成上下堆叠：仍然严格不重叠，且保留业务插画 */
+
+@media (max-width: 980px) {
+  .sl-shell { padding: 20px 14px; }
+  .sl-card { flex-direction: column; min-height: 0; width: min(560px, 100%); }
+  .sl-art { width: 100%; height: 220px; flex: none; }
+  .sl-art svg { width: 94%; }
+  .sl-art::after {
+    background: linear-gradient(180deg, transparent 62%, rgba(8, 14, 28, 0.30) 88%, rgba(8, 14, 28, 0.56) 100%);
+  }
+  .sl-cap { left: 20px; bottom: 14px; font-size: 9px; }
+  .sl-axis, .sl-node { display: none; }
+  .sl-pane { width: 100%; padding: 26px 26px 30px; }
+  .sl-pane::before { display: none; }
+  .sl-tagline { margin-top: 18px; font-size: 21px; }
+  .sl-rule { margin-top: 14px; }
+}
+
+@media (max-width: 480px) {
+  .sl-card { border-radius: 18px; }
+  .sl-art { height: 168px; }
+  .sl-art svg { width: 100%; }
+  .sl-pane { padding: 22px 20px 26px; }
+  .sl-tagline { font-size: 19px; }
+  .sl-input { height: 42px; line-height: 40px; }
+  .sl-eye { height: 42px; }
+}
