@@ -1,0 +1,980 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dbz-sync · 同步任务控制台（交互原型）</title>
+<style>
+:root{
+  --bg:#f5f6f8; --card:#ffffff; --line:#e4e7ed; --line-soft:#eef0f4;
+  --text:#1f2329; --sub:#5f6672; --muted:#9299a5;
+  --primary:#2b5cd9; --primary-soft:#eef3ff; --primary-line:#c9d9ff;
+  --ok:#0f8a5f; --ok-soft:#e9f7f0;
+  --warn:#b26a00; --warn-soft:#fff5e5; --warn-line:#f2d7a8;
+  --err:#c8402f; --err-soft:#fdeeeb;
+  --neutral:#6b7280; --neutral-soft:#f1f3f6;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--text);
+  font:13px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+button{font:inherit;color:inherit;cursor:pointer}
+input,select{font:inherit;color:inherit}
+code,.mono{font-family:var(--mono)}
+.topbar{
+  height:56px;background:var(--card);border-bottom:1px solid var(--line);
+  display:flex;align-items:center;gap:14px;padding:0 20px;position:sticky;top:0;z-index:20;
+}
+.logo{display:flex;align-items:center;gap:9px;font-size:15px;font-weight:650;letter-spacing:.2px}
+.logo-mark{
+  width:24px;height:24px;border-radius:6px;background:var(--primary);color:#fff;
+  display:grid;place-items:center;font-size:12px;font-weight:700;font-family:var(--mono)
+}
+.logo small{font-weight:400;color:var(--muted);font-size:11px;margin-left:2px}
+.topbar .sep{width:1px;height:20px;background:var(--line)}
+.crumb{color:var(--sub);font-size:12px}
+.spacer{flex:1}
+.ver{font-size:11px;color:var(--sub);background:var(--neutral-soft);border:1px solid var(--line);padding:3px 9px;border-radius:20px}
+.ver b{color:var(--text);font-family:var(--mono);font-weight:600}
+.dirty{font-size:11px;color:var(--warn);background:var(--warn-soft);border:1px solid var(--warn-line);padding:3px 9px;border-radius:20px;display:none}
+.dirty.on{display:inline-block}
+.btn{
+  border:1px solid var(--line);background:var(--card);border-radius:6px;
+  padding:6px 12px;font-size:12px;transition:.15s;white-space:nowrap
+}
+.btn:hover{border-color:#b9c2d0;background:#fafbfd}
+.btn.primary{background:var(--primary);border-color:var(--primary);color:#fff}
+.btn.primary:hover{background:#224cbb}
+.btn.sm{padding:3px 8px;font-size:11px}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.wrap{
+  display:grid;grid-template-columns:232px minmax(0,1fr) 344px;
+  gap:14px;padding:14px 18px 28px;align-items:start;max-width:1680px;margin:0 auto
+}
+.card{background:var(--card);border:1px solid var(--line);border-radius:9px}
+.card-h{
+  padding:11px 14px;border-bottom:1px solid var(--line-soft);
+  display:flex;align-items:center;gap:8px;font-weight:600;font-size:12.5px
+}
+.card-h .hint{font-weight:400;color:var(--muted);font-size:11px}
+.card-h .spacer{flex:1}
+.tasklist{padding:8px}
+.group-label{font-size:10.5px;color:var(--muted);letter-spacing:.6px;padding:8px 8px 5px;font-weight:600}
+.task-item{border:1px solid transparent;border-radius:7px;padding:8px 9px;margin-bottom:3px;cursor:pointer;transition:.13s}
+.task-item:hover{background:#f7f9fc}
+.task-item.active{background:var(--primary-soft);border-color:var(--primary-line)}
+.task-item .t1{display:flex;align-items:center;gap:6px}
+.task-item .tname{font-weight:600;font-size:12px;font-family:var(--mono);letter-spacing:-.2px}
+.task-item.active .tname{color:var(--primary)}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--ok);flex:none}
+.dot.off{background:#c2c8d1}
+.task-item .t2{color:var(--muted);font-size:10.5px;margin-top:3px;font-family:var(--mono)}
+.prio{margin-left:auto;font-size:10px;color:var(--sub);background:var(--neutral-soft);border-radius:4px;padding:1px 5px;font-family:var(--mono)}
+.newbtn{width:100%;border:1px dashed #cbd3df;background:transparent;border-radius:7px;padding:8px;color:var(--sub);font-size:11.5px;margin-top:8px}
+.newbtn:hover{border-color:var(--primary);color:var(--primary);background:var(--primary-soft)}
+.side-note{padding:10px 10px 4px;font-size:10.5px;color:var(--muted);line-height:1.65;border-top:1px solid var(--line-soft);margin-top:10px}
+.editor-head{padding:13px 16px 0}
+.title-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.title-row h2{margin:0;font-size:16px;font-weight:650;font-family:var(--mono);letter-spacing:-.3px}
+.subline{color:var(--muted);font-size:11.5px;margin:5px 0 12px;font-family:var(--mono)}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);padding:0 16px;overflow-x:auto}
+.tab{border:0;background:transparent;padding:9px 13px;font-size:12.5px;color:var(--sub);border-bottom:2px solid transparent;margin-bottom:-1px;white-space:nowrap}
+.tab:hover{color:var(--text)}
+.tab.active{color:var(--primary);border-bottom-color:var(--primary);font-weight:600}
+.tab .n{display:inline-grid;place-items:center;width:16px;height:16px;border-radius:50%;background:var(--neutral-soft);color:var(--muted);font-size:10px;margin-right:6px;font-family:var(--mono)}
+.tab.active .n{background:var(--primary-soft);color:var(--primary)}
+.panel{padding:14px 16px 18px;display:none}
+.panel.active{display:block}
+.note{display:flex;gap:9px;align-items:flex-start;border-radius:7px;padding:9px 11px;font-size:11.5px;line-height:1.65;margin-bottom:13px}
+.note.blue{background:var(--primary-soft);border:1px solid var(--primary-line);color:#23417f}
+.note.gray{background:var(--neutral-soft);border:1px solid var(--line);color:var(--sub)}
+.note.warn{background:var(--warn-soft);border:1px solid var(--warn-line);color:#7a4a00}
+.note .ic{font-family:var(--mono);font-weight:700;flex:none}
+.note b{font-weight:650}
+.grid{width:100%;border-collapse:separate;border-spacing:0;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+.grid th{background:#fafbfc;text-align:left;font-size:10.5px;color:var(--muted);font-weight:600;letter-spacing:.3px;padding:7px 9px;border-bottom:1px solid var(--line);white-space:nowrap}
+.grid td{padding:6px 9px;border-bottom:1px solid var(--line-soft);font-size:12px;vertical-align:middle}
+.grid tr:last-child td{border-bottom:0}
+.grid tbody tr:hover{background:#fcfdff}
+.grid input,.grid select{width:100%;border:1px solid transparent;background:transparent;border-radius:4px;padding:3px 5px;font-size:11.5px;min-width:0}
+.grid input:hover,.grid select:hover{border-color:var(--line);background:#fff}
+.grid input:focus,.grid select:focus{outline:none;border-color:var(--primary);background:#fff;box-shadow:0 0 0 2px var(--primary-soft)}
+.grid input.mono,.grid .mono{font-family:var(--mono);font-size:11px}
+.grid select{appearance:none;cursor:pointer;padding-right:14px;
+  background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='8' height='5'><path d='M0 0l4 5 4-5z' fill='%239299a5'/></svg>");
+  background-repeat:no-repeat;background-position:right 5px center}
+.rowacts{display:flex;gap:3px;justify-content:flex-end}
+.iconbtn{border:1px solid var(--line);background:#fff;border-radius:4px;width:21px;height:21px;display:grid;place-items:center;font-size:11px;color:var(--sub);padding:0;line-height:1}
+.iconbtn:hover{border-color:var(--primary);color:var(--primary)}
+.iconbtn.del:hover{border-color:var(--err);color:var(--err)}
+.addrow{margin-top:8px;border:1px dashed #cbd3df;background:#fff;border-radius:6px;padding:5px 11px;font-size:11.5px;color:var(--sub)}
+.addrow:hover{border-color:var(--primary);color:var(--primary)}
+.chips{display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+.chip{display:inline-flex;align-items:center;gap:4px;background:var(--primary-soft);border:1px solid var(--primary-line);color:#23417f;border-radius:4px;padding:1px 5px;font-family:var(--mono);font-size:10.5px;white-space:nowrap}
+.chip.x{cursor:pointer}
+.chip.x:hover{background:#dfe9ff}
+.chip.const{background:#f3edff;border-color:#ddccff;color:#5b3ba8}
+.chip.plain{background:var(--neutral-soft);border-color:var(--line);color:var(--sub)}
+.fnadd{display:flex;gap:5px;margin-top:9px;align-items:center;flex-wrap:wrap}
+.fnadd select{border:1px solid var(--line);border-radius:5px;padding:5px 7px;font-size:11.5px;background:#fff;max-width:260px}
+.fnadd .lbl{font-size:11px;color:var(--muted)}
+.locked{border:1px solid var(--line);border-radius:7px;background:#fbfcfd;overflow:hidden;margin-bottom:13px}
+.locked-h{display:flex;align-items:center;gap:7px;padding:8px 11px;background:var(--neutral-soft);border-bottom:1px solid var(--line);font-size:11.5px;font-weight:600;color:var(--sub)}
+.locked-h .lock{margin-left:auto;font-size:10px;color:var(--muted);font-weight:400}
+.locked table{width:100%;border-collapse:collapse;font-size:11.5px}
+.locked td{padding:6px 11px;border-bottom:1px solid var(--line-soft)}
+.locked tr:last-child td{border-bottom:0}
+.locked td:first-child{font-family:var(--mono);width:38%;color:var(--sub)}
+.locked .fixed{color:var(--muted)}
+.matrix{display:grid;grid-template-columns:repeat(4,1fr);gap:9px}
+.opcard{border:1px solid var(--line);border-radius:7px;padding:10px;background:#fff}
+.opcard .oph{display:flex;align-items:center;gap:6px;margin-bottom:9px}
+.opbadge{font-family:var(--mono);font-weight:700;font-size:11px;width:22px;height:22px;border-radius:5px;display:grid;place-items:center;background:var(--primary-soft);color:var(--primary);border:1px solid var(--primary-line)}
+.opcard .oplabel{font-size:10.5px;color:var(--muted)}
+.opcard label{display:block;font-size:10px;color:var(--muted);margin:7px 0 2px}
+.opcard input,.opcard select{width:100%;border:1px solid var(--line);border-radius:4px;padding:4px 6px;font-size:11px;background:#fff;font-family:var(--mono)}
+.opcard input:focus,.opcard select:focus{outline:none;border-color:var(--primary)}
+.opcard .kv{font-size:10.5px;color:var(--sub);font-family:var(--mono);background:var(--neutral-soft);padding:4px 6px;border-radius:4px;margin-top:5px}
+.targetbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;background:#fafbfc;border:1px solid var(--line);border-radius:7px;padding:9px 11px;margin-bottom:13px;font-size:11.5px}
+.targetbar .k{color:var(--muted)}
+.targetbar .v{font-family:var(--mono);background:#fff;border:1px solid var(--line);padding:2px 7px;border-radius:4px}
+.dryrun{position:sticky;top:70px}
+.drybody{padding:12px}
+.picker{width:100%;border:1px solid var(--line);border-radius:6px;padding:7px 8px;background:#fff;font-size:11.5px}
+.runbtn{width:100%;margin-top:9px;background:var(--primary);color:#fff;border:0;border-radius:6px;padding:9px;font-size:12.5px;font-weight:600}
+.runbtn:hover{background:#224cbb}
+.runmeta{font-size:10.5px;color:var(--muted);margin-top:7px;line-height:1.6}
+.steps{margin-top:13px;max-height:calc(100vh - 300px);overflow:auto;padding-right:2px}
+.step{border:1px solid var(--line);border-radius:7px;margin-bottom:8px;overflow:hidden}
+.step-h{display:flex;align-items:center;gap:7px;padding:7px 9px;background:#fafbfc;border-bottom:1px solid var(--line-soft);font-size:11.5px;font-weight:600}
+.step-n{width:17px;height:17px;border-radius:50%;background:var(--neutral-soft);color:var(--sub);display:grid;place-items:center;font-family:var(--mono);font-size:10px;flex:none}
+.step-h .res{margin-left:auto}
+.step-b{padding:8px 10px;font-size:11px;line-height:1.6}
+.badge{display:inline-block;border-radius:4px;padding:1px 6px;font-size:10px;font-family:var(--mono);font-weight:600;white-space:nowrap}
+.badge.ok{background:var(--ok-soft);color:var(--ok)}
+.badge.skip{background:var(--neutral-soft);color:var(--neutral)}
+.badge.fatal{background:var(--err-soft);color:var(--err)}
+.badge.retriable{background:var(--warn-soft);color:var(--warn)}
+.badge.info{background:var(--primary-soft);color:var(--primary)}
+.matchrow{display:flex;gap:6px;align-items:flex-start;padding:3px 0;color:var(--sub)}
+.matchrow .mk{font-family:var(--mono);font-size:10px;flex:none;width:12px}
+.matchrow .mn{font-family:var(--mono);font-size:10.5px;word-break:break-all}
+.matchrow.hit .mn{color:var(--primary);font-weight:600}
+.matchrow .why{color:var(--muted);font-size:10px;margin-left:auto;white-space:nowrap}
+pre.code{margin:0;background:#f7f8fa;border:1px solid var(--line-soft);border-radius:5px;padding:8px 9px;font-family:var(--mono);font-size:10.5px;line-height:1.6;white-space:pre-wrap;word-break:break-all;color:#2b3240;max-height:230px;overflow:auto}
+pre.code .key{color:#8a4b9c}
+pre.code .str{color:#0f7a55}
+pre.code .num{color:#b4680b}
+.http{font-family:var(--mono);font-size:10.5px;line-height:1.7}
+.http .m{color:var(--primary);font-weight:700}
+.http .h{color:var(--sub)}
+.flag{color:var(--warn);font-size:10.5px;margin-top:6px;line-height:1.55}
+.final{margin-top:10px;border-radius:7px;padding:9px 11px;border:1px solid var(--primary-line);background:var(--primary-soft)}
+.final .t{font-size:10.5px;color:#23417f;font-weight:600;margin-bottom:4px}
+.final .v{font-family:var(--mono);font-size:11.5px;color:#1b356b}
+.mask{position:fixed;inset:0;background:rgba(20,25,35,.38);display:none;z-index:50;align-items:center;justify-content:center;padding:24px}
+.mask.on{display:flex}
+.modal{background:#fff;border-radius:10px;width:min(820px,100%);max-height:86vh;display:flex;flex-direction:column;box-shadow:0 18px 50px rgba(20,30,50,.22)}
+.modal-h{padding:13px 16px;border-bottom:1px solid var(--line);display:flex;align-items:center;font-weight:600;font-size:13px}
+.modal-b{padding:14px 16px;overflow:auto}
+.modal-b pre{margin:0;font-family:var(--mono);font-size:11.5px;line-height:1.7;white-space:pre-wrap;color:#2b3240}
+.modal-f{padding:11px 16px;border-top:1px solid var(--line);display:flex;justify-content:flex-end;gap:8px}
+.toast{position:fixed;bottom:26px;left:50%;transform:translate(-50%,20px);opacity:0;pointer-events:none;background:#26303f;color:#fff;padding:9px 16px;border-radius:7px;font-size:12px;z-index:80;transition:.22s}
+.toast.on{opacity:1;transform:translate(-50%,0)}
+@media(max-width:1250px){
+  .wrap{grid-template-columns:210px minmax(0,1fr)}
+  .dryrun{grid-column:1/-1;position:static}
+  .steps{max-height:none}
+}
+@media(max-width:820px){
+  .wrap{grid-template-columns:1fr;padding:10px}
+  .matrix{grid-template-columns:repeat(2,1fr)}
+}
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="logo"><span class="logo-mark">dz</span>dbz-sync <small>同步任务控制台</small></div>
+  <div class="sep"></div>
+  <div class="crumb">配置管理 / 同步任务</div>
+  <div class="spacer"></div>
+  <span class="dirty" id="dirtyDot">● 草稿未发布</span>
+  <span class="ver">已发布 <b id="verNum">v12</b></span>
+  <button class="btn" id="btnYaml">YAML 视图</button>
+  <button class="btn" id="btnRollback">回滚</button>
+  <button class="btn primary" id="btnPublish">发布快照</button>
+</div>
+
+<div class="wrap">
+  <div class="card">
+    <div class="card-h">任务 <span class="hint" id="taskCount"></span></div>
+    <div class="tasklist" id="taskList"></div>
+    <div class="side-note">
+      同一 topic 下按 priority 升序匹配，<b>首个命中即停</b>。<br>
+      改配置只生成草稿；发布后执行器按版本号拉取快照，控制台与执行器不共享 DB 连接。
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="editor-head">
+      <div class="title-row">
+        <h2 id="curName">—</h2>
+        <span class="badge info" id="curTopic">—</span>
+        <div class="spacer" style="flex:1"></div>
+        <label style="font-size:11.5px;color:var(--sub);display:flex;align-items:center;gap:5px">
+          <input type="checkbox" id="curEnabled" checked> 启用
+        </label>
+      </div>
+      <div class="subline" id="curMeta">—</div>
+    </div>
+    <div class="tabs" id="tabs"></div>
+
+    <div class="panel" data-panel="match">
+      <div class="note blue"><span class="ic">i</span><div>
+        一个 topic 可挂多个任务。条件为「字段路径 + 操作符 + 值」的合取，<b>只支持一层 AND</b>；需要 OR 就加一条任务，不做嵌套布尔树。
+        字段路径从样例记录自动生成，不允许手写。
+      </div></div>
+      <table class="grid"><thead><tr>
+        <th style="width:42%">字段路径</th><th style="width:16%">操作符</th><th>值</th><th style="width:56px"></th>
+      </tr></thead><tbody id="matchBody"></tbody></table>
+      <button class="addrow" id="addMatch">+ 添加条件</button>
+      <div class="note gray" style="margin-top:14px"><span class="ic">◇</span><div>
+        topic / priority / enabled 是独立关系列并建索引，不参与 jsonb 扫描。未命中时由 topic 级默认结论决定：
+        <span class="mono">skip</span>（当前）。
+      </div></div>
+    </div>
+
+    <div class="panel" data-panel="mapping">
+      <div class="note blue"><span class="ic">i</span><div>
+        纯函数：一条记录 → 一个 body，<b>没有分支</b>。表分支已上移到匹配层（拆成多个任务）。
+        变换来自封闭注册表，只能选、不能写；新增函数需改代码发版。
+      </div></div>
+      <div class="targetbar">
+        <span class="k">空值策略</span>
+        <label style="display:flex;align-items:center;gap:5px"><input type="checkbox" id="omitNull" checked> 省略 null 字段</label>
+        <span class="k" style="margin-left:10px">字段数</span><span class="v" id="mapCount">0</span>
+      </div>
+      <table class="grid"><thead><tr>
+        <th style="width:17%">目标字段</th><th style="width:30%">来源 / 常量</th><th>变换链</th><th style="width:21%">失败策略</th><th style="width:56px"></th>
+      </tr></thead><tbody id="mapBody"></tbody></table>
+      <button class="addrow" id="addMap">+ 添加字段</button>
+      <div class="fnadd">
+        <span class="lbl">变换注册表（点 + 加到选中行）：</span>
+        <select id="fnSelect"></select>
+        <button class="btn sm" id="fnApply">添加</button>
+      </div>
+      <div class="locked" style="margin-top:16px">
+        <div class="locked-h">高级：脚本逃生门（L2）<span class="lock">默认关闭 · 需审批</span></div>
+        <table><tr><td>允许条件</td><td class="fixed">仅当逻辑需要「看第二条记录」才能算（批量聚合 / 跨记录去重 / 累计触发）</td></tr>
+        <tr><td>当前任务</td><td class="fixed">不需要。现有 3 个脚本全部落在 L0 表格 + L1 JSONPath。</td></tr>
+        <tr><td>开放范围</td><td class="fixed">只能挂单个映射单元格，不能接管整条流程</td></tr></table>
+      </div>
+    </div>
+
+    <div class="panel" data-panel="actions">
+      <div class="targetbar">
+        <span class="k">目标服务</span><span class="v" id="tvService">—</span>
+        <span class="k">路径前缀</span><span class="v" id="tvBase">—</span>
+        <span class="k" style="margin-left:auto;color:var(--muted)">host 由服务发现提供，不写在任务里</span>
+      </div>
+      <div class="note blue"><span class="ic">i</span><div>
+        op → 一个 HTTP 调用的 4 行矩阵。<code>r</code>（快照读）必须显式存在，不靠「没写就当 c」。
+      </div></div>
+      <div class="matrix" id="actionCards"></div>
+      <div class="note warn" style="margin-top:14px"><span class="ic">!</span><div>
+        <b>字段路径大小写敏感。</b>原脚本 <code>after.UPDATOR_ID</code>（大写）取不到小写的
+        <code>updator_id</code>，导致 <code>X-User-Id</code> 恒为 <code>"0"</code>、审计人一直是 0。
+        这里用样例记录树选择器选路径，编辑期即校验存在性。
+      </div></div>
+    </div>
+
+    <div class="panel" data-panel="outcomes">
+      <div class="locked">
+        <div class="locked-h">传输层分类 · 写死在代码里<span class="lock">不可配置</span></div>
+        <table>
+          <tr><td>200–299</td><td class="fixed">进入下方业务判定</td></tr>
+          <tr><td>408 / 429 / 5xx / 超时 / DNS</td><td class="fixed">retriable → 交给 sink 重试后进 DLQ</td></tr>
+          <tr><td>其余 4xx / 3xx</td><td class="fixed">确定性失败 → 直接进 DLQ</td></tr>
+        </table>
+      </div>
+      <div class="note blue"><span class="ic">i</span><div>
+        <b>第一条命中即停</b>，顺序决定语义（可用 ↑↓ 调整，改完点右侧「运行试跑」看变化）。
+        <code>retriable</code> 的含义固定为「翻译成 503 还给 sink」，执行器自身不重试、不排队。
+      </div></div>
+      <table class="grid"><thead><tr>
+        <th style="width:34px">#</th><th style="width:11%">作用域</th><th>断言（AND）</th>
+        <th style="width:15%">结论</th><th style="width:18%">分类码</th><th style="width:78px"></th>
+      </tr></thead><tbody id="outBody"></tbody></table>
+      <button class="addrow" id="addOut">+ 添加规则</button>
+      <div class="note gray" style="margin-top:14px"><span class="ic">◇</span><div>
+        最后一条是兜底规则，灰显不可删：<b>响应不认识时必须失败，不能静默成功</b>。
+        <code>contains</code> / <code>regex</code> 只允许用于分类、不用于流程控制，编辑器会标黄提示上游补错误码。
+      </div></div>
+    </div>
+
+    <div class="panel" data-panel="guards">
+      <div class="note blue"><span class="ic">i</span><div>
+        只回答一个问题：<b>已经组装好的 body 能不能发</b>。「这条要不要同步」属匹配，「字段带不带」属映射，
+        「变换抛异常」挂在映射行的失败策略上 —— 都不在这里。
+      </div></div>
+      <table class="grid"><thead><tr>
+        <th style="width:34px">#</th><th style="width:19%">适用条件</th><th>断言（AND）</th>
+        <th style="width:13%">结论</th><th style="width:17%">分类码</th><th>消息模板</th><th style="width:28px"></th>
+      </tr></thead><tbody id="guardBody"></tbody></table>
+      <button class="addrow" id="addGuard">+ 添加守卫</button>
+      <div class="note warn" style="margin-top:14px"><span class="ic">!</span><div>
+        第一条 <code>$.after exists</code> 是三个脚本都缺的前置断言：空 <code>after</code> 触发 NPE，
+        被 magic-api 平台吞成 HTTP 200 → <b>记录当成功消费掉，数据静默丢失</b>。
+      </div></div>
+    </div>
+  </div>
+
+  <div class="card dryrun">
+    <div class="card-h">试跑 · dry-run <span class="hint">不发出真实请求</span></div>
+    <div class="drybody">
+      <select class="picker" id="fixturePicker"></select>
+      <button class="runbtn" id="btnRun">▶ 运行试跑</button>
+      <div class="runmeta" id="runMeta">用保存的真实记录走完五段，并排显示每一步中间产物。</div>
+      <div class="steps" id="steps"></div>
+    </div>
+  </div>
+</div>
+
+<div class="mask" id="yamlMask">
+  <div class="modal">
+    <div class="modal-h">YAML 视图 <span class="spacer" style="flex:1"></span><span style="font-size:11px;color:var(--muted);font-weight:400">GUI 与文本共用同一份 schema</span></div>
+    <div class="modal-b"><pre id="yamlText"></pre></div>
+    <div class="modal-f"><button class="btn" id="yamlClose">关闭</button></div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+// ---- CORE-START ---- （纯逻辑，可脱离 DOM 单测）
+const FN_REGISTRY = [
+  {label:'trim', value:'trim'},
+  {label:'strip_nul  去空字节', value:'strip_nul'},
+  {label:'strip_suffix("电子围栏区")', value:'strip_suffix("电子围栏区")'},
+  {label:'truncate(100)', value:'truncate(100)'},
+  {label:'to_bool_01', value:'to_bool_01'},
+  {label:'wkb_to_wkt', value:'wkb_to_wkt'},
+  {label:'to_ms', value:'to_ms'},
+  {label:'upper', value:'upper'},
+  {label:'lower', value:'lower'},
+  {label:'default("0")', value:'default("0")'}
+];
+
+const TASKS = [
+  {
+    id:'dtw_region', topic:'dtw.dtw_region', priority:100, enabled:true,
+    target:{service:'dtw-rs-svr', base:'/dtw/region'},
+    match:[{field:'$.op', op:'in', value:['c','r','u','d']}],
+    mapping:{omit_null:true, rows:[
+      {to:'id',        from:'$.after.id'},
+      {to:'name',      from:'$.after.name', fn:['strip_suffix("电子围栏区")','trim'], on_empty:'keep_original'},
+      {to:'geom',      from:'$.after.polygon_location.wkb', fn:['wkb_to_wkt'], on_error:{verdict:'fatal',code:'WKB_INVALID'}},
+      {to:'tags',      const:'|电子围栏|'},
+      {to:'remark',    from:'$.after.remark'},
+      {to:'enabled',   from:'$.after.is_enable'},
+      {to:'createMs',  from:'$.after.create_timestamp'},
+      {to:'createrId', from:'$.after.creator_id'},
+      {to:'updateMs',  from:'$.after.update_timestamp'},
+      {to:'updaterId', from:'$.after.updator_id'}
+    ]},
+    actions:[
+      {op:'c',method:'POST',path:'/upsert',body:'mapped',headers:[{name:'X-User-Id',from:'$.after.updator_id',default:'0'}]},
+      {op:'r',method:'POST',path:'/upsert',body:'mapped',headers:[{name:'X-User-Id',from:'$.after.updator_id',default:'0'}]},
+      {op:'u',method:'POST',path:'/sync',  body:'mapped',headers:[{name:'X-User-Id',from:'$.after.updator_id',default:'0'}]},
+      {op:'d',method:'DELETE',path:'',     body:'none',query:[{name:'id',from:'$.before.id'}],headers:[{name:'X-User-Id',from:'$.before.updator_id',default:'0'}]}
+    ],
+    guards:[
+      {when:{field:'$.op',op:'ne',value:'d'}, assert:[{field:'$.after',op:'exists'},{field:'$.after.polygon_location.wkb',op:'present'}],
+       else:{verdict:'fatal',code:'POLYGON_MISSING',message:'区域 {after.id} 的几何为空'}}
+    ],
+    outcomes:[
+      {scope:'body',  assert:[{field:'$.extra.code',op:'eq',value:'RTW00001'}], verdict:'skip',    code:'duplicate'},
+      {scope:'body',  assert:[{field:'$.extra.code',op:'eq',value:'RTW00002'}], verdict:'fatal',   code:'fk_missing'},
+      {scope:'body',  assert:[{field:'$.result',op:'lt',value:0}],              verdict:'fatal',   code:'business_error'},
+      {scope:'status',assert:[{op:'in',value:[200,201]}],                       verdict:'success', code:''}
+    ]
+  },
+  {
+    id:'dtw_user_locator', topic:'dtw.dtw_locator_bind', priority:110, enabled:true,
+    target:{service:'dtw-rs-svr', base:'/dtw/locator-bind'},
+    match:[{field:'$.source.table',op:'eq',value:'dtw_user_locator'}],
+    mapping:{omit_null:true, rows:[
+      {to:'id',               from:'$.after.id'},
+      {to:'code',             from:'$.after.locator_id'},
+      {to:'bindTargetType',   const:1},
+      {to:'bindTargetId',     from:'$.after.user_id'},
+      {to:'bindTargetSubType',from:'$.after.type_dic_value'},
+      {to:'createMs',         from:'$.after.create_timestamp'},
+      {to:'createrId',        from:'$.after.creator_id'},
+      {to:'updateMs',         from:'$.after.update_timestamp'},
+      {to:'updaterId',        from:'$.after.updator_id'}
+    ]},
+    actions:[
+      {op:'c',method:'POST',path:'',       body:'mapped',headers:[{name:'X-User-Id',from:'$.after.updator_id',default:'0'}]},
+      {op:'r',method:'POST',path:'',       body:'mapped',headers:[{name:'X-User-Id',from:'$.after.updator_id',default:'0'}]},
+      {op:'u',method:'POST',path:'/upsert',body:'mapped',headers:[{name:'X-User-Id',from:'$.after.updator_id',default:'0'}]},
+      {op:'d',method:'DELETE',path:'',     body:'none',query:[{name:'id',from:'$.before.id'}],headers:[{name:'X-User-Id',from:'$.before.updator_id',default:'0'}]}
+    ],
+    guards:[{when:{field:'$.op',op:'ne',value:'d'},assert:[{field:'$.after',op:'exists'},{field:'$.after.user_id',op:'present'}],else:{verdict:'fatal',code:'TARGET_MISSING',message:'绑定目标缺失'}}],
+    outcomes:[
+      {scope:'body',assert:[{field:'$.extra.code',op:'eq',value:'RTW00001'}],verdict:'skip',code:'duplicate'},
+      {scope:'body',assert:[{field:'$.extra.code',op:'eq',value:'RTW00002'}],verdict:'fatal',code:'fk_missing'},
+      {scope:'status',assert:[{op:'in',value:[200,201]}],verdict:'success',code:''}
+    ]
+  },
+  {
+    id:'dtw_car_locator', topic:'dtw.dtw_locator_bind', priority:120, enabled:true,
+    target:{service:'dtw-rs-svr', base:'/dtw/locator-bind'},
+    match:[{field:'$.source.table',op:'eq',value:'dtw_car_locator'}],
+    mapping:{omit_null:true, rows:[
+      {to:'id',               from:'$.after.id'},
+      {to:'code',             from:'$.after.locator_id'},
+      {to:'bindTargetType',   const:2},
+      {to:'bindTargetId',     from:'$.after.car_id'},
+      {to:'bindTargetSubType',from:'$.after.type_dic_value'},
+      {to:'createMs',         from:'$.after.create_timestamp'},
+      {to:'createrId',        from:'$.after.creator_id'},
+      {to:'updateMs',         from:'$.after.update_timestamp'},
+      {to:'updaterId',        from:'$.after.updator_id'}
+    ]},
+    actions:[
+      {op:'c',method:'POST',path:'',       body:'mapped',headers:[{name:'X-User-Id',from:'$.after.updator_id',default:'0'}]},
+      {op:'r',method:'POST',path:'',       body:'mapped',headers:[{name:'X-User-Id',from:'$.after.updator_id',default:'0'}]},
+      {op:'u',method:'POST',path:'/upsert',body:'mapped',headers:[{name:'X-User-Id',from:'$.after.updator_id',default:'0'}]},
+      {op:'d',method:'DELETE',path:'',     body:'none',query:[{name:'id',from:'$.before.id'}],headers:[{name:'X-User-Id',from:'$.before.updator_id',default:'0'}]}
+    ],
+    guards:[{when:{field:'$.op',op:'ne',value:'d'},assert:[{field:'$.after',op:'exists'},{field:'$.after.car_id',op:'present'}],else:{verdict:'fatal',code:'TARGET_MISSING',message:'绑定目标缺失'}}],
+    outcomes:[
+      {scope:'body',assert:[{field:'$.extra.code',op:'eq',value:'RTW00001'}],verdict:'skip',code:'duplicate'},
+      {scope:'body',assert:[{field:'$.extra.code',op:'eq',value:'RTW00002'}],verdict:'fatal',code:'fk_missing'},
+      {scope:'status',assert:[{op:'in',value:[200,201]}],verdict:'success',code:''}
+    ]
+  },
+  {
+    id:'dtw_person', topic:'adm.adm_person', priority:200, enabled:true,
+    target:{service:'dtw-rs-svr', base:'/dtw/person'},
+    match:[{field:'$.op',op:'in',value:['c','r','u','d']}],
+    mapping:{omit_null:true, rows:[
+      {to:'id',       from:'$.after.ID'},
+      {to:'code',     from:'$.after.CODE', fn:['strip_nul']},
+      {to:'name',     from:'$.after.NAME', fn:['strip_nul','truncate(100)']},
+      {to:'idCard',   from:'$.after.ID_CARD', fn:['strip_nul']},
+      {to:'mobile',   from:'$.after.MOBILE', fn:['strip_nul']},
+      {to:'enabled',  from:'$.after.IS_ENABLED', fn:['to_bool_01']},
+      {to:'createMs', from:'$.after.CREATE_TIMESTAMP'},
+      {to:'createrId',from:'$.after.CREATOR_ID'},
+      {to:'updateMs', from:'$.after.UPDATE_TIMESTAMP'},
+      {to:'updaterId',from:'$.after.UPDATOR_ID'}
+    ]},
+    actions:[
+      {op:'c',method:'POST',path:'',       body:'mapped',headers:[{name:'X-User-Id',from:'$.after.UPDATOR_ID',default:'0'}]},
+      {op:'r',method:'POST',path:'',       body:'mapped',headers:[{name:'X-User-Id',from:'$.after.UPDATOR_ID',default:'0'}]},
+      {op:'u',method:'POST',path:'/upsert',body:'mapped',headers:[{name:'X-User-Id',from:'$.after.UPDATOR_ID',default:'0'}]},
+      {op:'d',method:'DELETE',path:'',     body:'none',query:[{name:'id',from:'$.before.ID'}],headers:[{name:'X-User-Id',from:'$.before.UPDATOR_ID',default:'0'}]}
+    ],
+    guards:[
+      {when:{field:'$.op',op:'in',value:['c','r','u']},assert:[{field:'$.after',op:'exists'},{field:'name',op:'present',scope:'body'}],else:{verdict:'fatal',code:'EMPTY_NAME',message:'人员姓名为空'}},
+      {when:{field:'$.op',op:'ne',value:'d'},assert:[{field:'$.after',op:'exists'}],else:{verdict:'fatal',code:'EMPTY_RECORD',message:'记录缺少 after'}}
+    ],
+    outcomes:[
+      {scope:'body',assert:[{field:'$.extra.code',op:'eq',value:'RTW00001'}],verdict:'skip',code:'duplicate'},
+      {scope:'body',assert:[{field:'$.extra.code',op:'eq',value:'RTW00002'}],verdict:'fatal',code:'fk_missing'},
+      {scope:'status',assert:[{op:'in',value:[200,201]}],verdict:'success',code:''}
+    ]
+  }
+];
+
+const WKB_OK = '01030000000100000005000000';
+const FIXTURES = [
+  {id:'region-c', label:'区域新增 · 正常', topic:'dtw.dtw_region',
+   record:{op:'c',source:{table:'dtw_region'},after:{id:8821,name:'一号电子围栏区',remark:'东门',is_enable:1,
+     create_timestamp:1762900000000,creator_id:1001,update_timestamp:1762900100000,updator_id:2002,
+     polygon_location:{wkb:WKB_OK}},before:null},
+   status:200,response:{result:0,msg:'ok'}},
+  {id:'region-dup', label:'区域快照重放 · 已存在', topic:'dtw.dtw_region',
+   record:{op:'r',source:{table:'dtw_region'},after:{id:8821,name:'一号电子围栏区',remark:'东门',is_enable:1,
+     create_timestamp:1762900000000,creator_id:1001,update_timestamp:1762900100000,updator_id:2002,
+     polygon_location:{wkb:WKB_OK}},before:null},
+   status:200,response:{result:-1,extra:{code:'RTW00001'},msg:'已存在'}},
+  {id:'region-fk', label:'区域更新 · 外键缺失', topic:'dtw.dtw_region',
+   record:{op:'u',source:{table:'dtw_region'},after:{id:8821,name:'一号电子围栏区',is_enable:1,
+     update_timestamp:1762900200000,updator_id:2002,polygon_location:{wkb:WKB_OK}},before:null},
+   status:200,response:{result:-1,extra:{code:'RTW00002'},msg:'外键不存在'}},
+  {id:'region-nowkb', label:'区域新增 · 几何缺失（守卫拦截）', topic:'dtw.dtw_region',
+   record:{op:'c',source:{table:'dtw_region'},after:{id:8822,name:'二号围栏',polygon_location:{wkb:null}},before:null},
+   status:200,response:{result:0,msg:'ok'}},
+  {id:'region-badwkb', label:'区域新增 · WKB 解析失败', topic:'dtw.dtw_region',
+   record:{op:'c',source:{table:'dtw_region'},after:{id:8823,name:'三号围栏',polygon_location:{wkb:'BADDATA'}},before:null},
+   status:200,response:{result:0,msg:'ok'}},
+  {id:'locator-user', label:'定位器绑定 · 人员表', topic:'dtw.dtw_locator_bind',
+   record:{op:'c',source:{table:'dtw_user_locator'},after:{id:441,locator_id:'LOC-01',type_dic_value:3,user_id:77001,
+     create_timestamp:1762900000000,creator_id:1001,update_timestamp:1762900100000,updator_id:2002},before:null},
+   status:200,response:{result:0,msg:'ok'}},
+  {id:'locator-car', label:'定位器绑定 · 车辆表', topic:'dtw.dtw_locator_bind',
+   record:{op:'u',source:{table:'dtw_car_locator'},after:{id:442,locator_id:'LOC-02',type_dic_value:4,car_id:88002,
+     update_timestamp:1762900300000,updator_id:2002},before:null},
+   status:200,response:{result:0,msg:'ok'}},
+  {id:'person-empty', label:'人员新增 · 姓名仅空字节', topic:'adm.adm_person',
+   record:{op:'c',source:{table:'adm_person'},after:{ID:9901,CODE:'P-01',NAME:'\u0000\u0000',ID_CARD:'110101199001011234',
+     MOBILE:'13800138000',IS_ENABLED:1,CREATE_TIMESTAMP:1762900000000,CREATOR_ID:1001,
+     UPDATE_TIMESTAMP:1762900100000,UPDATOR_ID:2002},before:null},
+   status:200,response:{result:0,msg:'ok'}}
+];
+
+const OPS = ['eq','ne','in','not_in','exists','absent','present','starts_with','contains','regex','gt','lt'];
+
+function getPath(obj, path){
+  if(!path || typeof path!=='string') return undefined;
+  const parts = path.replace(/^\$\.?/,'').split('.').filter(Boolean);
+  let cur = obj;
+  for(const p of parts){
+    if(cur===null || cur===undefined) return undefined;
+    const m = p.match(/^(\w+)(?:\[(\d+)\])?$/);
+    if(!m) return undefined;
+    cur = cur[m[1]];
+    if(m[2]!==undefined && Array.isArray(cur)) cur = cur[Number(m[2])];
+  }
+  return cur;
+}
+function present(v){ return v!==undefined && v!==null && !(typeof v==='string' && v.trim()===''); }
+function evalAssert(a, ctx){
+  const useBody = (a.scope!==undefined ? a.scope==='body' : ctx.scope==='body');
+  const lhs = a.field ? getPath(useBody?ctx.body:ctx.record, a.field) : ctx.status;
+  const v = a.value;
+  switch(a.op){
+    case 'eq': return lhs === v;
+    case 'ne': return lhs !== v;
+    case 'in': return Array.isArray(v) && v.includes(lhs);
+    case 'not_in': return Array.isArray(v) && !v.includes(lhs);
+    case 'exists': return lhs!==undefined && lhs!==null;
+    case 'absent': return lhs===undefined || lhs===null;
+    case 'present': return present(lhs);
+    case 'starts_with': return typeof lhs==='string' && lhs.startsWith(String(v));
+    case 'contains': return String(lhs===undefined||lhs===null?'':lhs).includes(String(v));
+    case 'regex': try{return new RegExp(v).test(String(lhs===undefined||lhs===null?'':lhs))}catch(e){return false}
+    case 'gt': return Number(lhs) > Number(v);
+    case 'lt': return Number(lhs) < Number(v);
+    default: return false;
+  }
+}
+function evalMatch(task, rec){
+  if(!task.enabled) return {hit:false, why:'任务已停用'};
+  for(const c of task.match){
+    if(!evalAssert(c,{record:rec,body:{},status:0})){
+      const lhs = getPath(rec,c.field);
+      return {hit:false, why:c.field+' = '+JSON.stringify(lhs)+' 不满足 '+c.op};
+    }
+  }
+  return {hit:true, why:'全部条件满足'};
+}
+function parseFn(spec){
+  const m = spec.match(/^(\w+)(?:\((.*)\))?$/);
+  if(!m) return {name:spec,args:[]};
+  let args=[];
+  if(m[2]!==undefined && m[2].trim()!==''){
+    args = m[2].split(',').map(s=>{
+      s=s.trim();
+      if(/^".*"$/.test(s)||/^'.*'$/.test(s)) return s.slice(1,-1);
+      if(/^-?\d+(\.\d+)?$/.test(s)) return Number(s);
+      return s;
+    });
+  }
+  return {name:m[1],args};
+}
+function applyFn(v, spec){
+  const {name,args} = parseFn(spec);
+  switch(name){
+    case 'trim': return typeof v==='string'?v.trim():v;
+    case 'strip_nul': return String(v==null?'':v).replace(/\x00/g,'');
+    case 'strip_suffix': {
+      const s=String(v==null?'':v), suf=String(args[0]==null?'':args[0]);
+      return suf && s.endsWith(suf) ? s.slice(0,-suf.length) : s;
+    }
+    case 'strip_prefix': {
+      const s=String(v==null?'':v), pre=String(args[0]==null?'':args[0]);
+      return pre && s.startsWith(pre) ? s.slice(pre.length) : s;
+    }
+    case 'truncate': { const s=String(v==null?'':v); return s.slice(0,Number(args[0]==null?100:args[0])); }
+    case 'to_bool_01': return v===null||v===undefined ? null : (v===true||v===1||v==='1');
+    case 'wkb_to_wkt': {
+      const s=String(v==null?'':v);
+      if(!s.startsWith('0103')) throw new Error('wkbToWkt failed: invalid geometry');
+      return 'POLYGON((116.391 39.907,116.397 39.907,116.397 39.912,116.391 39.912,116.391 39.907))';
+    }
+    case 'to_ms': { const n=Number(v); return n>0 && n<1e11 ? n*1000 : n; }
+    case 'upper': return String(v==null?'':v).toUpperCase();
+    case 'lower': return String(v==null?'':v).toLowerCase();
+    case 'default': return present(v)?v:args[0];
+    default: return v;
+  }
+}
+function evalMapping(task, rec){
+  const body={}, trace=[], errors=[];
+  for(const row of task.mapping.rows){
+    let v = row.const!==undefined ? row.const : getPath(rec,row.from);
+    const original=v;
+    if(v===undefined||v===null){
+      if(task.mapping.omit_null) continue;
+      body[row.to]=null; trace.push({to:row.to,note:'null 保留'}); continue;
+    }
+    let failed=false;
+    for(const fn of (row.fn||[])){
+      try{ v=applyFn(v,fn); }
+      catch(e){
+        failed=true;
+        const pol=row.on_error||{verdict:'fatal',code:'TRANSFORM_ERROR'};
+        errors.push({field:row.to, verdict:pol.verdict, code:pol.code, detail:String(e.message||e)});
+        break;
+      }
+    }
+    if(failed) continue;
+    if(row.on_empty==='keep_original' && !present(v)) v=original;
+    body[row.to]=v;
+    trace.push({to:row.to, note:(row.fn||[]).length?row.fn.join(' → '):(row.const!==undefined?'常量':'直传')});
+  }
+  return {body,trace,errors};
+}
+function evalGuards(task, rec, body){
+  for(const g of (task.guards||[])){
+    if(g.when && !evalAssert(g.when,{record:rec,body,status:0})) continue;
+    const failed = (g.assert||[]).find(a=>!evalAssert(a,{record:rec,body,status:0}));
+    if(failed) return {pass:false, rule:g, failed};
+  }
+  return {pass:true};
+}
+function evalOutcomes(task, status, resp){
+  for(let i=0;i<task.outcomes.length;i++){
+    const r=task.outcomes[i];
+    const ok=(r.assert||[]).every(a=>evalAssert(a,{status,body:resp,record:{},scope:r.scope}));
+    if(ok) return {index:i+1, rule:r};
+  }
+  return {index:0, rule:{verdict:'fatal',code:'unclassified',scope:'fallback',assert:[]}};
+}
+function findAction(task, op){ return (task.actions||[]).find(a=>a.op===op); }
+function buildDryRun(fixture, tasks){
+  const rec = fixture.record;
+  const candidates = tasks.filter(t=>t.topic===fixture.topic).sort((a,b)=>a.priority-b.priority);
+  const checks=[];
+  let task=null;
+  for(const t of candidates){
+    const r = evalMatch(t,rec);
+    if(task===null && r.hit){ checks.push({task:t,hit:true,why:r.why}); task=t; }
+    else checks.push({task:t,hit:false,why:task?'首命中即停':r.why});
+  }
+  const result={fixture,checks,task};
+  if(!task){ result.verdict={verdict:'skip',code:'no_match'}; return result; }
+  const mapped=evalMapping(task,rec);
+  result.mapped=mapped;
+  if(mapped.errors.length){ result.verdict=mapped.errors[0]; return result; }
+  const guard=evalGuards(task,rec,mapped.body);
+  result.guards=guard;
+  if(!guard.pass){ result.verdict=guard.rule.else; return result; }
+  result.action=findAction(task,rec.op);
+  result.outcome=evalOutcomes(task,fixture.status,fixture.response);
+  result.verdict={verdict:result.outcome.rule.verdict, code:result.outcome.rule.code};
+  return result;
+}
+function yamlOf(t){
+  const q=s=>'"'+String(s).replace(/"/g,'\\"')+'"';
+  const L=[];
+  L.push('id: '+t.id, 'topic: '+t.topic, 'priority: '+t.priority, 'enabled: '+t.enabled, '');
+  L.push('target:', '  service: '+t.target.service, '  base: '+t.target.base, '');
+  L.push('match:');
+  t.match.forEach(c=>L.push('  - { field: '+c.field+', op: '+c.op+', value: '+JSON.stringify(c.value)+' }'));
+  L.push('', 'mapping:', '  omit_null: '+t.mapping.omit_null, '  rows:');
+  t.mapping.rows.forEach(r=>{
+    let s='    - { to: '+r.to+', ';
+    s += r.const!==undefined ? 'const: '+q(r.const) : 'from: '+r.from;
+    if(r.fn&&r.fn.length) s+=', fn: ['+r.fn.join(', ')+']';
+    if(r.on_empty) s+=', on_empty: '+r.on_empty;
+    if(r.on_error) s+=', on_error: { verdict: '+r.on_error.verdict+', code: '+r.on_error.code+' }';
+    L.push(s+' }');
+  });
+  L.push('', 'actions:');
+  t.actions.forEach(a=>{
+    let s='  - { op: '+a.op+', method: '+a.method+', path: '+q(a.path)+', body: '+a.body;
+    if(a.query&&a.query.length) s+=', query: ['+a.query.map(x=>'{ name: '+x.name+', from: '+x.from+' }').join(', ')+']';
+    if(a.headers&&a.headers.length) s+=', headers: ['+a.headers.map(x=>'{ name: '+x.name+', from: '+x.from+', default: '+q(x.default)+' }').join(', ')+']';
+    L.push(s+' }');
+  });
+  L.push('', 'guards:');
+  (t.guards||[]).forEach(g=>{
+    L.push('  - when: { field: '+g.when.field+', op: '+g.when.op+', value: '+JSON.stringify(g.when.value)+' }');
+    L.push('    assert: ['+g.assert.map(a=>'{ field: '+a.field+', op: '+a.op+(a.scope?', scope: '+a.scope:'')+' }').join(', ')+']');
+    L.push('    else: { verdict: '+g.else.verdict+', code: '+g.else.code+', message: '+q(g.else.message)+' }');
+  });
+  L.push('', 'outcomes:');
+  t.outcomes.forEach(r=>{
+    L.push('  - { scope: '+r.scope+', assert: ['+r.assert.map(a=>'{ '+(a.field?'field: '+a.field+', ':'')+'op: '+a.op+', value: '+JSON.stringify(a.value)+' }').join(', ')
+      +'], verdict: '+r.verdict+', code: '+q(r.code)+' }');
+  });
+  return L.join('\n');
+}
+// ---- CORE-END ----
+
+if(typeof document!=='undefined'){
+(function(){
+  const $ = id=>document.getElementById(id);
+  const esc = s=>String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  const jq = v=>JSON.stringify(v);
+  let cur = TASKS[0].id, tab='mapping', selectedMapRow=0, version=12, dirty=false;
+
+  const TABS=[['match','匹配'],['mapping','映射'],['actions','动作'],['outcomes','判定'],['guards','校验']];
+  const getT = ()=>TASKS.find(t=>t.id===cur);
+  const toast = msg=>{ const e=$('toast'); e.textContent=msg; e.classList.add('on'); clearTimeout(e._t); e._t=setTimeout(()=>e.classList.remove('on'),2300); };
+  const setDirty = ()=>{ dirty=true; $('dirtyDot').classList.add('on'); };
+  const opt = (list,val)=>list.map(x=>'<option value="'+esc(x)+'"'+(x===val?' selected':'')+'>'+esc(x)+'</option>').join('');
+
+  function renderTaskList(){
+    $('taskCount').textContent = TASKS.length+' 个';
+    $('taskList').innerHTML = TASKS.map(t=>
+      '<div class="task-item'+(t.id===cur?' active':'')+'" data-id="'+esc(t.id)+'">'+
+      '<div class="t1"><span class="dot'+(t.enabled?'':' off')+'"></span><span class="tname">'+esc(t.id)+'</span>'+
+      '<span class="prio">'+t.priority+'</span></div>'+
+      '<div class="t2">'+esc(t.topic)+'</div></div>').join('')+
+      '<button class="newbtn" id="newTask">+ 新建任务</button>';
+    document.querySelectorAll('.task-item').forEach(el=>el.onclick=()=>{cur=el.dataset.id;selectedMapRow=0;renderAll();runDry();});
+    $('newTask').onclick=()=>toast('原型演示：新建任务会复用同一份五段 schema');
+  }
+  function renderHead(){
+    const t=getT();
+    $('curName').textContent=t.id;
+    $('curTopic').textContent=t.topic;
+    $('curMeta').textContent='priority '+t.priority+'  ·  '+t.mapping.rows.length+' 个映射字段  ·  '+t.actions.length+' 个动作  ·  '+t.outcomes.length+' 条判定规则';
+    $('curEnabled').checked=t.enabled;
+    $('tvService').textContent=t.target.service;
+    $('tvBase').textContent=t.target.base;
+    $('tabs').innerHTML=TABS.map((x,i)=>'<button class="tab'+(tab===x[0]?' active':'')+'" data-tab="'+x[0]+'"><span class="n">'+(i+1)+'</span>'+x[1]+'</button>').join('');
+    document.querySelectorAll('.tab').forEach(b=>b.onclick=()=>{tab=b.dataset.tab;renderTabs();});
+  }
+  function renderTabs(){
+    document.querySelectorAll('.tab').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));
+    document.querySelectorAll('.panel').forEach(p=>p.classList.toggle('active',p.dataset.panel===tab));
+  }
+  function valInput(v){ return '<input class="mono" value="'+esc(Array.isArray(v)?v.join(', '):v)+'" data-k="value">'; }
+
+  function renderMatch(){
+    const t=getT();
+    $('matchBody').innerHTML=t.match.map((c,i)=>
+      '<tr data-i="'+i+'">'+
+      '<td><input class="mono" value="'+esc(c.field)+'" data-k="field"></td>'+
+      '<td><select data-k="op">'+opt(OPS,c.op)+'</select></td>'+
+      '<td>'+valInput(c.value)+'</td>'+
+      '<td><div class="rowacts"><button class="iconbtn del" data-act="del">×</button></div></td></tr>').join('');
+    bindGrid('matchBody',t.match,'match');
+  }
+  function renderMapping(){
+    const t=getT();
+    $('omitNull').checked=t.mapping.omit_null;
+    $('mapCount').textContent=t.mapping.rows.length+' 行';
+    $('mapBody').innerHTML=t.mapping.rows.map((r,i)=>
+      '<tr data-i="'+i+'"'+(i===selectedMapRow?' style="background:#f5f8ff"':'')+'>'+
+      '<td><input class="mono" value="'+esc(r.to)+'" data-k="to"></td>'+
+      '<td>'+(r.const!==undefined
+        ? '<span class="chip const">const '+esc(jq(r.const))+'</span>'
+        : '<input class="mono" value="'+esc(r.from)+'" data-k="from">')+'</td>'+
+      '<td><div class="chips">'+(r.fn||[]).map((f,k)=>'<span class="chip x" data-fn="'+k+'" title="点击移除">'+esc(f)+' ×</span>').join('')+
+        (r.fn&&r.fn.length?'':'<span class="chip plain">—</span>')+'</div></td>'+
+      '<td>'+(r.on_error?'<span class="badge fatal" style="font-size:10px">'+esc(r.on_error.code)+'</span>'
+        :(r.on_empty?'<span class="chip plain">'+esc(r.on_empty)+'</span>':'<span class="chip plain">—</span>'))+'</td>'+
+      '<td><div class="rowacts"><button class="iconbtn del" data-act="del">×</button></div></td></tr>').join('');
+    bindGrid('mapBody',t.mapping.rows,'mapping');
+    document.querySelectorAll('#mapBody tr').forEach(tr=>tr.onclick=()=>{selectedMapRow=Number(tr.dataset.i);renderMapping();});
+    $('fnSelect').innerHTML=FN_REGISTRY.map(f=>'<option value="'+esc(f.value)+'">'+esc(f.label)+'</option>').join('');
+  }
+  function renderActions(){
+    const t=getT();
+    const names={c:'新增',r:'快照读',u:'修改',d:'删除'};
+    $('actionCards').innerHTML=t.actions.map((a,i)=>
+      '<div class="opcard" data-i="'+i+'">'+
+      '<div class="oph"><span class="opbadge">'+esc(a.op)+'</span><span class="oplabel">'+names[a.op]+'</span></div>'+
+      '<label>method</label><select data-k="method">'+opt(['POST','PUT','DELETE','PATCH'],a.method)+'</select>'+
+      '<label>path（相对 '+esc(t.target.base)+'）</label><input value="'+esc(a.path)+'" data-k="path">'+
+      '<label>body</label><select data-k="body">'+opt(['mapped','none','raw'],a.body)+'</select>'+
+      (a.query?'<label>query</label><div class="kv">'+a.query.map(q=>esc(q.name)+' ← '+esc(q.from)).join('<br>')+'</div>':'')+
+      '<label>headers</label><div class="kv">'+a.headers.map(h=>esc(h.name)+' ← '+esc(h.from)).join('<br>')+'</div>'+
+      '</div>').join('');
+    document.querySelectorAll('#actionCards .opcard').forEach(card=>{
+      const a=t.actions[Number(card.dataset.i)];
+      card.querySelectorAll('[data-k]').forEach(inp=>{
+        inp.onchange=()=>{a[inp.dataset.k]=inp.value;setDirty();renderActions();};
+      });
+    });
+  }
+  function assertText(a){
+    return (a.field?esc(a.field):'status')+' <b>'+esc(a.op)+'</b> '+esc(jq(a.value));
+  }
+  function renderOutcomes(){
+    const t=getT();
+    $('outBody').innerHTML=t.outcomes.map((r,i)=>{
+      const last=i===t.outcomes.length-1;
+      return '<tr data-i="'+i+'"'+(last?' style="background:#fafbfc;color:var(--muted)"':'')+'>'+
+      '<td class="mono" style="color:var(--muted)">'+(i+1)+'</td>'+
+      '<td><span class="chip plain">'+esc(r.scope)+'</span></td>'+
+      '<td class="mono" style="font-size:11px">'+r.assert.map(assertText).join(' <span style="color:var(--muted)">AND</span> ')+'</td>'+
+      '<td><select data-k="verdict" '+(last?'disabled':'')+'>'+opt(['success','skip','fatal','retriable'],r.verdict)+'</select></td>'+
+      '<td><input class="mono" value="'+esc(r.code)+'" data-k="code" '+(last?'disabled':'')+'></td>'+
+      '<td><div class="rowacts">'+(last?'<span class="chip plain">兜底</span>':
+        '<button class="iconbtn" data-act="up">↑</button><button class="iconbtn" data-act="down">↓</button><button class="iconbtn del" data-act="del">×</button>')+'</div></td></tr>';
+    }).join('');
+    bindGrid('outBody',t.outcomes,'outcomes');
+  }
+  function renderGuards(){
+    const t=getT();
+    $('guardBody').innerHTML=(t.guards||[]).map((g,i)=>
+      '<tr data-i="'+i+'">'+
+      '<td class="mono" style="color:var(--muted)">'+(i+1)+'</td>'+
+      '<td class="mono" style="font-size:10.5px">'+esc(g.when.field)+' '+esc(g.when.op)+' '+esc(jq(g.when.value))+'</td>'+
+      '<td class="mono" style="font-size:11px">'+g.assert.map(assertText).join(' <span style="color:var(--muted)">AND</span> ')+'</td>'+
+      '<td><span class="badge fatal" style="font-size:10px">'+esc(g.else.verdict)+'</span></td>'+
+      '<td class="mono" style="font-size:10.5px">'+esc(g.else.code)+'</td>'+
+      '<td style="font-size:10.5px;color:var(--sub)">'+esc(g.else.message)+'</td>'+
+      '<td><div class="rowacts"><button class="iconbtn del" data-act="del">×</button></div></td></tr>').join('');
+    bindGrid('guardBody',t.guards,'guards');
+  }
+  function bindGrid(bodyId,arr,kind){
+    const body=$(bodyId);
+    body.querySelectorAll('input[data-k],select[data-k]').forEach(inp=>{
+      inp.onchange=()=>{
+        const i=Number(inp.closest('tr').dataset.i), k=inp.dataset.k;
+        let v=inp.value;
+        if(k==='value' && (arr[i].op==='in'||arr[i].op==='not_in')) v=v.split(',').map(s=>s.trim()).filter(Boolean);
+        else if(k==='value' && /^-?\d+$/.test(v)) v=Number(v);
+        arr[i][k]=v; setDirty(); runDry();
+      };
+    });
+    body.querySelectorAll('[data-act]').forEach(btn=>{
+      btn.onclick=e=>{
+        e.stopPropagation();
+        const i=Number(btn.closest('tr').dataset.i), act=btn.dataset.act;
+        if(act==='del'){ if(kind==='outcomes'&&i===arr.length-1) return; arr.splice(i,1); }
+        if(act==='up'&&i>0){ const x=arr.splice(i,1)[0]; arr.splice(i-1,0,x); }
+        if(act==='down'&&i<arr.length-2){ const x=arr.splice(i,1)[0]; arr.splice(i+1,0,x); }
+        setDirty(); renderAll(); runDry();
+      };
+    });
+    body.querySelectorAll('.chip.x').forEach(ch=>{
+      ch.onclick=e=>{
+        e.stopPropagation();
+        const i=Number(ch.closest('tr').dataset.i);
+        getT().mapping.rows[i].fn.splice(Number(ch.dataset.fn),1);
+        setDirty(); renderMapping(); runDry();
+      };
+    });
+  }
+
+  const badge=v=>{
+    const cls={success:'ok',skip:'skip',fatal:'fatal',retriable:'retriable'}[v]||'info';
+    return '<span class="badge '+cls+'">'+esc(v)+'</span>';
+  };
+  function hlJson(o){
+    return esc(JSON.stringify(o,null,2))
+      .replace(/&quot;([^&]+?)&quot;(\s*:)/g,'<span class="key">&quot;$1&quot;</span>$2')
+      .replace(/:\s(&quot;.*?&quot;)/g,': <span class="str">$1</span>')
+      .replace(/:\s(-?\d+(?:\.\d+)?)/g,': <span class="num">$1</span>');
+  }
+  function step(n,title,res,inner){
+    return '<div class="step"><div class="step-h"><span class="step-n">'+n+'</span>'+title+
+      (res?'<span class="res">'+res+'</span>':'')+'</div><div class="step-b">'+inner+'</div></div>';
+  }
+  function runDry(){
+    const fx=FIXTURES.find(f=>f.id===$('fixturePicker').value)||FIXTURES[0];
+    const r=buildDryRun(fx,TASKS);
+    let h='';
+    let m='';
+    r.checks.forEach(c=>{
+      m+='<div class="matchrow'+(c.hit?' hit':'')+'"><span class="mk">'+(c.hit?'✓':'·')+'</span>'+
+        '<span class="mn">'+esc(c.task.id)+' <span style="color:var(--muted)">P'+c.task.priority+'</span></span>'+
+        '<span class="why">'+esc(c.why)+'</span></div>';
+    });
+    if(!r.checks.length) m='<div class="matchrow"><span class="why">该 topic 下没有任务 → skip / no_match</span></div>';
+    h+=step(1,'匹配',r.task?badge('hit')+' '+esc(r.task.id):badge('skip')+' no_match',m);
+    if(!r.task){ h+=finalOf(r); $('steps').innerHTML=h; return; }
+    if(r.mapped.errors.length){
+      const e=r.mapped.errors[0];
+      h+=step(2,'变换失败（挂映射行）',badge(e.verdict)+' '+esc(e.code),
+        '<span class="mono">'+esc(e.field)+'</span>：'+esc(e.detail)+'<div style="color:var(--muted);margin-top:5px">不发请求，直接上报死信</div>');
+      h+=finalOf(r); $('steps').innerHTML=h; return;
+    }
+    const g=r.guards;
+    h+=step(2,'校验',g.pass?badge('success')+' 通过':badge('fatal')+' '+esc(g.rule.else.code),
+      g.pass?'<span style="color:var(--sub)">'+r.task.guards.length+' 条守卫全部通过</span>'
+        :'<span class="mono">'+esc(g.failed.field)+' '+esc(g.failed.op)+'</span> 不满足<br><span style="color:var(--sub)">'+esc(g.rule.else.message)+'</span>');
+    if(!g.pass){ h+=finalOf(r); $('steps').innerHTML=h; return; }
+    const tr=r.mapped.trace.slice(0,6).map(x=>'<div style="color:var(--sub)"><span class="mono">'+esc(x.to)+'</span> ← '+esc(x.note)+'</div>').join('')
+      +(r.mapped.trace.length>6?'<div style="color:var(--muted)">… 其余 '+(r.mapped.trace.length-6)+' 行</div>':'');
+    h+=step(3,'映射',badge('success')+' '+Object.keys(r.mapped.body).length+' 字段',
+      '<pre class="code">'+hlJson(r.mapped.body)+'</pre><div style="margin-top:6px;color:var(--muted)">变换链：</div>'+tr);
+    const a=r.action;
+    const path=r.task.target.base+(a.path||'');
+    const qs=a.query?('?'+a.query.map(q=>q.name+'='+esc(getPath(fx.record,q.from))).join('&')):'';
+    const uid=a.headers.map(hd=>{
+      const v=getPath(fx.record,hd.from);
+      return {name:hd.name,value:v===undefined||v===null?hd.default:String(v)};
+    });
+    let req='<div class="http"><span class="m">'+esc(a.method)+'</span> '+esc(path)+esc(qs)+'<br>'+
+      uid.map(x=>'<span class="h">'+esc(x.name)+': '+esc(x.value)+'</span>').join('<br>')+
+      '<br><span class="h">Content-Type: application/json</span></div>';
+    if(a.body==='mapped') req+='<pre class="code" style="margin-top:6px">'+hlJson(r.mapped.body)+'</pre>';
+    if(a.body==='none') req+='<div style="color:var(--muted);margin-top:5px">body: none</div>';
+    const legacyBug = r.task.id!=='dtw_person' && fx.record.op!=='d' && uid.some(x=>x.name==='X-User-Id');
+    if(legacyBug) req+='<div class="flag">原脚本此处恒为 "0"（after.UPDATOR_ID 大小写不符），本配置已修正为 '+esc(uid[0].value)+'</div>';
+    h+=step(4,'动作',badge('info')+' op='+esc(fx.record.op),req);
+    const o=r.outcome;
+    h+=step(5,'判定',badge(o.rule.verdict)+(o.rule.code?' '+esc(o.rule.code):''),
+      '<div style="color:var(--sub)">HTTP '+fx.status+' · 命中第 '+o.index+' 条规则：'+
+      (o.rule.assert||[]).map(assertText).join(' AND ')+'</div>'+
+      '<pre class="code" style="margin-top:6px">'+hlJson(fx.response)+'</pre>');
+    h+=finalOf(r);
+    $('steps').innerHTML=h;
+  }
+  function finalOf(r){
+    const v=r.verdict.verdict||'success';
+    const status = v==='success'?'200 OK':v==='skip'?'200 OK':v==='retriable'?'503 Service Unavailable':'400 Bad Request';
+    const sink = v==='success'?'提交 offset':v==='skip'?'提交 offset（记 skip 日志）':v==='retriable'?'按 http.retry.* 重试，耗尽进 DLQ':'直接进 DLQ';
+    return '<div class="final"><div class="t">返回给 sink · 执行器自身不重试</div>'+
+      '<div class="v">'+esc(status)+'  →  '+esc(sink)+'</div>'+
+      '<div class="v" style="font-size:10.5px;margin-top:4px;color:#4a5f96">'+esc(JSON.stringify({result:r.verdict.verdict,code:r.verdict.code||'',tasks:[r.task?r.task.id:'none']}))+'</div></div>';
+  }
+
+  function renderAll(){ renderTaskList(); renderHead(); renderTabs(); renderMatch(); renderMapping(); renderActions(); renderOutcomes(); renderGuards(); }
+
+  $('curEnabled').onchange=e=>{getT().enabled=e.target.checked;setDirty();renderTaskList();runDry();};
+  $('omitNull').onchange=e=>{getT().mapping.omit_null=e.target.checked;setDirty();runDry();};
+  $('addMatch').onclick=()=>{getT().match.push({field:'$.source.table',op:'eq',value:''});setDirty();renderMatch();runDry();};
+  $('addMap').onclick=()=>{getT().mapping.rows.push({to:'newField',from:'$.after.id'});setDirty();renderMapping();runDry();};
+  $('addOut').onclick=()=>{const a=getT().outcomes;a.splice(a.length-1,0,{scope:'body',assert:[{field:'$.msg',op:'contains',value:''}],verdict:'skip',code:'unclassified'});setDirty();renderOutcomes();runDry();};
+  $('addGuard').onclick=()=>{getT().guards.push({when:{field:'$.op',op:'ne',value:'d'},assert:[{field:'$.after',op:'exists'}],else:{verdict:'fatal',code:'EMPTY_RECORD',message:'记录不完整'}});setDirty();renderGuards();runDry();};
+  $('fnApply').onclick=()=>{
+    const row=getT().mapping.rows[selectedMapRow];
+    if(!row){toast('先点选一行映射');return;}
+    if(row.const!==undefined){toast('常量行不需要变换');return;}
+    row.fn=row.fn||[]; row.fn.push($('fnSelect').value);
+    setDirty();renderMapping();runDry();
+  };
+  $('btnRun').onclick=()=>{runDry();toast('试跑完成 · 未发出任何真实请求');};
+  $('fixturePicker').onchange=()=>{runDry();};
+  $('btnPublish').onclick=()=>{version++;$('verNum').textContent='v'+version;dirty=false;$('dirtyDot').classList.remove('on');toast('已生成 v'+version+' 快照，执行器按版本号增量拉取');};
+  $('btnRollback').onclick=()=>{version=Math.max(1,version-1);$('verNum').textContent='v'+version;toast('已回滚到 v'+version+'（执行器切换快照）');};
+  $('btnYaml').onclick=()=>{$('yamlText').textContent=yamlOf(getT());$('yamlMask').classList.add('on');};
+  $('yamlClose').onclick=()=>$('yamlMask').classList.remove('on');
+  $('yamlMask').onclick=e=>{if(e.target===$('yamlMask'))$('yamlMask').classList.remove('on');};
+
+  $('fixturePicker').innerHTML=FIXTURES.map(f=>'<option value="'+esc(f.id)+'">'+esc(f.label)+'  ·  '+esc(f.topic)+'</option>').join('');
+  $('runMeta').textContent='样例取自真实死信/线上记录。改表格后点「运行试跑」，结果立即变化。';
+  renderAll();
+  runDry();
+})();
+}
+</script>
+</body>
+</html>
