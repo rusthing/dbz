@@ -1017,7 +1017,7 @@ input[type='color']:not(:disabled) {
 .dbz-graph-controls {
   position: absolute;
   top: 12px;
-  right: 12px;
+  left: 12px;
   z-index: 10;
   display: flex;
   align-items: center;
@@ -1078,25 +1078,27 @@ input[type='color']:not(:disabled) {
   display: block;
 }
 
-/* 归属线流向动画：小圆点从上游流向下游，选中后加快；reduced-motion 下静止隐藏 */
+/* 归属线流向动画：小圆点从上游流向下游，选中后加快；reduced-motion 下静止隐藏。
+   点与线同色会融进线里，用 brightness 压深出对比（颜色仍随状态走） */
 .dbz-graph-edge-flow {
   fill: none;
-  stroke-width: 2.4;
+  stroke-width: 3;
   stroke-linecap: round;
-  stroke-dasharray: 0.1 13;
+  stroke-dasharray: 0.1 12;
   pointer-events: none;
-  opacity: 0.45;
+  opacity: 0.9;
+  filter: brightness(0.6);
   animation: dbz-edge-flow 1.6s linear infinite;
 }
 
 .dbz-graph-edge-line.is-selected + .dbz-graph-edge-flow {
-  opacity: 0.9;
+  opacity: 1;
   animation-duration: 0.9s;
 }
 
 @keyframes dbz-edge-flow {
   to {
-    stroke-dashoffset: -13.1;
+    stroke-dashoffset: -12.1;
   }
 }
 
@@ -1198,6 +1200,7 @@ input[type='color']:not(:disabled) {
   gap: 5px;
   padding: 6px 10px;
   font-size: 12.5px;
+  white-space: nowrap;
   color: var(--dbz-text-2);
   background: #fff;
   border: 1px solid #e3e8f0;
