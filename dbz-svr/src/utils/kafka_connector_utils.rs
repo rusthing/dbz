@@ -160,7 +160,7 @@ impl KafkaConnectorUtils {
         connector_name: &str,
         connector_config: &str,
     ) -> Result<(), KafkaConnectorError> {
-        let config = parse_config(connector_config)?;
+        let config = with_connector_name(parse_config(connector_config)?, connector_name);
         let url = format!(
             "{}/connectors/{}/config",
             base_url.trim_end_matches('/'),
@@ -1004,6 +1004,24 @@ fn parse_config(connector_config: &str) -> Result<Value, KafkaConnectorError> {
         .map_err(|e| KafkaConnectorError::Parse(format!("连接器配置不是合法的 JSON: {e}")))
 }
 
+/// # 让配置里的 `name` 与下发路径上的连接器名一致
+///
+/// `PUT /connectors/{name}/config` 要求配置里的 `name` 与 URL 上的名字相同，否则
+/// Kafka Connect 直接返回 400「Connector name is different from the name in the
+/// config」。库内配置很容易带着旧名字进来：连接器改过名、从 Connect 原样导出再
+/// 粘贴、或者导入到另一套环境时沿用了源环境的 `name`。这里统一以库内
+/// `connector_name` 覆盖，避免「改名后每次部署都被 Connect 拒绝」；
+/// 配置不是 JSON 对象时原样返回，让 Connect 自己报格式错误。
+fn with_connector_name(mut config: Value, connector_name: &str) -> Value {
+    if let Some(object) = config.as_object_mut() {
+        object.insert(
+            "name".to_string(),
+            Value::String(connector_name.to_string()),
+        );
+    }
+    config
+}
+
 /// # 任务状态是否算异常
 ///
 /// 只有 `FAILED` / `UNASSIGNED` 需要处理（重启任务）；`PAUSED` 通常是人工操作，
@@ -1067,5 +1085,27 @@ mod tests {
             normalize_url(" http://10.0.0.1:8083/ "),
             "http://10.0.0.1:8083"
         );
+    }
+
+    /// 下发前用库内连接器名覆盖配置里的 `name`：改名/导入时 Connect 才不会拒绝
+    #[test]
+    fn deploy_config_name_follows_record_name() {
+        let config = serde_json::json!({
+            "name": "old-name",
+            "connector.class": "io.debezium.connector.mysql.MySqlConnector",
+        });
+        let forced = with_connector_name(config, "new-name");
+        assert_eq!(forced["name"], "new-name");
+
+        // 配置里没有 name 时补上，保证与 URL 上的名字一致
+        let added = with_connector_name(
+            serde_json::json!({"connector.class": "io.debezium.connector.mysql.MySqlConnector"}),
+            "mysql-orders",
+        );
+        assert_eq!(added["name"], "mysql-orders");
+
+        // 非对象配置原样传递，交给 Connect 报格式错误
+        let untouched = with_connector_name(serde_json::json!([1, 2]), "any");
+        assert_eq!(untouched, serde_json::json!([1, 2]));
     }
 }

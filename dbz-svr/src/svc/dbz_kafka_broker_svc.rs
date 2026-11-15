@@ -92,11 +92,15 @@ impl BrokerProfile {
     }
 
     /// 地址或认证是否有变化（决定是否把状态置回「无状态」）
+    ///
+    /// 口令也属于认证：只改密码同样要让上一次的检测结论失效，否则页面会一直显示
+    /// 旧口令下的「正常」或失败原因，直到下一轮检查才纠正。
     fn auth_or_address_changed(&self, old: &BrokerModel) -> bool {
         self.bootstrap_servers != old.bootstrap_servers
             || i16::from(self.security_protocol) != old.security_protocol
             || i16::from(self.sasl_mechanism) != old.sasl_mechanism
             || self.sasl_username.as_deref() != old.sasl_username.as_deref()
+            || self.sasl_password.as_deref() != old.sasl_password.as_deref()
     }
 }
 

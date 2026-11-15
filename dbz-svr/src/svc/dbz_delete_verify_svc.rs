@@ -128,7 +128,7 @@ impl DbzDeleteVerifySvc {
             audit_pswd: audit_pswd.to_string(),
         };
         match client.auth.verify_audit_password(authorization, &dto).await {
-            Ok(response) => Self::check_response(response, "200"),
+            Ok(response) => Self::check_response(response, "200", action),
             // 非 2xx 也走框架信封：401 是会话失效，其它按认证服务不可用
             Err(ApiClientError::NonSuccessStatus(_, status, body)) => {
                 if status.starts_with("401") {
@@ -138,7 +138,7 @@ impl DbzDeleteVerifySvc {
                     ));
                 }
                 if let Ok(response) = serde_json::from_str::<Ro<AdmVerifyAuditPasswordVo>>(&body) {
-                    return Self::check_response(response, &status);
+                    return Self::check_response(response, &status, action);
                 }
                 Err(DbzDeleteVerifyError::new(
                     CODE_VERIFY_UNAVAILABLE,
@@ -159,6 +159,7 @@ impl DbzDeleteVerifySvc {
     fn check_response(
         response: Ro<AdmVerifyAuditPasswordVo>,
         status: &str,
+        action: &str,
     ) -> Result<DbzDeletePswdKind, DbzDeleteVerifyError> {
         if response.is_ok() {
             // 成功时 adm-rs 必然带 pswdKind；缺失时按 audit 处理，避免误报「已按登录口令校验」
@@ -202,7 +203,7 @@ impl DbzDeleteVerifySvc {
                 Err(DbzDeleteVerifyError::new(
                     CODE_VERIFY_UNAVAILABLE,
                     format!(
-                        "认证服务不可用：认证服务返回异常响应 HTTP {status}{detail}，删除已被拒绝"
+                        "认证服务不可用：认证服务返回异常响应 HTTP {status}{detail}，{action}已被拒绝"
                     ),
                 ))
             }
