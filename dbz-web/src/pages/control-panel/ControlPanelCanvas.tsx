@@ -17,10 +17,12 @@ import {
   DownloadOutlined,
   EditOutlined,
   ExportOutlined,
+  CloseOutlined,
   HistoryOutlined,
   ImportOutlined,
   MinusOutlined,
   PlusOutlined,
+  ProfileOutlined,
   ReloadOutlined,
   SyncOutlined,
   ThunderboltOutlined,
@@ -56,6 +58,11 @@ import {
 /** 画布缩放范围 */
 const MIN_SCALE = 0.35;
 const MAX_SCALE = 2;
+
+/** 悬浮属性面板的宽度边界（px）：拖左缘调整，双击恢复默认 */
+const INSPECTOR_MIN_W = 280;
+const INSPECTOR_MAX_W = 560;
+const INSPECTOR_DEFAULT_W = 340;
 /** 世界坐标系的逻辑尺寸，节点被拖到边缘也不会裁掉 */
 const WORLD_WIDTH = 2400;
 const WORLD_HEIGHT = 1600;
@@ -138,6 +145,9 @@ interface ControlPanelCanvasProps {
   focusToken: number;
   /** 右侧检查器内容 */
   renderInspector: () => ReactNode;
+  /** 属性面板开关：悬浮层，点卡片不再自动打开，由顶栏按钮/边缘把手控制 */
+  inspectorOpen: boolean;
+  onToggleInspector: () => void;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -568,12 +578,25 @@ export default function ControlPanelCanvas({
   activeHitKey,
   focusToken,
   renderInspector,
+  inspectorOpen,
+  onToggleInspector,
 }: ControlPanelCanvasProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<ViewState>({ x: 0, y: 0, scale: 1 });
   const [viewportSize, setViewportSize] = useState({ w: 0, h: 0 });
   /** 任意拖拽（画布/卡片/走线）进行中：临时隐藏缩略图，避免盖住右下角 */
   const [interacting, setInteracting] = useState(false);
+  /** 悬浮属性面板宽度：拖左缘调整，双击恢复默认，localStorage 记住 */
+  const [inspectorWidth, setInspectorWidth] = useState(() => {
+    try {
+      const raw = Number(localStorage.getItem('dbz-inspector-width'));
+      return Number.isFinite(raw) && raw >= INSPECTOR_MIN_W && raw <= INSPECTOR_MAX_W
+        ? raw
+        : INSPECTOR_DEFAULT_W;
+    } catch {
+      return INSPECTOR_DEFAULT_W;
+    }
+  });
   const fittedRef = useRef(false);
 
   const nodeMap = useMemo(() => new Map(nodes.map((node) => [node.key, node])), [nodes]);
@@ -895,6 +918,47 @@ export default function ControlPanelCanvas({
     window.addEventListener('pointerup', up);
   };
 
+  /**
+   * # 拖动属性面板左缘调宽
+   *
+   * 向左拖 = 变宽；松手落 localStorage，双击把手恢复默认宽度。
+   */
+  const handleInspectorResizeDown = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.button !== 0) {
+      return;
+    }
+    event.preventDefault();
+    const startX = event.clientX;
+    const startWidth = inspectorWidth;
+    const maxWidth = Math.min(INSPECTOR_MAX_W, Math.max(INSPECTOR_MIN_W, viewportSize.w - 48));
+    const nextOf = (clientX: number) =>
+      Math.round(clamp(startWidth + (startX - clientX), INSPECTOR_MIN_W, maxWidth));
+    const move = (moveEvent: PointerEvent) => {
+      setInspectorWidth(nextOf(moveEvent.clientX));
+    };
+    const up = (upEvent: PointerEvent) => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      setInspectorWidth(nextOf(upEvent.clientX));
+      try {
+        localStorage.setItem('dbz-inspector-width', String(nextOf(upEvent.clientX)));
+      } catch {
+        /* 隐私模式等存不了就算了 */
+      }
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+  };
+
+  const resetInspectorWidth = () => {
+    setInspectorWidth(INSPECTOR_DEFAULT_W);
+    try {
+      localStorage.setItem('dbz-inspector-width', String(INSPECTOR_DEFAULT_W));
+    } catch {
+      /* 同上 */
+    }
+  };
+
   /** 缩略图范围 */
   const bounds = useMemo(() => {
     if (!nodes.length) {
@@ -933,9 +997,6 @@ export default function ControlPanelCanvas({
     viewportSize.h / bounds.height,
   );
   const hideOverlays = !nodes.length || !viewportSize.w || view.scale <= overviewScale * 1.03;
-
-  /** 检查器只在选中节点/连线时展开 */
-  const inspectorOpen = Boolean(selectedNodeKey || selectedEdgeId);
 
   /** 选中连线的手柄：单独画在节点之上，折点被拖进卡片范围后仍能再拖出来 */
   const renderEdgeHandles = (geometry: EdgeGeometry) => (
@@ -996,7 +1057,10 @@ export default function ControlPanelCanvas({
 
   return (
     <div className="dbz-canvas-shell">
-      <div className="dbz-canvas-main">
+      <div
+        className="dbz-canvas-main"
+        style={{ '--inspector-w': inspectorOpen ? `${inspectorWidth}px` : '0px' } as React.CSSProperties}
+      >
         <div
           className="dbz-graph-viewport"
           ref={viewportRef}
@@ -1029,6 +1093,8 @@ export default function ControlPanelCanvas({
                     stroke={geometry.color}
                     markerEnd={`url(#${geometry.marker})`}
                   />
+                  {/* 流向动画：小圆点从上游流向下游；选中后加快。reduced-motion 下静止隐藏 */}
+                  <path className="dbz-graph-edge-flow" d={geometry.path} stroke={geometry.color} />
                   {/* 上下游归属固定；选中后连接点可左右拖、中间水平段可上下拖，连线不能删除 */}
                   <path
                     className="dbz-graph-edge-hit"
@@ -1193,7 +1259,11 @@ export default function ControlPanelCanvas({
           </div>
 
           {!hideOverlays && !interacting && (
-            <div className="dbz-graph-minimap" title="缩略图：点击可移动视口">
+            <div
+              className="dbz-graph-minimap"
+              title="缩略图：点击可移动视口"
+              style={inspectorOpen ? { right: inspectorWidth + 24 } : undefined}
+            >
               <svg
                 viewBox={`${bounds.minX - 20} ${bounds.minY - 20} ${bounds.width + 40} ${bounds.height + 40}`}
                 preserveAspectRatio="xMidYMid meet"
@@ -1250,15 +1320,41 @@ export default function ControlPanelCanvas({
 
           {/* 图例只有「归属线」一条，不如把这句话留在属性检查器的空态里，省一块盖住卡片的浮层 */}
         </div>
-      </div>
 
-      {/* 未选中任何节点/连线时整栏收起，画布占满剩余宽度；空态分支只兜底「选中后记录丢失」 */}
-      <aside
-        className={`dbz-graph-inspector${inspectorOpen ? '' : ' is-collapsed'}`}
-        aria-hidden={!inspectorOpen}
-      >
-        {inspectorOpen ? renderInspector() : null}
-      </aside>
+        {/* 属性面板：悬浮在画布右上方，可调宽；点卡片不自动打开，由顶栏按钮/把手控制 */}
+        {inspectorOpen ? (
+          <div className="dbz-graph-inspector" style={{ width: inspectorWidth }}>
+            <div
+              className="dbz-graph-inspector-resize"
+              title="拖动调宽，双击恢复默认"
+              onPointerDown={handleInspectorResizeDown}
+              onDoubleClick={resetInspectorWidth}
+            />
+            <div className="dbz-graph-inspector-chrome">
+              <span className="dbz-graph-inspector-chrome-title">属性面板</span>
+              <button
+                type="button"
+                className="dbz-graph-inspector-collapse"
+                title="收起"
+                onClick={onToggleInspector}
+              >
+                <CloseOutlined />
+              </button>
+            </div>
+            <div className="dbz-graph-inspector-body">{renderInspector()}</div>
+          </div>
+        ) : (
+          <button
+            type="button"
+            className="dbz-graph-inspector-rail"
+            title="打开属性面板"
+            onClick={onToggleInspector}
+          >
+            <ProfileOutlined />
+            <span>属性</span>
+          </button>
+        )}
+      </div>
     </div>
   );
 }

@@ -8,8 +8,9 @@
  *   没有拖拽改上游、也没有删除入口；
  * - 改 sink 上游统一在表单里选 source。
  *
- * 节点可自由摆放，空白平移、以指针为中心缩放、右下角缩略图；右侧是属性检查器。
- * 启用/停用、重启、编辑、删除、集群检测、查看死信都放在节点卡片上；属性检查器只负责
+ * 节点可自由摆放，空白平移、以指针为中心缩放、右下角缩略图；属性面板悬浮在画布
+ * 右上方（可收起、可拖宽，点卡片不再自动打开），由顶栏「属性」按钮或画布右缘把手控制。
+ * 启用/停用、重启、编辑、删除、集群检测、查看死信都放在节点卡片上；属性面板只负责
  * 展示库内配置、实时状态、任务与异常，不再另开详情抽屉。
  *
  * 节点位置按「节点类型 + 记录 ID」存 `dbz_control_plane_layout`，拖动松手即保存，
@@ -26,6 +27,7 @@ import {
   DownloadOutlined,
   DownOutlined,
   PlusOutlined,
+  ProfileOutlined,
   ReloadOutlined,
   SearchOutlined,
   UpOutlined,
@@ -679,6 +681,24 @@ export default function ControlPanelPage() {
   const edgeAnchorsRef = useRef<Record<string, EdgeAnchor>>({});
   const [selectedNodeKey, setSelectedNodeKey] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  /**
+   * 属性面板开关：悬浮层，默认收起，选择记在 localStorage
+   *
+   * 点卡片只做选中高亮，不再自动弹面板；打开走顶栏「属性」按钮或画布右缘把手。
+   */
+  const [inspectorOpen, setInspectorOpen] = useState(
+    () => localStorage.getItem('dbz-inspector-open') === '1',
+  );
+  const toggleInspector = useCallback(() => {
+    setInspectorOpen((open) => {
+      try {
+        localStorage.setItem('dbz-inspector-open', open ? '0' : '1');
+      } catch {
+        /* 隐私模式存不了就算了 */
+      }
+      return !open;
+    });
+  }, []);
   const [checkingKey, setCheckingKey] = useState<string | null>(null);
   /**
    * 最近一次检测结果：按节点 key 保留，属性面板作为事后查看入口
@@ -3061,6 +3081,15 @@ export default function ControlPanelPage() {
           <Tag color="blue" data-global-clusters>
             {state.data.brokers.length} 个 Kafka 集群
           </Tag>
+          <Button
+            icon={<ProfileOutlined />}
+            data-inspector-toggle
+            aria-pressed={inspectorOpen}
+            title="属性面板：库内配置、实时状态、任务与异常"
+            onClick={toggleInspector}
+          >
+            属性
+          </Button>
           <span className="dbz-canvas-refresh" data-refresh-setting>
             <Switch
               size="small"
@@ -3248,6 +3277,8 @@ export default function ControlPanelPage() {
             activeHitKey={activeHitKey}
             focusToken={searchFocusToken}
             renderInspector={renderInspector}
+            inspectorOpen={inspectorOpen}
+            onToggleInspector={toggleInspector}
           />
         </>
       )}

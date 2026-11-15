@@ -1078,22 +1078,137 @@ input[type='color']:not(:disabled) {
   display: block;
 }
 
-/* 右侧属性检查器：未选中时整栏收起，画布占满剩余宽度 */
-.dbz-graph-inspector {
-  width: 340px;
-  flex-shrink: 0;
-  overflow: hidden auto;
-  background: #fff;
-  border-left: 1px solid #eef0f4;
-  transition:
-    width 0.2s ease,
-    border-color 0.2s ease;
+/* 归属线流向动画：小圆点从上游流向下游，选中后加快；reduced-motion 下静止隐藏 */
+.dbz-graph-edge-flow {
+  fill: none;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-dasharray: 0.1 13;
+  pointer-events: none;
+  opacity: 0.45;
+  animation: dbz-edge-flow 1.6s linear infinite;
 }
 
-.dbz-graph-inspector.is-collapsed {
-  width: 0;
+.dbz-graph-edge-line.is-selected + .dbz-graph-edge-flow {
+  opacity: 0.9;
+  animation-duration: 0.9s;
+}
+
+@keyframes dbz-edge-flow {
+  to {
+    stroke-dashoffset: -13.1;
+  }
+}
+
+/* 属性面板：悬浮在画布右上方，可拖左缘调宽；不再挤压画布 */
+.dbz-graph-inspector {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  bottom: 12px;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: #fff;
+  border: 1px solid #e3e8f0;
+  border-radius: 12px;
+  box-shadow: var(--dbz-shadow-3);
   overflow: hidden;
-  border-left-color: transparent;
+}
+
+.dbz-graph-inspector-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* 左缘调宽把手 */
+.dbz-graph-inspector-resize {
+  position: absolute;
+  left: -3px;
+  top: 0;
+  bottom: 0;
+  z-index: 2;
+  width: 7px;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.dbz-graph-inspector-resize::after {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 2px;
+  background: transparent;
+}
+
+.dbz-graph-inspector-resize:hover::after {
+  background: #b9c6dd;
+}
+
+/* 面板顶部窄条：标题 + 收起按钮 */
+.dbz-graph-inspector-chrome {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 10px 6px 14px;
+  border-bottom: 1px solid #f0f2f7;
+  flex-shrink: 0;
+}
+
+.dbz-graph-inspector-chrome-title {
+  font-size: 11.5px;
+  letter-spacing: 0.05em;
+  color: var(--dbz-text-3);
+}
+
+.dbz-graph-inspector-collapse {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font-size: 11px;
+  color: var(--dbz-text-2);
+  background: transparent;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.dbz-graph-inspector-collapse:hover {
+  color: var(--dbz-text-1);
+  background: #f2f4f8;
+}
+
+/* 收起后的边缘把手 */
+.dbz-graph-inspector-rail {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 20;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 10px;
+  font-size: 12.5px;
+  color: var(--dbz-text-2);
+  background: #fff;
+  border: 1px solid #e3e8f0;
+  border-radius: 9px;
+  box-shadow: var(--dbz-shadow-2);
+  cursor: pointer;
+}
+
+.dbz-graph-inspector-rail:hover {
+  color: var(--dbz-text-1);
+  box-shadow: var(--dbz-shadow-3);
 }
 
 .dbz-inspector-panel {
@@ -1243,12 +1358,6 @@ input[type='color']:not(:disabled) {
   margin-bottom: 4px;
 }
 
-@media (max-width: 1280px) {
-  .dbz-graph-inspector {
-    width: 300px;
-  }
-}
-
 @media (max-width: 1024px) {
   .dbz-canvas-page {
     height: auto;
@@ -1261,9 +1370,9 @@ input[type='color']:not(:disabled) {
   }
 
   .dbz-graph-inspector {
-    width: 100%;
-    border-left: none;
-    border-top: 1px solid #eef0f4;
+    right: 8px;
+    top: 8px;
+    bottom: 8px;
   }
 }
 
@@ -1690,8 +1799,12 @@ input[type='color']:not(:disabled) {
   }
 
   .dbz-graph-node,
-  .dbz-graph-add-child,
-  .dbz-graph-inspector {
+  .dbz-graph-add-child {
     transition: none;
+  }
+
+  .dbz-graph-edge-flow {
+    animation: none;
+    opacity: 0;
   }
 }

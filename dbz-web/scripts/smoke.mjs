@@ -543,6 +543,22 @@ async function selectNode(key) {
 }
 
 /**
+ * # 打开悬浮属性面板
+ *
+ * 面板不再随卡片选中自动弹开；没开就走顶栏「属性」开关。
+ */
+async function openInspector() {
+  const visible = await page
+    .locator('.dbz-graph-inspector .dbz-inspector-panel')
+    .isVisible()
+    .catch(() => false);
+  if (!visible) {
+    await page.locator('[data-inspector-toggle]').click();
+  }
+  await page.waitForSelector('.dbz-graph-inspector .dbz-inspector-panel');
+}
+
+/**
  * # 点「取消」关表单弹窗
  *
  * 改过字段的表单会先弹「放弃未保存的修改？」（脏状态确认）；只浏览过的编辑表单
@@ -1525,6 +1541,25 @@ try {
     '整图可见时隐藏缩略图覆盖层',
     (await page.locator('.dbz-graph-minimap').count()) === 0,
   );
+  // 属性面板是悬浮层：默认收起，点卡片只选中不弹面板；顶栏开关/右缘把手控制开合
+  await selectNode('1:401');
+  check(
+    '点卡片不再自动打开属性面板',
+    (await page.locator('.dbz-graph-inspector').count()) === 0 &&
+      (await page.locator('.dbz-graph-inspector-rail').isVisible()),
+  );
+  await page.locator('[data-inspector-toggle]').click();
+  check(
+    '顶栏「属性」按钮打开悬浮面板，归属线带流向动画',
+    (await page.locator('.dbz-graph-inspector').isVisible()) &&
+      (await page.locator('.dbz-graph-edge-flow').count()) >= 6,
+  );
+  await page.locator('.dbz-graph-inspector-collapse').click();
+  check(
+    '面板顶部按钮可收起，右缘把手回到右上方',
+    (await page.locator('.dbz-graph-inspector').count()) === 0 &&
+      (await page.locator('.dbz-graph-inspector-rail').isVisible()),
+  );
   // 放大再适应回原比例，避免影响后续卡片内元素的像素断言
   const scaleBefore = await page.locator('.dbz-graph-scale').innerText();
   await page.locator('.dbz-graph-controls button[title="放大"]').click();
@@ -1900,7 +1935,7 @@ try {
 
   // 属性检查器随选中节点切换：库内配置、统一状态、任务与异常都在这里
   await selectNode('1:401');
-  await page.waitForSelector('.dbz-graph-inspector .dbz-inspector-panel');
+  await openInspector();
   const brokerInspectorText = await page.locator('.dbz-graph-inspector').innerText();
   check(
     '选中 Kafka 集群后属性框展示库内配置与统一状态',
@@ -2177,7 +2212,7 @@ try {
 
   // 选中连接器：配置 JSON、实时状态、任务与异常都在属性框里
   await selectNode('3:201');
-  await page.waitForSelector('.dbz-graph-inspector .dbz-inspector-panel');
+  await openInspector();
   const connectorInspector = page.locator('.dbz-graph-inspector');
   const connectorText = await connectorInspector.innerText();
   check(
@@ -2206,7 +2241,7 @@ try {
 
   // 切到 Connect：属性框内容跟着换
   await selectNode('2:101');
-  await page.waitForSelector('.dbz-graph-inspector .dbz-inspector-panel');
+  await openInspector();
   const connectInspectorText = await page.locator('.dbz-graph-inspector').innerText();
   check(
     '切换选中节点后属性框内容跟着变',
@@ -2411,7 +2446,7 @@ try {
   // 用 pointerdown 选中连线：和真实点击走同一个 handler，且不受浮层遮挡影响
   await ownershipHit.dispatchEvent('pointerdown', { button: 0, bubbles: true });
   await page.waitForSelector('.dbz-graph-edge-line.is-selected', { timeout: 5000 });
-  await page.waitForSelector('.dbz-graph-inspector .dbz-inspector-panel');
+  await openInspector();
   const edgeInspectorText = await page.locator('.dbz-graph-inspector').innerText();
   check(
     '选中归属连线后属性框说明连接点与折点可拖、连线不可删',
@@ -2664,7 +2699,7 @@ try {
 
   // 自动刷新不重置选中节点，也不打断正在编辑的表单
   await selectNode('1:401');
-  await page.waitForSelector('.dbz-graph-inspector .dbz-inspector-panel');
+  await openInspector();
   await page.locator('.dbz-graph-node[data-node-key="1:401"] [data-node-action="edit"]').click();
   await page.waitForSelector('.ant-modal-wrap:visible');
   const autoRefreshModal = visibleModal().last();
