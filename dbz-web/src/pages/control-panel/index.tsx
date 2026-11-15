@@ -699,6 +699,15 @@ export default function ControlPanelPage() {
       return !open;
     });
   }, []);
+  /** 双击卡片只开不关，面板开着时保持不动 */
+  const openInspector = useCallback(() => {
+    try {
+      localStorage.setItem('dbz-inspector-open', '1');
+    } catch {
+      /* 隐私模式存不了就算了 */
+    }
+    setInspectorOpen(true);
+  }, []);
   const [checkingKey, setCheckingKey] = useState<string | null>(null);
   /**
    * 最近一次检测结果：按节点 key 保留，属性面板作为事后查看入口
@@ -3279,6 +3288,7 @@ export default function ControlPanelPage() {
             renderInspector={renderInspector}
             inspectorOpen={inspectorOpen}
             onToggleInspector={toggleInspector}
+            onOpenInspector={openInspector}
           />
         </>
       )}

@@ -1560,6 +1560,31 @@ try {
     (await page.locator('.dbz-graph-inspector').count()) === 0 &&
       (await page.locator('.dbz-graph-inspector-rail').isVisible()),
   );
+  // 双击卡片 = 选中并展开面板（单击只选中）
+  await page
+    .locator('.dbz-graph-node[data-node-key="1:401"]')
+    .first()
+    .dispatchEvent('dblclick');
+  await page.waitForTimeout(300);
+  check(
+    '双击卡片打开属性面板且面板开着时双击不关闭',
+    (await page.locator('.dbz-graph-inspector').isVisible()) &&
+      (await page
+        .locator('.dbz-graph-node[data-node-key="1:401"]')
+        .first()
+        .evaluate((el) => el.classList.contains('is-selected'))),
+  );
+  await page
+    .locator('.dbz-graph-node[data-node-key="1:401"]')
+    .first()
+    .dispatchEvent('dblclick');
+  await page.waitForTimeout(200);
+  check(
+    '面板已开时双击卡片保持展开',
+    (await page.locator('.dbz-graph-inspector').isVisible()) &&
+      (await page.locator('.dbz-graph-inspector-rail').count()) === 0,
+  );
+  await page.locator('.dbz-graph-inspector-collapse').click();
   // 放大再适应回原比例，避免影响后续卡片内元素的像素断言
   const scaleBefore = await page.locator('.dbz-graph-scale').innerText();
   await page.locator('.dbz-graph-controls button[title="放大"]').click();

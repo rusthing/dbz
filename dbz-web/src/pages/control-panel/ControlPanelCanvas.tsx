@@ -145,9 +145,11 @@ interface ControlPanelCanvasProps {
   focusToken: number;
   /** 右侧检查器内容 */
   renderInspector: () => ReactNode;
-  /** 属性面板开关：悬浮层，点卡片不再自动打开，由顶栏按钮/边缘把手控制 */
+  /** 属性面板开关：悬浮层，点卡片只选中，由顶栏按钮/边缘把手/双击卡片控制 */
   inspectorOpen: boolean;
   onToggleInspector: () => void;
+  /** 双击卡片：选中并展开属性面板 */
+  onOpenInspector: () => void;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -580,6 +582,7 @@ export default function ControlPanelCanvas({
   renderInspector,
   inspectorOpen,
   onToggleInspector,
+  onOpenInspector,
 }: ControlPanelCanvasProps) {
   const viewportRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<ViewState>({ x: 0, y: 0, scale: 1 });
@@ -1139,6 +1142,12 @@ export default function ControlPanelCanvas({
                   }}
                   style={{ left: pos.x, top: pos.y, width: size.w, height: size.h }}
                   onPointerDown={(event) => handleNodePointerDown(event, node)}
+                  // 双击卡片 = 选中并展开属性面板（单击只选中，不自动弹面板）
+                  onDoubleClick={(event) => {
+                    event.stopPropagation();
+                    onSelectNode(node.key);
+                    onOpenInspector();
+                  }}
                 >
                   <NodeHead
                     node={node}
