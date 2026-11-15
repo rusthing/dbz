@@ -121,14 +121,16 @@ export interface CanvasEdge {
 }
 
 /**
- * 节点尺寸：四类卡片同一骨架（类型标识 → 名称 → 关键字段 → 状态 → 操作行），
- * 固定宽高让同类卡片高度一致，操作行贴底对齐。
+ * 节点尺寸：四类卡片同一骨架（类型标识 → 名称 → 关键字段 → 状态 → 操作行）。
+ * 高度按内容收紧，不留「状态行被 margin-top:auto 顶到底部」造成的中间空档：
+ * 卡片越矮，整图在「适应画布」下的缩放比越大，卡片里的字才读得清。
+ * 下游多一行 http.api.url，单独高 18px。
  */
 export const NODE_SIZE: Record<CanvasNodeKind, { w: number; h: number }> = {
-  broker: { w: 360, h: 194 },
-  connect: { w: 360, h: 194 },
-  source: { w: 360, h: 194 },
-  sink: { w: 360, h: 194 },
+  broker: { w: 360, h: 158 },
+  connect: { w: 360, h: 158 },
+  source: { w: 360, h: 158 },
+  sink: { w: 360, h: 176 },
 };
 
 export const NODE_TYPE_OF: Record<CanvasNodeKind, ControlPlaneNodeType> = {
@@ -158,7 +160,7 @@ export function nodeSearchText(node: CanvasNode): string {
   return name;
 }
 
-/** 默认网格：集群/Connect 居上，连接器在下排 */
+/** 默认网格：集群/Connect 居上，连接器在下排；纵向间距与 {@link NODE_SIZE} 同步收紧 */
 export function defaultPosition(
   kind: CanvasNodeKind,
   index: number,
@@ -167,11 +169,11 @@ export function defaultPosition(
     case 'broker':
       return { x: 420 + index * 390, y: 24 };
     case 'connect':
-      return { x: 420 + index * 390, y: 240 };
+      return { x: 420 + index * 390, y: 206 };
     case 'source':
-      return { x: 40 + index * 390, y: 460 };
+      return { x: 40 + index * 390, y: 388 };
     case 'sink':
-      return { x: 40 + (index % 2) * 400, y: 690 + Math.floor(index / 2) * 210 };
+      return { x: 40 + (index % 2) * 400, y: 570 + Math.floor(index / 2) * 200 };
   }
 }
 

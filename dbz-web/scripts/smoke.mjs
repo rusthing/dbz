@@ -1519,25 +1519,20 @@ try {
     '缩放控件可见',
     await page.locator('.dbz-graph-controls').isVisible(),
   );
-  // 整图已完全可见时隐藏缩略图与图例（覆盖层会盖住被适应放大的卡片），放大后才出现
+  // 整图已完全可见时隐藏缩略图（覆盖层会盖住被适应放大的卡片），放大后才出现；
+  // 图例只有「归属线」一条，已下线，走线说明放在属性检查器的空态里
   check(
-    '整图可见时隐藏缩略图与图例覆盖层',
-    (await page.locator('.dbz-graph-minimap').count()) === 0 &&
-      (await page.locator('.dbz-graph-legend').count()) === 0,
+    '整图可见时隐藏缩略图覆盖层',
+    (await page.locator('.dbz-graph-minimap').count()) === 0,
   );
   // 放大再适应回原比例，避免影响后续卡片内元素的像素断言
   const scaleBefore = await page.locator('.dbz-graph-scale').innerText();
   await page.locator('.dbz-graph-controls button[title="放大"]').click();
   await page.waitForSelector('.dbz-graph-minimap', { timeout: 5000 }).catch(() => {});
-  const legendText = await page.locator('.dbz-graph-legend').innerText().catch(() => '');
   check(
-    '放大后缩略图与图例可见，图例说明端点固定、折点可拖',
+    '放大后缩略图可见，图例不再渲染',
     (await page.locator('.dbz-graph-minimap').isVisible()) &&
-      legendText.includes('归属') &&
-      legendText.includes('端点固定') &&
-      legendText.includes('折点') &&
-      !legendText.includes('数据流'),
-    legendText,
+      (await page.locator('.dbz-graph-legend').count()) === 0,
   );
   await page.locator('.dbz-graph-controls button[title="适应画布"]').click();
   await page

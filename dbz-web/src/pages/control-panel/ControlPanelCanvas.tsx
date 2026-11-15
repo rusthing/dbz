@@ -520,7 +520,6 @@ function NodeHead({
       </span>
       <span
         className="dbz-graph-node-type-label"
-        style={{ color: NODE_KIND_COLOR[node.kind] }}
       >
         {NODE_KIND_LABEL[node.kind]}
       </span>
@@ -1036,6 +1035,16 @@ export default function ControlPanelCanvas({
                   }${activeHitKey === node.key ? ' is-active-hit' : ''}`}
                   data-node-key={node.key}
                   data-node-type={node.kind}
+                  // 卡片是画布上唯一的可选单元：键盘也要能停上去选中，不能只有鼠标
+                  tabIndex={0}
+                  role="group"
+                  aria-label={`${NODE_KIND_LABEL[node.kind]} ${node.name}`}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      onSelectNode(node.key);
+                    }
+                  }}
                   style={{ left: pos.x, top: pos.y, width: size.w, height: size.h }}
                   onPointerDown={(event) => handleNodePointerDown(event, node)}
                 >
@@ -1213,11 +1222,7 @@ export default function ControlPanelCanvas({
             </div>
           )}
 
-          {!hideOverlays && (
-            <div className="dbz-graph-legend">
-              <span><i className="dbz-legend-line" />归属线（端点固定，选中后可拖折点）</span>
-            </div>
-          )}
+          {/* 图例只有「归属线」一条，不如把这句话留在属性检查器的空态里，省一块盖住卡片的浮层 */}
         </div>
       </div>
 

@@ -6,6 +6,33 @@
   box-sizing: border-box;
 }
 
+/* ---------------------------------------------------------------- token
+ *
+ * 只有这几个词：文字三级、两级分隔线、两级底色、一个主色、一个圆角族。
+ * 之前各处直接写 rgba(0,0,0,.45) / #eef0f4，改一处颜色要全文替换；
+ * 收进变量后「次要文字」只有一个定义，也顺手把对比度从 3.4:1 抬到 4.9:1。
+ */
+:root {
+  --dbz-text-1: rgba(0, 0, 0, 0.88);
+  --dbz-text-2: rgba(0, 0, 0, 0.65);
+  --dbz-text-3: rgba(0, 0, 0, 0.56);
+  --dbz-line: #eef0f4;
+  --dbz-line-strong: #e5e8f0;
+  --dbz-surface: #fff;
+  --dbz-surface-sunken: #fafbfd;
+  --dbz-accent: #1677ff;
+  --dbz-danger: #cf1322;
+  --dbz-font-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+  --dbz-shadow-1: 0 1px 2px rgba(15, 23, 42, 0.04);
+  --dbz-shadow-2: 0 4px 14px rgba(15, 23, 42, 0.08);
+  --dbz-shadow-3: 0 10px 24px rgba(15, 23, 42, 0.1);
+  /* 卡片两级（静止 / 悬停）：静止只留一层贴着纸面的影子，悬停才浮起来 */
+  --dbz-shadow-card: 0 1px 2px rgba(15, 23, 42, 0.05), 0 4px 14px rgba(15, 23, 42, 0.05);
+  --dbz-shadow-card-hover: 0 2px 4px rgba(15, 23, 42, 0.06), 0 12px 26px rgba(15, 23, 42, 0.1);
+  --dbz-radius-sm: 6px;
+  --dbz-radius-md: 10px;
+}
+
 html,
 body,
 #root {
@@ -95,7 +122,7 @@ input[type='color']:not(:disabled) {
 
 .dbz-filter-label {
   font-size: 12px;
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--dbz-text-3);
   white-space: nowrap;
 }
 
@@ -139,7 +166,7 @@ input[type='color']:not(:disabled) {
 
 .dbz-brand-sub {
   font-size: 11px;
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--dbz-text-3);
 }
 
 /* 顶栏
@@ -163,7 +190,7 @@ input[type='color']:not(:disabled) {
 
 .dbz-header-desc {
   font-size: 12px;
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--dbz-text-3);
 }
 
 .dbz-header-right {
@@ -231,7 +258,7 @@ input[type='color']:not(:disabled) {
   border-top: 1px dashed #eef0f4;
   font-size: 12px;
   line-height: 1.6;
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--dbz-text-3);
 }
 
 .dbz-content {
@@ -334,7 +361,7 @@ input[type='color']:not(:disabled) {
   flex-wrap: wrap;
   gap: 4px 12px;
   margin-bottom: 6px;
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--dbz-text-3);
   font-size: 12px;
 }
 
@@ -345,7 +372,7 @@ input[type='color']:not(:disabled) {
 
 .dbz-stat-label {
   font-size: 13px;
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--dbz-text-3);
 }
 
 .dbz-stat-value {
@@ -358,7 +385,7 @@ input[type='color']:not(:disabled) {
 
 .dbz-stat-hint {
   font-size: 12px;
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--dbz-text-3);
 }
 
 .dbz-mono {
@@ -385,7 +412,7 @@ input[type='color']:not(:disabled) {
 
 /* 雪花 ID 截断后仍要能聚焦查看全量值 */
 .dbz-id {
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--dbz-text-3);
   cursor: help;
 }
 
@@ -455,7 +482,7 @@ input[type='color']:not(:disabled) {
 .dbz-status-row-label {
   flex: none;
   width: 62px;
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--dbz-text-3);
 }
 
 .dbz-status-row-value {
@@ -537,28 +564,32 @@ input[type='color']:not(:disabled) {
   min-height: 560px;
 }
 
+/* 顶栏只有一排：左搜索、右动作。标题与说明已经在应用顶栏里，不重复占一行 */
 .dbz-canvas-topbar {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 12px;
+  gap: 8px 12px;
 }
 
-.dbz-canvas-title {
+.dbz-canvas-toolbar-left,
+.dbz-canvas-toolbar-right {
   display: flex;
-  align-items: baseline;
-  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
 }
 
-.dbz-canvas-title .ant-typography {
-  margin: 0;
+.dbz-canvas-toolbar-right {
+  justify-content: flex-end;
 }
 
-.dbz-canvas-caption,
 .dbz-canvas-loaded {
   font-size: 12px;
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--dbz-text-3);
+  font-variant-numeric: tabular-nums;
 }
 
 /* 自动刷新：开关 + 秒数，0 或关掉开关都表示停用 */
@@ -574,7 +605,7 @@ input[type='color']:not(:disabled) {
 
 .dbz-canvas-refresh-unit {
   font-size: 12px;
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--dbz-text-3);
 }
 
 .dbz-reset-offsets {
@@ -719,14 +750,14 @@ input[type='color']:not(:disabled) {
   display: flex;
   flex-direction: column;
   gap: 5px;
-  padding: 10px 12px;
+  padding: 11px 12px 10px;
   overflow: visible;
-  background: #fff;
+  background: var(--dbz-surface);
   /* 左侧色条表达类型，状态只放在标签里 */
-  border: 1px solid #e5e8f0;
+  border: 1px solid var(--dbz-line-strong);
   border-left: 3px solid var(--node-color, #bfbfbf);
   border-radius: 11px;
-  box-shadow: 0 6px 18px rgba(15, 23, 42, 0.06);
+  box-shadow: var(--dbz-shadow-card);
   cursor: grab;
   user-select: none;
   transition:
@@ -734,6 +765,16 @@ input[type='color']:not(:disabled) {
     box-shadow 0.15s,
     filter 0.15s,
     opacity 0.15s;
+}
+
+/* 悬停只提一层阴影：卡片本来就带色条，再加深边框会脏 */
+.dbz-graph-node:hover {
+  box-shadow: var(--dbz-shadow-card-hover);
+}
+
+.dbz-graph-node:focus-visible {
+  outline: 2px solid var(--dbz-accent);
+  outline-offset: 3px;
 }
 
 .dbz-graph-node--broker {
@@ -790,6 +831,7 @@ input[type='color']:not(:disabled) {
   font-size: 13px;
 }
 
+/* 类型靠图标底色 + 左侧色条识别，这行文字不再重复上色，避免一张卡片出现三处同色 */
 .dbz-graph-node-type-label {
   flex: 1;
   min-width: 0;
@@ -797,8 +839,10 @@ input[type='color']:not(:disabled) {
   font-size: 11px;
   font-weight: 500;
   line-height: 1.3;
+  letter-spacing: 0.01em;
   white-space: nowrap;
   text-overflow: ellipsis;
+  color: var(--dbz-text-3);
 }
 
 /* 信息层级：名称最重，副标题/字段次之，状态与操作再次 */
@@ -876,7 +920,7 @@ input[type='color']:not(:disabled) {
   line-height: 1.45;
   white-space: nowrap;
   text-overflow: ellipsis;
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--dbz-text-3);
 }
 
 /* 卡片操作行：编辑最左 → 弹性留白 → 右侧动作 → 分隔线 → 删除最右 */
@@ -928,7 +972,7 @@ input[type='color']:not(:disabled) {
   width: 24px;
   height: 22px;
   padding: 0;
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--dbz-text-3);
 }
 
 .dbz-graph-action .ant-btn:hover {
@@ -1009,7 +1053,7 @@ input[type='color']:not(:disabled) {
   min-width: 38px;
   text-align: center;
   font-size: 11px;
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--dbz-text-3);
 }
 
 .dbz-graph-minimap {
@@ -1017,8 +1061,9 @@ input[type='color']:not(:disabled) {
   right: 12px;
   bottom: 12px;
   z-index: 10;
-  width: 196px;
-  height: 128px;
+  /* 缩略图是辅助定位用的，别占着画布右下角一大块盖住卡片 */
+  width: 168px;
+  height: 108px;
   padding: 4px;
   background: rgba(255, 255, 255, 0.94);
   border: 1px solid #e8ebf2;
@@ -1031,43 +1076,6 @@ input[type='color']:not(:disabled) {
   width: 100%;
   height: 100%;
   display: block;
-}
-
-.dbz-graph-legend {
-  position: absolute;
-  left: 12px;
-  bottom: 12px;
-  z-index: 10;
-  display: flex;
-  gap: 14px;
-  padding: 6px 10px;
-  font-size: 11px;
-  color: rgba(0, 0, 0, 0.55);
-  background: rgba(255, 255, 255, 0.92);
-  border: 1px solid #e8ebf2;
-  border-radius: 8px;
-  pointer-events: none;
-}
-
-.dbz-graph-legend span {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.dbz-legend-line {
-  display: inline-block;
-  width: 22px;
-  height: 0;
-  border-top: 2px solid #a9b6c9;
-}
-
-.dbz-legend-lock {
-  display: inline-block;
-  width: 9px;
-  height: 9px;
-  background: #a9b6c9;
-  border-radius: 2px;
 }
 
 /* 右侧属性检查器 */
@@ -1120,7 +1128,7 @@ input[type='color']:not(:disabled) {
   padding: 8px 10px;
   font-size: 12px;
   line-height: 1.5;
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--dbz-text-3);
   background: #fafbfc;
   border: 1px dashed #e5eaf2;
   border-radius: 8px;
@@ -1145,7 +1153,7 @@ input[type='color']:not(:disabled) {
 
 .dbz-inspector-check-count {
   font-weight: 500;
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--dbz-text-3);
 }
 
 .dbz-inspector-check-list {
@@ -1170,7 +1178,7 @@ input[type='color']:not(:disabled) {
   margin-top: 6px;
   font-size: 12px;
   line-height: 1.5;
-  color: rgba(0, 0, 0, 0.4);
+  color: var(--dbz-text-3);
 }
 
 .dbz-inspector-actions {
@@ -1201,7 +1209,7 @@ input[type='color']:not(:disabled) {
 .dbz-inspector-tip {
   font-size: 11.5px;
   line-height: 1.6;
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--dbz-text-3);
 }
 
 .dbz-inspector-tip p {
@@ -1308,7 +1316,7 @@ input[type='color']:not(:disabled) {
 .dbz-canvas-search-count {
   min-width: 38px;
   font-size: 12px;
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--dbz-text-3);
   font-variant-numeric: tabular-nums;
 }
 
@@ -1371,7 +1379,7 @@ input[type='color']:not(:disabled) {
 
 .dbz-connect-detect-head {
   background: #fafbfd;
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--dbz-text-3);
   font-weight: 500;
 }
 
@@ -1393,7 +1401,7 @@ input[type='color']:not(:disabled) {
 
 .dbz-connect-detect-empty {
   padding: 14px 12px;
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--dbz-text-3);
   font-size: 12.5px;
 }
 
@@ -1430,7 +1438,7 @@ input[type='color']:not(:disabled) {
 .dbz-connect-detect-sync-msg {
   min-width: 0;
   overflow: hidden;
-  color: rgba(0, 0, 0, 0.45);
+  color: var(--dbz-text-3);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1500,13 +1508,30 @@ input[type='color']:not(:disabled) {
 
 .dbz-cluster-tab-label {
   display: inline-flex;
-  align-items: center;
+  align-items: baseline;
   gap: 6px;
 }
 
-.dbz-cluster-tab-count,
-.dbz-cluster-tab-abnormal {
-  margin-inline-end: 0;
+.dbz-cluster-tab-name {
+  font-weight: 500;
+}
+
+/* 计数用正文色的灰字，不再包一个 Tag 框：一排 tab 上挂六个方框太吵 */
+.dbz-cluster-tab-meta {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--dbz-text-3);
+  font-variant-numeric: tabular-nums;
+}
+
+.dbz-cluster-tab-meta + .dbz-cluster-tab-meta::before {
+  content: '·';
+  margin-right: 6px;
+  color: #d9d9d9;
+}
+
+.dbz-cluster-tab-meta.is-abnormal {
+  color: var(--dbz-danger);
 }
 
 .dbz-canvas-scope-summary {
@@ -1610,4 +1635,53 @@ input[type='color']:not(:disabled) {
 .dbz-transfer-errors li {
   margin-bottom: 4px;
   word-break: break-all;
+}
+
+/* ---------- 控制面板空态：一条集群都没有时给出口，不留一片空白点阵 ---------- */
+.dbz-canvas-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 300px;
+  padding: 32px 24px;
+  text-align: center;
+  background: var(--dbz-surface);
+  border: 1px solid var(--dbz-line);
+  border-radius: 12px;
+}
+
+.dbz-canvas-empty-title {
+  margin-top: 4px;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--dbz-text-1);
+}
+
+.dbz-canvas-empty-desc {
+  max-width: 440px;
+  font-size: 12.5px;
+  line-height: 1.75;
+  color: var(--dbz-text-3);
+}
+
+.dbz-canvas-empty-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+/* 命中脉冲是唯一的装饰性动画：系统里关掉动效时直接给结果，不闪 */
+@media (prefers-reduced-motion: reduce) {
+  .dbz-graph-node.is-active-hit {
+    animation: none;
+  }
+
+  .dbz-graph-node,
+  .dbz-graph-add-child {
+    transition: none;
+  }
 }

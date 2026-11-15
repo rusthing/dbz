@@ -3004,13 +3004,7 @@ export default function ControlPanelPage() {
   return (
     <div className="dbz-canvas-page">
       <div className="dbz-canvas-topbar">
-        <div className="dbz-canvas-title">
-          <Typography.Title level={4}>控制面板</Typography.Title>
-          <span className="dbz-canvas-caption">
-            状态由健康检查与进入页面刷新回写，卡片只展示一个统一状态
-          </span>
-        </div>
-        <Space size={12} wrap>
+        <div className="dbz-canvas-toolbar-left">
           <span className="dbz-canvas-search">
             <Input
               allowClear
@@ -3052,9 +3046,6 @@ export default function ControlPanelPage() {
                 : ''}
             </span>
           </span>
-          <Tag color="blue" data-global-clusters>
-            {state.data.brokers.length} 个 Kafka 集群
-          </Tag>
           {deadLetterTotal > 0 && (
             <Tag
               color="error"
@@ -3065,6 +3056,11 @@ export default function ControlPanelPage() {
               死信 {deadLetterTotal}
             </Tag>
           )}
+        </div>
+        <div className="dbz-canvas-toolbar-right">
+          <Tag color="blue" data-global-clusters>
+            {state.data.brokers.length} 个 Kafka 集群
+          </Tag>
           <span className="dbz-canvas-refresh" data-refresh-setting>
             <Switch
               size="small"
@@ -3081,7 +3077,12 @@ export default function ControlPanelPage() {
             />
             <span className="dbz-canvas-refresh-unit">秒</span>
           </span>
-          <Button icon={<PlusOutlined />} onClick={() => startCreate('broker', null)}>
+          {/* 全页唯一的主动作给「新增」；导出/导入是低频备份动作，普通描边即可 */}
+          <Button
+            type="primary"
+            icon={<PlusOutlined />}
+            onClick={() => startCreate('broker', null)}
+          >
             新增 Kafka 集群
           </Button>
           <Button
@@ -3121,7 +3122,7 @@ export default function ControlPanelPage() {
           >
             刷新
           </Button>
-        </Space>
+        </div>
       </div>
 
       {brokerTabs.length > 1 && (
@@ -3134,14 +3135,15 @@ export default function ControlPanelPage() {
               key: tab.id,
               label: (
                 <span className="dbz-cluster-tab-label" data-cluster-tab={tab.id}>
-                  {tab.name}
-                  <Tag className="dbz-cluster-tab-count">连接器 {tab.connectorCount}</Tag>
-                  <Tag
-                    color={tab.abnormalCount > 0 ? 'error' : 'default'}
-                    className="dbz-cluster-tab-abnormal"
+                  <span className="dbz-cluster-tab-name">{tab.name}</span>
+                  <span className="dbz-cluster-tab-meta">连接器 {tab.connectorCount}</span>
+                  <span
+                    className={`dbz-cluster-tab-meta${
+                      tab.abnormalCount > 0 ? ' is-abnormal' : ''
+                    }`}
                   >
                     异常 {tab.abnormalCount}
-                  </Tag>
+                  </span>
                 </span>
               ),
             }))}
@@ -3164,6 +3166,34 @@ export default function ControlPanelPage() {
           {/* 裸用 Spin 的 tip 会被 antd 忽略并告警，文案单独放 */}
           <Spin />
           <Typography.Text type="secondary">正在读取节点与实时状态…</Typography.Text>
+        </div>
+      ) : state.data.brokers.length === 0 ? (
+        <div className="dbz-canvas-empty" data-canvas-empty>
+          <div className="dbz-canvas-empty-title">还没有 Kafka 集群</div>
+          <div className="dbz-canvas-empty-desc">
+            控制面板按「Kafka 集群 → Connect → 连接器」三级展开，状态由健康检查定时回写。
+            先新增一条集群记录，或从备份 JSON 一次导入整颗集群（含 Connect 与连接器）。
+          </div>
+          <div className="dbz-canvas-empty-actions">
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={() => startCreate('broker', null)}
+            >
+              新增 Kafka 集群
+            </Button>
+            <Button
+              icon={<UploadOutlined />}
+              onClick={() => {
+                if (clusterImportFileRef.current) {
+                  clusterImportFileRef.current.value = '';
+                  clusterImportFileRef.current.click();
+                }
+              }}
+            >
+              导入集群
+            </Button>
+          </div>
         </div>
       ) : (
         <>

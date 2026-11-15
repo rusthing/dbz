@@ -36,6 +36,10 @@ ReactDOM.createRoot(container).render(
           colorPrimary: '#1677ff',
           borderRadius: 6,
           fontSize: 14,
+          // antd 默认的 colorTextTertiary 是 rgba(0,0,0,.45)，压在白底上只有 3.4:1，
+          // 而本项目大量用它承载 11–12px 的说明文字（地址、时间、计数），读起来发虚。
+          // 抬到 .56（约 4.9:1），仍是「次要」但达到正文对比度要求。
+          colorTextTertiary: 'rgba(0, 0, 0, 0.56)',
         },
         components: {
           Layout: {
