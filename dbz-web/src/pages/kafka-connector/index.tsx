@@ -115,7 +115,7 @@ export default function KafkaConnectorPage() {
           刷新集群
         </Button>
         <span className="dbz-toolbar-spacer" />
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        <Typography.Text type="secondary" style={{ fontSize: 12.5 }}>
           这里只查询集群现状，不改集群、也不改库；连接器状态是当前时刻的实时结果。
         </Typography.Text>
       </div>

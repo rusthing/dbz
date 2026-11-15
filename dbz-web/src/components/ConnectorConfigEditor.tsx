@@ -1143,7 +1143,7 @@ export default function ConnectorConfigEditor({
                   <div className="dbz-option-row">
                     <span className="dbz-mono">{toText(option.value)}</span>
                     {option.data.hint && (
-                      <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                      <Typography.Text type="secondary" style={{ fontSize: 12.5 }}>
                         {option.data.hint}
                       </Typography.Text>
                     )}
@@ -1188,13 +1188,13 @@ export default function ConnectorConfigEditor({
             {field.label}
             {field.required && <Typography.Text type="danger"> *</Typography.Text>}
           </Typography.Text>
-          <Typography.Text type="secondary" className="dbz-mono" style={{ marginLeft: 8, fontSize: 12 }}>
+          <Typography.Text type="secondary" className="dbz-mono" style={{ marginLeft: 8, fontSize: 12.5 }}>
             {field.key}
           </Typography.Text>
         </label>
         {control}
         {field.help && (
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          <Typography.Text type="secondary" style={{ fontSize: 12.5 }}>
             {field.help}
           </Typography.Text>
         )}
@@ -1234,7 +1234,7 @@ export default function ConnectorConfigEditor({
               套用 {template.label}
             </Button>
           ))}
-        <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+        <Typography.Text type="secondary" style={{ fontSize: 12.5 }}>
           {mode === 'gui'
             ? '只列出常用项，其他参数在 JSON 里加；切过去不会丢'
             : '这里是最终提交的内容，图形化改动会实时反映过来'}
@@ -1243,10 +1243,10 @@ export default function ConnectorConfigEditor({
 
       {mode === 'gui' && applied && (
         <Space direction="vertical" size={2}>
-          <Typography.Text type="success" style={{ fontSize: 12 }}>
+          <Typography.Text type="success" style={{ fontSize: 12.5 }}>
             {resultText}
           </Typography.Text>
-          <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+          <Typography.Text type="secondary" style={{ fontSize: 12.5 }}>
             {applied.desc}
           </Typography.Text>
         </Space>
@@ -1297,14 +1297,14 @@ export default function ConnectorConfigEditor({
                 <Typography.Text strong>
                   {group.title}
                   {groupRequired && (
-                    <Typography.Text type="danger" style={{ marginLeft: 6, fontSize: 12 }}>
+                    <Typography.Text type="danger" style={{ marginLeft: 6, fontSize: 12.5 }}>
                       必填
                     </Typography.Text>
                   )}
                 </Typography.Text>
                 {group.desc && (
                   <div>
-                    <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+                    <Typography.Text type="secondary" style={{ fontSize: 12.5 }}>
                       {group.desc}
                     </Typography.Text>
                   </div>

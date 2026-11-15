@@ -202,7 +202,7 @@ export default function SnapshotModal({
           {switchable && (
             <div>
               <Typography.Text strong>信号通道</Typography.Text>
-              <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+              <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12.5 }}>
                 两条都能用，切换会重新预检
               </Typography.Text>
               <Radio.Group
@@ -214,7 +214,7 @@ export default function SnapshotModal({
                   {preview.channels.map((item) => (
                     <Radio key={item} value={item}>
                       {CHANNEL_LABEL[item]?.label ?? item}
-                      <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12 }}>
+                      <Typography.Text type="secondary" style={{ marginLeft: 8, fontSize: 12.5 }}>
                         {CHANNEL_LABEL[item]?.desc}
                       </Typography.Text>
                     </Radio>
@@ -290,7 +290,7 @@ export default function SnapshotModal({
               onChange={(value: string[]) => setSelected(value)}
               options={preview.dataCollections.map((table) => ({ value: table, label: table }))}
             />
-            <Typography.Text type="secondary" style={{ fontSize: 12 }}>
+            <Typography.Text type="secondary" style={{ fontSize: 12.5 }}>
               {isKafka
                 ? '范围取自连接器的 table.include.list（或库/模式范围），按正则原样交给 Debezium 展开；Kafka 通道不连源库，因此无法核对表是否真的存在。'
                 : '清单来自源库 information_schema，已按连接器的捕获范围过滤（信号表自身除外）；至少选一张才能提交。'}

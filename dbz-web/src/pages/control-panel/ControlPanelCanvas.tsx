@@ -572,6 +572,8 @@ export default function ControlPanelCanvas({
   const viewportRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<ViewState>({ x: 0, y: 0, scale: 1 });
   const [viewportSize, setViewportSize] = useState({ w: 0, h: 0 });
+  /** 任意拖拽（画布/卡片/走线）进行中：临时隐藏缩略图，避免盖住右下角 */
+  const [interacting, setInteracting] = useState(false);
   const fittedRef = useRef(false);
 
   const nodeMap = useMemo(() => new Map(nodes.map((node) => [node.key, node])), [nodes]);
@@ -736,7 +738,15 @@ export default function ControlPanelCanvas({
     const startX = event.clientX;
     const startY = event.clientY;
     const origin = view;
+    let moved = false;
     const move = (moveEvent: PointerEvent) => {
+      if (
+        !moved &&
+        (Math.abs(moveEvent.clientX - startX) > 2 || Math.abs(moveEvent.clientY - startY) > 2)
+      ) {
+        moved = true;
+        setInteracting(true);
+      }
       setView({
         ...origin,
         x: origin.x + moveEvent.clientX - startX,
@@ -746,6 +756,7 @@ export default function ControlPanelCanvas({
     const up = () => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
+      setInteracting(false);
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
@@ -771,6 +782,9 @@ export default function ControlPanelCanvas({
       const dx = (moveEvent.clientX - startClientX) / scale;
       const dy = (moveEvent.clientY - startClientY) / scale;
       if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
+        if (!moved) {
+          setInteracting(true);
+        }
         moved = true;
       }
       if (moved) {
@@ -780,6 +794,7 @@ export default function ControlPanelCanvas({
     const up = (upEvent: PointerEvent) => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
+      setInteracting(false);
       if (moved) {
         const dx = (upEvent.clientX - startClientX) / scale;
         const dy = (upEvent.clientY - startClientY) / scale;
@@ -813,6 +828,9 @@ export default function ControlPanelCanvas({
     const move = (moveEvent: PointerEvent) => {
       const nextY = originY + (moveEvent.clientY - startClientY) / scale;
       if (Math.abs(moveEvent.clientY - startClientY) > 2) {
+        if (!moved) {
+          setInteracting(true);
+        }
         moved = true;
       }
       onEdgeBend(geometry.edge.id, clamp(nextY, BEND_MIN_Y, BEND_MAX_Y), false);
@@ -820,6 +838,7 @@ export default function ControlPanelCanvas({
     const up = (upEvent: PointerEvent) => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
+      setInteracting(false);
       if (moved) {
         const nextY = originY + (upEvent.clientY - startClientY) / scale;
         onEdgeBend(geometry.edge.id, clamp(nextY, BEND_MIN_Y, BEND_MAX_Y), true);
@@ -857,6 +876,9 @@ export default function ControlPanelCanvas({
       clamp(originDx + (clientX - startClientX) / scale, range.min, range.max);
     const move = (moveEvent: PointerEvent) => {
       if (Math.abs(moveEvent.clientX - startClientX) > 2) {
+        if (!moved) {
+          setInteracting(true);
+        }
         moved = true;
       }
       onEdgeAnchor(geometry.edge.id, which, nextDxOf(moveEvent.clientX), false);
@@ -864,6 +886,7 @@ export default function ControlPanelCanvas({
     const up = (upEvent: PointerEvent) => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
+      setInteracting(false);
       if (moved) {
         onEdgeAnchor(geometry.edge.id, which, nextDxOf(upEvent.clientX), true);
       }
@@ -910,6 +933,9 @@ export default function ControlPanelCanvas({
     viewportSize.h / bounds.height,
   );
   const hideOverlays = !nodes.length || !viewportSize.w || view.scale <= overviewScale * 1.03;
+
+  /** 检查器只在选中节点/连线时展开 */
+  const inspectorOpen = Boolean(selectedNodeKey || selectedEdgeId);
 
   /** 选中连线的手柄：单独画在节点之上，折点被拖进卡片范围后仍能再拖出来 */
   const renderEdgeHandles = (geometry: EdgeGeometry) => (
@@ -1166,7 +1192,7 @@ export default function ControlPanelCanvas({
             <span className="dbz-graph-scale">{Math.round(view.scale * 100)}%</span>
           </div>
 
-          {!hideOverlays && (
+          {!hideOverlays && !interacting && (
             <div className="dbz-graph-minimap" title="缩略图：点击可移动视口">
               <svg
                 viewBox={`${bounds.minX - 20} ${bounds.minY - 20} ${bounds.width + 40} ${bounds.height + 40}`}
@@ -1226,7 +1252,13 @@ export default function ControlPanelCanvas({
         </div>
       </div>
 
-      <aside className="dbz-graph-inspector">{renderInspector()}</aside>
+      {/* 未选中任何节点/连线时整栏收起，画布占满剩余宽度；空态分支只兜底「选中后记录丢失」 */}
+      <aside
+        className={`dbz-graph-inspector${inspectorOpen ? '' : ' is-collapsed'}`}
+        aria-hidden={!inspectorOpen}
+      >
+        {inspectorOpen ? renderInspector() : null}
+      </aside>
     </div>
   );
 }

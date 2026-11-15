@@ -1520,7 +1520,7 @@ try {
     await page.locator('.dbz-graph-controls').isVisible(),
   );
   // 整图已完全可见时隐藏缩略图（覆盖层会盖住被适应放大的卡片），放大后才出现；
-  // 图例只有「归属线」一条，已下线，走线说明放在属性检查器的空态里
+  // 拖拽进行中也临时隐藏。图例已下线，走线说明放在检查器（选中连线时展示）
   check(
     '整图可见时隐藏缩略图覆盖层',
     (await page.locator('.dbz-graph-minimap').count()) === 0,

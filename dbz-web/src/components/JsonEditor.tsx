@@ -49,7 +49,7 @@ export default function JsonEditor({ value = '', onChange, rows = 14 }: JsonEdit
         <Button size="small" onClick={handleFormat}>
           格式化
         </Button>
-        <Typography.Text type={error ? 'danger' : 'secondary'} style={{ fontSize: 12 }}>
+        <Typography.Text type={error ? 'danger' : 'secondary'} style={{ fontSize: 12.5 }}>
           {error ?? 'JSON 合法'}
         </Typography.Text>
       </Space>

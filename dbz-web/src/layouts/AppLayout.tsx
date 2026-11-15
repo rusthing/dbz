@@ -99,7 +99,7 @@ export default function AppLayout() {
             <div className="dbz-header-desc">{current.desc}</div>
           </div>
           <div className="dbz-header-right">
-            <Typography.Text type="secondary" className="dbz-header-note" style={{ fontSize: 12 }}>
+            <Typography.Text type="secondary" className="dbz-header-note" style={{ fontSize: 12.5 }}>
               健康检查由 jobx 定时任务触发，状态约每 60 秒刷新一次
             </Typography.Text>
             {session && (
