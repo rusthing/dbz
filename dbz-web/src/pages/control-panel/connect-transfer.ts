@@ -10,8 +10,11 @@
  *
  * ## 同名冲突
  *
- * 判定只看目标 Connect 上的 connectorName：库内记录与集群上真实存在的连接器
- * 都算，和「库里有没有记录」无关。这样绕过 dbz 手工建的连接器也不会被漏掉。
+ * `connector_name` 在库内是**全局唯一**的（上游、下游各自一张表内唯一，与 Connect
+ * 无关），所以冲突判定必须按整库而不是只按目标 Connect：目标 Connect 上的同向记录、
+ * 另一台 Connect 上的同向记录、以及集群上已存在但未纳管的同名连接器都算冲突。
+ * 「另一个 Connect 已有同名记录」时不能覆盖（改了就是动别的集群上的记录），
+ * 只能改名保留或跳过。集群上未纳管的同名连接器则允许「覆盖并纳管」。
  *
  * ## 凭据
  *
@@ -82,12 +85,21 @@ export interface ImportManagedRecord {
   id: Id;
   name: string;
   connectorName: string;
+  /** 记录所属的 Kafka Connect */
+  kafkaConnectId: Id;
 }
 
 /** 预览行上的冲突结论 */
 export interface ImportConflict {
   /** 目标 Connect 上已有的同向库内记录；没有则为未纳管 */
   managed?: ImportManagedRecord;
+  /**
+   * 另一台 Connect 上已有的同向库内记录
+   *
+   * `connector_name` 库内唯一，这条记录占着名字；此时只能改名保留或跳过，
+   * 覆盖会去改别的 Connect 上的记录，不能允许。
+   */
+  elsewhere?: ImportManagedRecord;
   /** 集群上已有同名连接器但库里没有记录 */
   unmanaged: boolean;
 }
@@ -425,9 +437,12 @@ export function parseTransferFile(raw: string): TransferParseResult {
 /**
  * # 逐条构建预览
  *
- * 冲突判定与库里有没有记录无关：目标 Connect 上已有同向库内记录，或集群上已有
- * 同名连接器（未纳管），都算冲突。`liveNames` 为 null 表示实时列表没取到，
- * 只能按库内记录判断，页面要明确提示这一点。
+ * 冲突判定按**整库**：`connector_name` 在上游表、下游表内各自唯一，与 Connect 无关。
+ * - 目标 Connect 上已有同向记录：可覆盖（改这条记录）或跳过/改名；
+ * - 另一台 Connect 上已有同向记录：只能跳过或改名，覆盖会动到别的集群；
+ * - 目标 Connect 上已有未纳管的同名连接器：可覆盖并纳管。
+ *
+ * `liveNames` 为 null 表示实时列表没取到，只能按库内记录判断，页面要明确提示这一点。
  */
 export function buildImportRows(
   file: TransferFile,
@@ -436,28 +451,37 @@ export function buildImportRows(
   sinks: DbzSinkConnectorVo[],
   liveNames: Set<string> | null,
 ): ImportPreviewRow[] {
-  const managedSources = sources.filter((item) => item.kafkaConnectId === kafkaConnectId);
-  const managedSinks = sinks.filter((item) => item.kafkaConnectId === kafkaConnectId);
-  const allManaged = [...managedSources, ...managedSinks];
-
   return file.connectors.map((row) => {
-    const sameDirection =
-      row.direction === 'source' ? managedSources : managedSinks;
-    const managedRecord = sameDirection.find(
+    // 同名唯一性按同向表判定：上游只和上游比，下游只和下游比
+    const sameDirectionAll = row.direction === 'source' ? sources : sinks;
+    const globalRecord = sameDirectionAll.find(
       (item) => item.connectorName === row.connectorName,
     );
-    const managedAnyDirection = allManaged.some(
-      (item) => item.connectorName === row.connectorName,
-    );
-    const unmanaged = Boolean(liveNames?.has(row.connectorName)) && !managedAnyDirection;
+    const onTarget =
+      globalRecord !== undefined && globalRecord.kafkaConnectId === kafkaConnectId;
+    const managedRecord = onTarget ? globalRecord : undefined;
+    const elsewhereRecord = globalRecord && !onTarget ? globalRecord : undefined;
+    // 实时列表来自目标 Connect；目标上未纳管才算「集群上已存在」
+    const unmanaged =
+      Boolean(liveNames?.has(row.connectorName)) && !onTarget;
+
     const conflict: ImportConflict | null =
-      managedRecord || unmanaged
+      managedRecord || elsewhereRecord || unmanaged
         ? {
             managed: managedRecord
               ? {
                   id: managedRecord.id,
                   name: managedRecord.name,
                   connectorName: managedRecord.connectorName,
+                  kafkaConnectId: managedRecord.kafkaConnectId,
+                }
+              : undefined,
+            elsewhere: elsewhereRecord
+              ? {
+                  id: elsewhereRecord.id,
+                  name: elsewhereRecord.name,
+                  connectorName: elsewhereRecord.connectorName,
+                  kafkaConnectId: elsewhereRecord.kafkaConnectId,
                 }
               : undefined,
             unmanaged,
@@ -470,6 +494,11 @@ export function buildImportRows(
       decision: conflict ? 'skip' : 'overwrite',
     };
   });
+}
+
+/** 该冲突是否允许「覆盖」：占用名字的记录必须在目标 Connect 上 */
+export function canOverwriteImport(conflict: ImportConflict | null): boolean {
+  return Boolean(conflict) && !conflict?.elsewhere;
 }
 
 /** 生成不撞名的 `-imported-N`；已用名称集合由调用方维护 */

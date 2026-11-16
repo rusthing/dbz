@@ -20,8 +20,12 @@ use crate::dto::{
     DbzConnectorDetectDto, DbzKafkaConnectDetectDto, DbzKafkaConnectHealthDto,
     DbzSinkConnectorQueryDto, DbzSourceConnectorQueryDto,
 };
-use crate::mo::dbz_sink_connector::ActiveModel as SinkActiveModel;
-use crate::mo::dbz_source_connector::ActiveModel as SourceActiveModel;
+use crate::mo::dbz_sink_connector::{
+    ActiveModel as SinkActiveModel, Column as SinkColumn, Entity as SinkEntity,
+};
+use crate::mo::dbz_source_connector::{
+    ActiveModel as SourceActiveModel, Column as SourceColumn, Entity as SourceEntity,
+};
 use crate::svc::{DbzKafkaBrokerSvc, DbzSinkConnectorSvc, DbzSourceConnectorSvc};
 use crate::utils::{
     ConnectorHealth, DbzAlarmUtils, DbzSignalUtils, KafkaConnectorError, KafkaConnectorUtils,
@@ -35,7 +39,7 @@ use crate::vo::{
 use anyhow::anyhow;
 use robotech::db::get_db_conn;
 use robotech::macros::svc;
-use sea_orm::{DatabaseConnection, Set};
+use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -546,6 +550,32 @@ impl DbzKafkaConnectSvc {
             };
             let config_text = serde_json::to_string(&remote_config)
                 .map_err(|e| anyhow!("序列化连接器<{}>配置失败: {e}", item.name))?;
+
+            // connector_name 在库内全局唯一（上游表、下游表各自唯一，与 Connect 无关）。
+            // 名字已被别的 Connect 占着时不能补录，否则会撞唯一约束；提前给出明确结论，
+            // 让整次检测仍能正常返回其它连接器的结论。
+            if connector_type == "source" || connector_type == "sink" {
+                if let Some((owner_id, owner_connect_id)) = name_owner_elsewhere(
+                    db.as_ref(),
+                    &connector_type,
+                    &item.name,
+                    connect.id.value() as i64,
+                )
+                .await
+                .map_err(|e| anyhow!("检查连接器<{}>同名占用失败: {e}", item.name))?
+                {
+                    push_detect_item(
+                        &mut out,
+                        &item.name,
+                        &connector_type,
+                        "skipped",
+                        Some(format!(
+                            "connectorName 已被 Kafka Connect(id={owner_connect_id}) 下的纳管记录(id={owner_id})占用，需改名或跳过"
+                        )),
+                    );
+                    continue;
+                }
+            }
 
             match connector_type.as_str() {
                 "source" => {
@@ -1907,6 +1937,35 @@ fn resolve_upstream(
     } else {
         None
     }
+}
+
+/// # 查同名连接器是否已被**别的** Connect 纳管
+///
+/// `connector_name` 在上游表、下游表内各自全局唯一，跨 Connect 也不能重名。
+/// 返回占用者的 `(记录 id, 所属 Connect id)`；名字空闲或就属于当前 Connect 时返回
+/// `None`（当前 Connect 的情况前面已经按库内记录比对过了，不会走到补录）。
+async fn name_owner_elsewhere(
+    db: &DatabaseConnection,
+    connector_type: &str,
+    connector_name: &str,
+    connect_id: i64,
+) -> Result<Option<(i64, i64)>, anyhow::Error> {
+    let found = match connector_type {
+        "source" => SourceEntity::find()
+            .filter(SourceColumn::ConnectorName.eq(connector_name))
+            .one(db)
+            .await
+            .map_err(|e| anyhow!("{e}"))?
+            .map(|model| (model.id, model.kafka_connect_id)),
+        "sink" => SinkEntity::find()
+            .filter(SinkColumn::ConnectorName.eq(connector_name))
+            .one(db)
+            .await
+            .map_err(|e| anyhow!("{e}"))?
+            .map(|model| (model.id, model.kafka_connect_id)),
+        _ => None,
+    };
+    Ok(found.filter(|(_, owner_connect_id)| *owner_connect_id != connect_id))
 }
 
 /// # 记录一条检测结果并累加计数

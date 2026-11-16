@@ -104,6 +104,7 @@ import {
   backupFileName,
   buildImportRows,
   buildTransferFile,
+  canOverwriteImport,
   downloadJson,
   exportFileName,
   nextImportedName,
@@ -2025,15 +2026,22 @@ export default function ControlPanelPage() {
     );
   };
 
-  /** 顶部批量选择：只影响有冲突的行，无冲突行始终新增 */
+  /** 顶部批量选择：只影响有冲突的行；「覆盖」跳过名字被别的 Connect 占用的行 */
   const setAllImportDecisions = (decision: ImportDecision) => {
     setImportSession((previous) =>
       previous
         ? {
             ...previous,
-            rows: previous.rows.map((item) =>
-              item.conflict ? { ...item, decision } : item,
-            ),
+            rows: previous.rows.map((item) => {
+              if (!item.conflict) {
+                return item;
+              }
+              // 另一个 Connect 已占用 connectorName 时不允许批量改成覆盖
+              if (decision === 'overwrite' && !canOverwriteImport(item.conflict)) {
+                return item;
+              }
+              return { ...item, decision };
+            }),
           }
         : previous,
     );
@@ -2172,6 +2180,16 @@ export default function ControlPanelPage() {
         }
 
         if (preview.conflict && preview.decision === 'overwrite') {
+          if (!canOverwriteImport(preview.conflict)) {
+            outcomes.push({
+              row,
+              action: 'failed',
+              message:
+                `connectorName「${row.connectorName}」在另一台 Connect 已有纳管记录` +
+                `（id=${preview.conflict.elsewhere?.id ?? '--'}），库内唯一，只能改名保留或跳过`,
+            });
+            return;
+          }
           if (preview.conflict.managed) {
             await modifyConnector(
               row,
@@ -3574,9 +3592,11 @@ export default function ControlPanelPage() {
                           <div className="dbz-transfer-conflict">
                             <Tag color="warning">同名冲突</Tag>
                             <span>
-                              {item.conflict.managed
-                                ? `已有纳管记录「${item.conflict.managed.name}」`
-                                : '集群上未纳管'}
+                              {item.conflict.elsewhere
+                                ? `另一台 Connect 已有记录「${item.conflict.elsewhere.name}」，需改名或跳过`
+                                : item.conflict.managed
+                                  ? `已有纳管记录「${item.conflict.managed.name}」`
+                                  : '集群上未纳管'}
                             </span>
                           </div>
                         ) : (
@@ -3604,12 +3624,17 @@ export default function ControlPanelPage() {
                                 )
                               }
                               options={[
-                                {
-                                  value: 'overwrite',
-                                  label: item.conflict.managed
-                                    ? IMPORT_ACTION_LABEL['overwritten-managed']
-                                    : IMPORT_ACTION_LABEL['overwritten-adopted'],
-                                },
+                                // 名字被别的 Connect 占用时不能覆盖（会改到别的集群的记录）
+                                ...(canOverwriteImport(item.conflict)
+                                  ? [
+                                      {
+                                        value: 'overwrite' as const,
+                                        label: item.conflict.managed
+                                          ? IMPORT_ACTION_LABEL['overwritten-managed']
+                                          : IMPORT_ACTION_LABEL['overwritten-adopted'],
+                                      },
+                                    ]
+                                  : []),
                                 { value: 'skip', label: IMPORT_DECISION_LABEL.skip },
                                 {
                                   value: 'keep',
