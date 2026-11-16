@@ -12,16 +12,12 @@
 //!
 //! [`DbzKafkaConnectSvc::check_all_connectors`]: crate::svc::DbzKafkaConnectSvc::check_all_connectors
 
-use crate::config::get_dbz_config;
 use crate::dic::ConnectorRunStatus;
 use crate::svc::{DbzKafkaConnectSvc, DbzSourceConnectorSvc};
-use crate::utils::{
-    KafkaConnectorUtils, ensure_sink_dlq_config, normalize_url, should_deploy, validate_sink_config,
-};
+use crate::utils::{KafkaConnectorUtils, normalize_url, prepare_sink_config, should_deploy};
 use anyhow::anyhow;
 use robotech::macros::svc;
 use sea_orm::DatabaseConnection;
-use serde_json::{Map, Value};
 use tracing::{info, warn};
 use wheel_rs::time_utils::now_ms;
 
@@ -49,19 +45,8 @@ impl DbzSinkConnectorSvc {
     /// * `Ok(String)` - 校验通过、必要时已补齐 DLQ 的配置
     /// * `Err(SvcError)` - 配置不是 JSON 对象，或 HTTP Sink 的地址不合法
     fn prepare_config(connector_config: &str) -> Result<String, SvcError> {
-        let object: Map<String, Value> = serde_json::from_str(connector_config)
-            .map_err(|e| SvcError::from(anyhow!("连接器配置不是合法的 JSON 对象: {e}")))?;
-        validate_sink_config(&object)
-            .map_err(|e| SvcError::from(anyhow!("连接器配置校验失败: {e}")))?;
-
-        let cfg = get_dbz_config()
-            .map(|config| config.dead_letter.clone())
-            .unwrap_or_default();
-        if !cfg.enabled {
-            return Ok(connector_config.to_string());
-        }
-        ensure_sink_dlq_config(connector_config, &cfg)
-            .map_err(|e| SvcError::from(anyhow!("补齐 Kafka Connect DLQ 配置失败: {e}")))
+        prepare_sink_config(connector_config)
+            .map_err(|e| SvcError::from(anyhow!("连接器配置校验失败: {e}")))
     }
 
     /// # 校验上游连接器与 Kafka Connect 归属一致

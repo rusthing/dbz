@@ -31,7 +31,7 @@ use crate::mo::dbz_kafka_broker::{ActiveModel as BrokerActiveModel, Model as Bro
 use crate::mo::dbz_kafka_connect::{ActiveModel as ConnectActiveModel, Model as ConnectModel};
 use crate::mo::dbz_sink_connector::{ActiveModel as SinkActiveModel, Model as SinkModel};
 use crate::mo::dbz_source_connector::{ActiveModel as SourceActiveModel, Model as SourceModel};
-use crate::utils::normalize_url;
+use crate::utils::{normalize_url, prepare_sink_config};
 use crate::vo::{
     BACKUP_FORMAT, BACKUP_VERSION, DbzBackupBrokerVo, DbzBackupConnectVo, DbzBackupConnectorVo,
     DbzBackupFileVo, DbzBackupRestoreItemVo, DbzBackupRestoreVo, DbzBackupUpstreamVo,
@@ -1159,6 +1159,39 @@ async fn restore_source(
     }
 }
 
+/// 恢复下游前的校验：上游必须与本条下游同属一台 Connect，配置补上 DLQ
+///
+/// 归属不变量（下游只能和上游在同一台 Connect）在正常保存时强校验，恢复是直接写库，
+/// 这里补上同一道校验；配置也走一遍与正常保存相同的预处理，避免老备份缺 DLQ 键。
+fn prepare_restored_sink(
+    sources: &[SourceModel],
+    upstream_id: i64,
+    connect_id: i64,
+    connect_name: &str,
+    file: &DbzBackupConnectorVo,
+) -> anyhow::Result<String> {
+    let Some(upstream) = sources.iter().find(|item| item.id == upstream_id) else {
+        // 预演时新增的上游只返回占位 ID（-1），库里还没有行，查不到属正常；
+        // 真实恢复时上游会先落库，走到这里一定能查到并完成归属校验。
+        if upstream_id < 0 {
+            return prepare_sink_config(&file.connector_config)
+                .map_err(|e| anyhow!("配置校验失败：{e:#}"));
+        }
+        return Err(anyhow!("上游连接器记录不存在"));
+    };
+    if upstream.kafka_connect_id != connect_id {
+        return Err(anyhow!(
+            "上游连接器「{}」属于 Kafka Connect(id={})，与备份中的 Kafka Connect「{}」(id={}) 不一致，已跳过",
+            upstream.name,
+            upstream.kafka_connect_id,
+            connect_name,
+            connect_id
+        ));
+    }
+    prepare_sink_config(&file.connector_config)
+        .map_err(|e| anyhow!("配置校验失败：{e:#}"))
+}
+
 /// 恢复一条下游连接器：上游按文件里的 `connectorName` 重新挂载
 #[allow(clippy::too_many_arguments)]
 async fn restore_sink(
@@ -1242,6 +1275,23 @@ async fn restore_sink(
             );
             return Ok(());
         }
+        // 归属校验 + DLQ 补齐；失败只影响这一条，整次恢复继续
+        let connector_config =
+            match prepare_restored_sink(sources, upstream_id, connect_id, connect_name, file) {
+                Ok(text) => text,
+                Err(e) => {
+                    push_item(
+                        out,
+                        "sink",
+                        parent,
+                        &file.name,
+                        Some(&file.connector_name),
+                        "failed",
+                        Some(format!("{e:#}")),
+                    );
+                    return Ok(());
+                }
+            };
         if !dry_run {
             let mut active = SinkActiveModel {
                 id: Set(id),
@@ -1250,7 +1300,7 @@ async fn restore_sink(
             active.kafka_connect_id = Set(connect_id);
             active.source_connector_id = Set(upstream_id);
             active.name = Set(file.name.clone());
-            active.connector_config = Set(file.connector_config.clone());
+            active.connector_config = Set(connector_config);
             active.remark = Set(file.remark.clone());
             active.enabled = Set(file.enabled);
             active.run_status = Set(ConnectorRunStatus::Unknown.value());
@@ -1283,6 +1333,24 @@ async fn restore_sink(
         );
         return Ok(());
     }
+
+    // 覆盖与新增都要先过归属校验并补齐 DLQ；跳过时不碰现有记录，无需预处理
+    let connector_config =
+        match prepare_restored_sink(sources, upstream_id, connect_id, connect_name, file) {
+            Ok(text) => text,
+            Err(e) => {
+                push_item(
+                    out,
+                    "sink",
+                    parent,
+                    &file.name,
+                    Some(&file.connector_name),
+                    "failed",
+                    Some(format!("{e:#}")),
+                );
+                return Ok(());
+            }
+        };
 
     if sinks.iter().any(|item| item.name == file.name)
         || sources
@@ -1318,7 +1386,7 @@ async fn restore_sink(
         source_connector_id: Set(upstream_id),
         name: Set(file.name.clone()),
         connector_name: Set(file.connector_name.clone()),
-        connector_config: Set(file.connector_config.clone()),
+        connector_config: Set(connector_config),
         run_status: Set(ConnectorRunStatus::Unknown.value()),
         run_msg: Set(None),
         remark: Set(file.remark.clone()),

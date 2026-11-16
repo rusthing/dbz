@@ -10,6 +10,8 @@
 //! 这些在保存时就能判出来，没必要等到集群上炸一遍。校验只覆盖**确定键名**的
 //! 两类 HTTP Sink；其它实现（`OtherHttpSink`）键名不统一，不做猜测。
 
+use crate::config::get_dbz_config;
+use crate::utils::dbz_dlq_utils::ensure_sink_dlq_config;
 use anyhow::bail;
 use regex::Regex;
 use serde_json::{Map, Value};
@@ -159,6 +161,29 @@ fn text<'a>(config: &'a Map<String, Value>, key: &str) -> Option<&'a str> {
         .and_then(Value::as_str)
         .map(str::trim)
         .filter(|text| !text.is_empty())
+}
+
+/// # 保存/恢复下游连接器前的配置预处理
+///
+/// 与正常保存**完全同一套**：先按 HTTP Sink 规则校验，DLQ 开启时强制补齐
+/// `errors.deadletterqueue.*` 等键。备份恢复也走这里，避免老备份文件缺 DLQ 配置、
+/// 恢复后坏消息被静默丢弃。
+///
+/// ## 返回值
+/// * `Ok(String)` - 校验通过、必要时已补齐 DLQ 的配置
+/// * `Err` - 配置不是 JSON 对象、HTTP Sink 地址不合法，或 DLQ topic 不合法
+pub fn prepare_sink_config(connector_config: &str) -> anyhow::Result<String> {
+    let object: Map<String, Value> = serde_json::from_str(connector_config)
+        .map_err(|e| anyhow::anyhow!("连接器配置不是合法的 JSON 对象: {e}"))?;
+    validate_sink_config(&object)?;
+
+    let cfg = get_dbz_config()
+        .map(|config| config.dead_letter.clone())
+        .unwrap_or_default();
+    if !cfg.enabled {
+        return Ok(connector_config.to_string());
+    }
+    ensure_sink_dlq_config(connector_config, &cfg)
 }
 
 #[cfg(test)]
