@@ -422,6 +422,13 @@ impl DbzControlPlaneStatusSvc {
             });
             let message =
                 format!("删除位点失败：{error}；连接器已停止但位点未清空，当前状态：{state}");
+            Self::disable_after_failed_reset(
+                db.as_ref(),
+                is_sink,
+                connector_id,
+                "删除位点失败，连接器已停止",
+            )
+            .await;
             return Ok(
                 Ro::success(message.clone()).extra(Some(DbzResetConnectorOffsetsVo {
                     ok: false,
@@ -450,6 +457,13 @@ impl DbzControlPlaneStatusSvc {
                     message: Some(error.to_string()),
                 });
                 let message = format!("恢复运行失败：{error}；位点已清空，连接器当前状态：{state}");
+                Self::disable_after_failed_reset(
+                    db.as_ref(),
+                    is_sink,
+                    connector_id,
+                    "位点已清空但恢复运行失败，连接器仍处于停止状态",
+                )
+                .await;
                 return Ok(
                     Ro::success(message.clone()).extra(Some(DbzResetConnectorOffsetsVo {
                         ok: false,
@@ -486,6 +500,49 @@ impl DbzControlPlaneStatusSvc {
                 steps,
             })),
         )
+    }
+
+    /// # 重置位点中途失败后把记录置为停用
+    ///
+    /// 连接器已经被停掉、后续步骤失败时，库里若仍显示「启用」，下一轮刷新只会把它
+    /// 记成「已停止」继续告警，用户也分不清该不该去拉起。这里直接置 `enabled=false`，
+    /// 与「已停止」的预期一致；**不做自动 resume**，避免把失败掩盖成一次正常操作。
+    async fn disable_after_failed_reset(
+        db: &DatabaseConnection,
+        is_sink: bool,
+        connector_id: i64,
+        reason: &str,
+    ) {
+        let now = now_ms() as i64;
+        let message = Some(format!("{reason}；记录已置为停用，确认后再手动启用"));
+        let result = if is_sink {
+            let active = SinkActiveModel {
+                id: Set(connector_id),
+                enabled: Set(false),
+                run_status: Set(ConnectorRunStatus::Disabled.value()),
+                run_msg: Set(message),
+                updater_id: Set(0),
+                update_ms: Set(now),
+                ..Default::default()
+            };
+            DbzSinkConnectorDao::update(active, db).await.map(|_| ())
+        } else {
+            let active = SourceActiveModel {
+                id: Set(connector_id),
+                enabled: Set(false),
+                run_status: Set(ConnectorRunStatus::Disabled.value()),
+                run_msg: Set(message),
+                updater_id: Set(0),
+                update_ms: Set(now),
+                ..Default::default()
+            };
+            DbzSourceConnectorDao::update(active, db)
+                .await
+                .map(|_| ())
+        };
+        if let Err(error) = result {
+            warn!("重置位点失败后停用连接器<{connector_id}>失败: {error}");
+        }
     }
 
     /// # 读取连接器当前状态（用于失败提示）

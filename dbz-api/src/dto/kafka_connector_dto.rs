@@ -12,12 +12,9 @@
 //!
 //! ## 定位目标集群
 //!
-//! 目标 Kafka Connect 通过 `kafkaConnectUrl` 或 `kafkaConnectId` 二者之一定位：
-//! - `kafkaConnectUrl` - 直接指定地址，适合排查未被任何记录纳管的集群；
-//! - `kafkaConnectId` - 取 `dbz_kafka_connect` 记录上的地址，适合从 Kafka Connect
-//!   或连接器列表发起操作。
-//!
-//! 同时提供时以 `kafkaConnectUrl` 为准。
+//! 目标 Kafka Connect 只通过 `kafkaConnectId` 定位，地址取自 `dbz_kafka_connect`
+//! 记录。不再接受请求体里的任意 URL：那会让服务端被当作代理访问任意地址（SSRF），
+//! 需要直连未纳管集群时，先把它录成一条 Kafka Connect 记录。
 
 use robotech::api::U64;
 use serde::{Deserialize, Serialize};
@@ -29,24 +26,17 @@ use utoipa::{IntoParams, ToSchema};
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema, IntoParams)]
 #[serde(default, rename_all = "camelCase")]
 pub struct KafkaConnectorQueryDto {
-    /// Kafka Connect ID（未提供 kafkaConnectUrl 时必填）
+    /// Kafka Connect ID（必填，地址取自记录）
     pub kafka_connect_id: Option<U64>,
-    /// Kafka Connect 地址（优先于 kafkaConnectId）
-    /// @len 0..
-    pub kafka_connect_url: Option<String>,
 }
 
 /// # 重启连接器 DTO
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct KafkaConnectorRestartDto {
-    /// Kafka Connect ID（未提供 kafkaConnectUrl 时必填）
+    /// Kafka Connect ID（必填，地址取自记录）
     #[serde(default)]
     pub kafka_connect_id: Option<U64>,
-    /// Kafka Connect 地址（优先于 kafkaConnectId）
-    /// @len 0..
-    #[serde(default)]
-    pub kafka_connect_url: Option<String>,
     /// 连接器名称
     /// @len 1..
     pub connector_name: String,
@@ -62,13 +52,9 @@ pub struct KafkaConnectorRestartDto {
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 #[serde(rename_all = "camelCase")]
 pub struct KafkaConnectorTaskRestartDto {
-    /// Kafka Connect ID（未提供 kafkaConnectUrl 时必填）
+    /// Kafka Connect ID（必填，地址取自记录）
     #[serde(default)]
     pub kafka_connect_id: Option<U64>,
-    /// Kafka Connect 地址（优先于 kafkaConnectId）
-    /// @len 0..
-    #[serde(default)]
-    pub kafka_connect_url: Option<String>,
     /// 连接器名称
     /// @len 1..
     pub connector_name: String,
@@ -87,11 +73,8 @@ pub struct KafkaConnectorTaskRestartDto {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema, IntoParams)]
 #[serde(default, rename_all = "camelCase")]
 pub struct KafkaConnectorDeleteDto {
-    /// Kafka Connect ID（未提供 kafkaConnectUrl 时必填）
+    /// Kafka Connect ID（必填，地址取自记录）
     pub kafka_connect_id: Option<U64>,
-    /// Kafka Connect 地址（优先于 kafkaConnectId）
-    /// @len 0..
-    pub kafka_connect_url: Option<String>,
     /// 连接器名称
     /// @len 1..
     pub connector_name: String,
@@ -107,11 +90,8 @@ pub struct KafkaConnectorDeleteDto {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema, IntoParams)]
 #[serde(default, rename_all = "camelCase")]
 pub struct KafkaConnectorControlDto {
-    /// Kafka Connect ID（未提供 kafkaConnectUrl 时必填）
+    /// Kafka Connect ID（必填，地址取自记录）
     pub kafka_connect_id: Option<U64>,
-    /// Kafka Connect 地址（优先于 kafkaConnectId）
-    /// @len 0..
-    pub kafka_connect_url: Option<String>,
     /// 连接器名称
     /// @len 1..
     pub connector_name: String,
@@ -124,11 +104,8 @@ pub struct KafkaConnectorControlDto {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema, IntoParams)]
 #[serde(default, rename_all = "camelCase")]
 pub struct KafkaConnectorConfigDto {
-    /// Kafka Connect ID（未提供 kafkaConnectUrl 时必填）
+    /// Kafka Connect ID（必填，地址取自记录）
     pub kafka_connect_id: Option<U64>,
-    /// Kafka Connect 地址（优先于 kafkaConnectId）
-    /// @len 0..
-    pub kafka_connect_url: Option<String>,
     /// 连接器名称
     /// @len 1..
     pub connector_name: String,
@@ -144,11 +121,8 @@ pub struct KafkaConnectorConfigDto {
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema, IntoParams)]
 #[serde(default, rename_all = "camelCase")]
 pub struct KafkaConnectorResetOffsetDto {
-    /// Kafka Connect ID（未提供 kafkaConnectUrl 时必填）
+    /// Kafka Connect ID（必填，地址取自记录）
     pub kafka_connect_id: Option<U64>,
-    /// Kafka Connect 地址（优先于 kafkaConnectId）
-    /// @len 0..
-    pub kafka_connect_url: Option<String>,
     /// 连接器名称
     /// @len 1..
     pub connector_name: String,

@@ -14,7 +14,7 @@ use crate::dto::{
     KafkaConnectorTaskRestartDto,
 };
 use crate::svc::DbzKafkaConnectSvc;
-use crate::utils::{KafkaConnectorError, KafkaConnectorUtils, normalize_url};
+use crate::utils::{KafkaConnectorError, KafkaConnectorUtils};
 use crate::vo::{KafkaConnectorConfigVo, KafkaConnectorPluginVo, KafkaConnectorVo};
 use anyhow::anyhow;
 use robotech::api::{Ro, U64};
@@ -41,7 +41,7 @@ impl KafkaConnectorSvc {
         dto: KafkaConnectorQueryDto,
     ) -> Result<Ro<Vec<KafkaConnectorPluginVo>>, anyhow::Error> {
         let base_url =
-            Self::resolve_base_url(dto.kafka_connect_id, dto.kafka_connect_url.as_deref()).await?;
+            Self::resolve_base_url(dto.kafka_connect_id).await?;
         let plugins = KafkaConnectorUtils::list_connector_plugins(&base_url).await?;
         Ok(
             Ro::success(format!("查询连接器插件成功，共 {} 个", plugins.len()))
@@ -65,7 +65,7 @@ impl KafkaConnectorSvc {
         dto: KafkaConnectorQueryDto,
     ) -> Result<Ro<Vec<KafkaConnectorVo>>, anyhow::Error> {
         let base_url =
-            Self::resolve_base_url(dto.kafka_connect_id, dto.kafka_connect_url.as_deref()).await?;
+            Self::resolve_base_url(dto.kafka_connect_id).await?;
         let connectors = KafkaConnectorUtils::list_connectors(&base_url).await?;
         Ok(
             Ro::success(format!("查询连接器成功，共 {} 个", connectors.len()))
@@ -95,7 +95,7 @@ impl KafkaConnectorSvc {
     ) -> Result<Ro<KafkaConnectorConfigVo>, SvcError> {
         let connector_name = Self::check_connector_name(&dto.connector_name)?;
         let base_url =
-            Self::resolve_base_url(dto.kafka_connect_id, dto.kafka_connect_url.as_deref()).await?;
+            Self::resolve_base_url(dto.kafka_connect_id).await?;
 
         let config = KafkaConnectorUtils::fetch_connector_config(&base_url, connector_name)
             .await
@@ -131,7 +131,7 @@ impl KafkaConnectorSvc {
     pub async fn restart_connector(dto: KafkaConnectorRestartDto) -> Result<Ro<()>, anyhow::Error> {
         let connector_name = Self::check_connector_name(&dto.connector_name)?;
         let base_url =
-            Self::resolve_base_url(dto.kafka_connect_id, dto.kafka_connect_url.as_deref()).await?;
+            Self::resolve_base_url(dto.kafka_connect_id).await?;
 
         KafkaConnectorUtils::restart_connector(
             &base_url,
@@ -171,7 +171,7 @@ impl KafkaConnectorSvc {
     ) -> Result<Ro<()>, anyhow::Error> {
         let connector_name = Self::check_connector_name(&dto.connector_name)?;
         let base_url =
-            Self::resolve_base_url(dto.kafka_connect_id, dto.kafka_connect_url.as_deref()).await?;
+            Self::resolve_base_url(dto.kafka_connect_id).await?;
 
         KafkaConnectorUtils::restart_connector_task(&base_url, connector_name, dto.task_id)
             .await
@@ -210,7 +210,7 @@ impl KafkaConnectorSvc {
     pub async fn delete_connector(dto: KafkaConnectorDeleteDto) -> Result<Ro<()>, anyhow::Error> {
         let connector_name = Self::check_connector_name(&dto.connector_name)?;
         let base_url =
-            Self::resolve_base_url(dto.kafka_connect_id, dto.kafka_connect_url.as_deref()).await?;
+            Self::resolve_base_url(dto.kafka_connect_id).await?;
 
         KafkaConnectorUtils::delete_connector(&base_url, connector_name).await?;
 
@@ -240,7 +240,7 @@ impl KafkaConnectorSvc {
     pub async fn stop_connector(dto: KafkaConnectorControlDto) -> Result<Ro<()>, anyhow::Error> {
         let connector_name = Self::check_connector_name(&dto.connector_name)?;
         let base_url =
-            Self::resolve_base_url(dto.kafka_connect_id, dto.kafka_connect_url.as_deref()).await?;
+            Self::resolve_base_url(dto.kafka_connect_id).await?;
 
         KafkaConnectorUtils::stop_connector(&base_url, connector_name)
             .await
@@ -271,7 +271,7 @@ impl KafkaConnectorSvc {
     pub async fn resume_connector(dto: KafkaConnectorControlDto) -> Result<Ro<()>, anyhow::Error> {
         let connector_name = Self::check_connector_name(&dto.connector_name)?;
         let base_url =
-            Self::resolve_base_url(dto.kafka_connect_id, dto.kafka_connect_url.as_deref()).await?;
+            Self::resolve_base_url(dto.kafka_connect_id).await?;
 
         KafkaConnectorUtils::resume_connector(&base_url, connector_name)
             .await
@@ -307,7 +307,7 @@ impl KafkaConnectorSvc {
     ) -> Result<Ro<()>, anyhow::Error> {
         let connector_name = Self::check_connector_name(&dto.connector_name)?;
         let base_url =
-            Self::resolve_base_url(dto.kafka_connect_id, dto.kafka_connect_url.as_deref()).await?;
+            Self::resolve_base_url(dto.kafka_connect_id).await?;
 
         // 已经停止的连接器再停一次是空操作；正在跑的先停，否则清位点会被 400 拒掉
         KafkaConnectorUtils::stop_connector(&base_url, connector_name)
@@ -349,31 +349,20 @@ impl KafkaConnectorSvc {
 
     /// # 定位目标 Kafka Connect 地址
     ///
-    /// 优先使用显式传入的 `kafkaConnectUrl`；未提供时按 `kafkaConnectId` 取
-    /// `dbz_kafka_connect` 记录上的地址。
+    /// 只接受 `kafkaConnectId`，按 `dbz_kafka_connect` 记录上的地址转发。不再接受
+    /// 请求体里任意 URL：那等于让调用方把服务端当代理访问任意地址（SSRF），
+    /// 例如指向云主机元数据或内网其它 HTTP 服务。
     ///
     /// ## 参数
-    /// * `kafka_connect_id` - Kafka Connect ID（可选）
-    /// * `kafka_connect_url` - Kafka Connect 地址（可选，优先）
+    /// * `kafka_connect_id` - Kafka Connect ID
     ///
     /// ## 返回值
     /// * `Ok(String)` - 去掉末尾 `/` 的 Kafka Connect 地址
-    /// * `Err(anyhow::Error)` - 两者都未提供、集群记录不存在或未配置地址
-    async fn resolve_base_url(
-        kafka_connect_id: Option<U64>,
-        kafka_connect_url: Option<&str>,
-    ) -> Result<String, anyhow::Error> {
-        if let Some(url) = kafka_connect_url
-            .map(str::trim)
-            .filter(|url| !url.is_empty())
-        {
-            return Ok(normalize_url(url));
-        }
-
+    /// * `Err(anyhow::Error)` - 未提供 ID、记录不存在或未配置地址
+    async fn resolve_base_url(kafka_connect_id: Option<U64>) -> Result<String, anyhow::Error> {
         let Some(id) = kafka_connect_id else {
-            return Err(anyhow!("必须提供 kafkaConnectUrl 或 kafkaConnectId 之一"));
+            return Err(anyhow!("必须提供 kafkaConnectId"));
         };
-
         DbzKafkaConnectSvc::get_url(id).await
     }
 
