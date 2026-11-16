@@ -12,3 +12,4 @@ pub mod dbz_kafka_connector_ctrl;
 pub mod dbz_sink_connector_ctrl;
 pub mod dbz_source_connector_ctrl;
 pub mod dbz_source_connector_snapshot_ctrl;
+pub mod delete_guard;
