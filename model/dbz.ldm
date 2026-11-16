@@ -3983,6 +3983,24 @@ LABL 0 新宋体,8,N</a:FontList>
 <o:EntityAttribute Ref="o124"/>
 </c:Identifier.Attributes>
 </o:Identifier>
+<o:Identifier Id="o166">
+<a:ObjectID>C620E95B-CDDF-4FC5-9E26-77732E809C36</a:ObjectID>
+<a:Name>死信幂等键</a:Name>
+<a:Code>ux_dbz_dead_letter_key</a:Code>
+<a:CreationDate>1794786529</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1794786529</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>死信幂等键：同一连接器的同一条源记录只落一行；connector_name 用于区分反查不到记录的未纳管连接器</a:Comment>
+<a:GlobalObjectID/>
+<c:Identifier.Attributes>
+<o:EntityAttribute Ref="o165"/>
+<o:EntityAttribute Ref="o126"/>
+<o:EntityAttribute Ref="o127"/>
+<o:EntityAttribute Ref="o151"/>
+<o:EntityAttribute Ref="o152"/>
+</c:Identifier.Attributes>
+</o:Identifier>
 </c:Identifiers>
 <c:PrimaryIdentifier>
 <o:Identifier Ref="o123"/>
@@ -4024,8 +4042,23 @@ LABL 0 新宋体,8,N</a:FontList>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1794266526</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
-<a:Comment>下游连接器记录 ID（由 DLQ 上下文头里的连接器名反查，未知为 0）；与 topic/partition/offset 组成幂等键</a:Comment>
+<a:Comment>下游连接器记录 ID（由 DLQ 上下文头里的连接器名反查，未知为 0）；与 connector_name/topic/partition/offset 组成幂等键</a:Comment>
 <a:DataType>LI</a:DataType>
+<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
+<a:GlobalObjectID/>
+</o:EntityAttribute>
+<o:EntityAttribute Id="o165">
+<a:ObjectID>871B722B-C84B-439F-A810-18AE91BDAC97</a:ObjectID>
+<a:Name>connector_name</a:Name>
+<a:Code>connector_name</a:Code>
+<a:CreationDate>1794786529</a:CreationDate>
+<a:Creator>张柏子</a:Creator>
+<a:ModificationDate>1794786529</a:ModificationDate>
+<a:Modifier>张柏子</a:Modifier>
+<a:Comment>产生该死信的连接器名（DLQ 上下文头原值，反查不到记录时也保留）；与 connector_id/topic/partition/offset 组成幂等键</a:Comment>
+<a:DefaultValue>&#39;&#39;</a:DefaultValue>
+<a:DataType>VA255</a:DataType>
+<a:Length>255</a:Length>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
 <a:GlobalObjectID/>
 </o:EntityAttribute>
@@ -4037,7 +4070,7 @@ LABL 0 新宋体,8,N</a:FontList>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1794266526</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
-<a:Comment>原始消息所在的源 topic（来自 __connect.errors.topic）；与 connector_id/partition/offset 组成幂等键</a:Comment>
+<a:Comment>原始消息所在的源 topic（来自 __connect.errors.topic）；与 connector_name/connector_id/partition/offset 组成幂等键</a:Comment>
 <a:DataType>VA255</a:DataType>
 <a:Length>255</a:Length>
 <a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
@@ -4352,8 +4385,9 @@ LABL 0 新宋体,8,N</a:FontList>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1794266526</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
-<a:Comment>原始消息所在分区（来自 __connect.errors.partition）；与 connector_id/topic/offset 组成幂等键</a:Comment>
+<a:Comment>原始消息所在分区（来自 __connect.errors.partition）；与 connector_name/connector_id/topic/offset 组成幂等键</a:Comment>
 <a:DataType>I</a:DataType>
+<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
 <a:GlobalObjectID/>
 </o:EntityAttribute>
 <o:EntityAttribute Id="o152">
@@ -4364,8 +4398,9 @@ LABL 0 新宋体,8,N</a:FontList>
 <a:Creator>张柏子</a:Creator>
 <a:ModificationDate>1794266526</a:ModificationDate>
 <a:Modifier>张柏子</a:Modifier>
-<a:Comment>原始消息 offset（来自 __connect.errors.offset）；与 connector_id/topic/partition 组成幂等键</a:Comment>
+<a:Comment>原始消息 offset（来自 __connect.errors.offset）；与 connector_name/connector_id/topic/partition 组成幂等键</a:Comment>
 <a:DataType>LI</a:DataType>
+<a:LogicalAttribute.Mandatory>1</a:LogicalAttribute.Mandatory>
 <a:GlobalObjectID/>
 </o:EntityAttribute>
 </c:Attributes>

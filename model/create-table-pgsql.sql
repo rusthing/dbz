@@ -124,6 +124,7 @@ create table dbz_dead_letter (
    id                   INT8                 not null,
    connector_type       INT2                 not null,
    connector_id         INT8                 not null,
+   connector_name       VARCHAR(255)         not null default '',
    topic                VARCHAR(255)         not null,
    record_key           VARCHAR(512)         not null default '',
    payload              JSONB                not null,
@@ -148,8 +149,8 @@ create table dbz_dead_letter (
    last_retry_ms        INT8                 null,
    last_retry_message   TEXT                 null,
    reason               TEXT                 not null default '',
-   partition            INT4                 null,
-   "offset"             INT8                 null,
+   partition            INT4                 not null,
+   "offset"             INT8                 not null,
    constraint PK_DBZ_DEAD_LETTER primary key (id)
 );
 
@@ -166,10 +167,13 @@ comment on column dbz_dead_letter.connector_type is
   2=Sink    下游连接器';
 
 comment on column dbz_dead_letter.connector_id is
-'下游连接器记录 ID（由 DLQ 上下文头里的连接器名反查，未知为 0）；与 topic/partition/offset 组成幂等键';
+'下游连接器记录 ID（由 DLQ 上下文头里的连接器名反查，未知为 0）；与 connector_name/topic/partition/offset 组成幂等键';
+
+comment on column dbz_dead_letter.connector_name is
+'产生该死信的连接器名（DLQ 上下文头原值，反查不到记录时也保留）；与 connector_id/topic/partition/offset 组成幂等键';
 
 comment on column dbz_dead_letter.topic is
-'原始消息所在的源 topic（来自 __connect.errors.topic）；与 connector_id/partition/offset 组成幂等键';
+'原始消息所在的源 topic（来自 __connect.errors.topic）；与 connector_name/connector_id/partition/offset 组成幂等键';
 
 comment on column dbz_dead_letter.record_key is
 '原始消息的 key（来自 DLQ 记录 key，无 key 时空串）';
@@ -253,10 +257,10 @@ comment on column dbz_dead_letter.reason is
 '给人看的一句失败原因，由后端按异常分类统一生成；原始技术内容在 failure_detail';
 
 comment on column dbz_dead_letter.partition is
-'原始消息所在分区（来自 __connect.errors.partition）；与 connector_id/topic/offset 组成幂等键';
+'原始消息所在分区（来自 __connect.errors.partition）；与 connector_name/connector_id/topic/offset 组成幂等键';
 
 comment on column dbz_dead_letter."offset" is
-'原始消息 offset（来自 __connect.errors.offset）；与 connector_id/topic/partition 组成幂等键';
+'原始消息 offset（来自 __connect.errors.offset）；与 connector_name/connector_id/topic/partition 组成幂等键';
 
 /*==============================================================*/
 /* Index: dbz_dead_letter_PK                                    */
@@ -269,6 +273,7 @@ id
 /* Index: ux_dbz_dead_letter_key                                */
 /*==============================================================*/
 create unique index ux_dbz_dead_letter_key on dbz_dead_letter (
+connector_name,
 connector_id,
 topic,
 partition,

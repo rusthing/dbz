@@ -22,6 +22,16 @@
 //! Connect 的 DLQ 只适用于 **sink** 连接器；source 连接器没有「把外部记录转成
 //! Kafka 记录」这一步，框架不提供 DLQ。另外 `errors.tolerance=all` 会跳过错误并
 //! 继续消费，所以必须同时打开 DLQ 与 context headers，否则同样等于丢数据。
+//!
+//! ## 已知限制（记录，不修）
+//!
+//! * **非 UTF-8 报文会被有损还原**：[`payload_value`] 对解码失败的字节用
+//!   `String::from_utf8_lossy` 包装，非法字节变成 U+FFFD，重投时这些字节已经变了。
+//!   业务报文绝大多数是 UTF-8 JSON；真遇到二进制报文，需要在重投前人工确认，
+//!   或直接去 DLQ topic 重放原始记录。
+//! * **`__raw_utf8` 是保留键**：报文本身恰好是 `{"__raw_utf8": "..."}` 形状时会被
+//!   当作「原文包装」拆开，[`payload_bytes`] 只发出其中的字符串。常规业务 JSON
+//!   不会使用这个键，属可接受的极端边界。
 
 use crate::config::DeadLetterConfig;
 use crate::dic::{DeadLetterFailureCategory, DeadLetterFailureSubtype};
@@ -249,6 +259,8 @@ pub fn classify_error(
 ///
 /// Connect 写进 DLQ 的是**原始字节**：多数场景是 JSON 文本，直接解析；不是 JSON
 /// 或不是 UTF-8 时包一层 `{"__raw_utf8": ...}`，重投时再原样取回，不静默丢弃。
+///
+/// 注意：非 UTF-8 字节经 `from_utf8_lossy` 后不可逆（见模块文档「已知限制」）。
 pub fn payload_value(bytes: &[u8]) -> Value {
     match std::str::from_utf8(bytes) {
         Ok(text) => {

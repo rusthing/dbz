@@ -517,9 +517,8 @@ export default function DeadLetterPage() {
     }
   };
 
-  /** 人工处理是终态：不再重投、不再废弃，只能撤销 */
-  const canRetry = (record: DbzDeadLetterVo) =>
-    record.status === STATUS_PENDING || record.status === 2;
+  /** 只有「待处理」可以重投；已人工处理与已废弃都是明确结论，单条与批量口径一致 */
+  const canRetry = (record: DbzDeadLetterVo) => record.status === STATUS_PENDING;
   const isManualHandled = (record: DbzDeadLetterVo) =>
     record.status === STATUS_MANUAL_HANDLED;
 

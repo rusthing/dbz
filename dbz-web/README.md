@@ -486,8 +486,10 @@ task 退出、死信为空、offset 不提交，重启后反复重放同一条�
 - 重投只写回原始 key 与 value，**不复制 DLQ 记录头**：Connect 写 DLQ 时是在原记录头
   上追加 `__connect.errors.*` 上下文头，整包写回会污染源 topic。代价是原业务记录
   自带的消息头不会保留；若下游依赖消息头，需要在改报文时自行补齐。
-- 改造不兼容旧数据：`20261110000000_dlq-redesign.sql` 会删掉 `dbz_dead_letter_retry`、
-  清空 `dbz_dead_letter` 并重建唯一索引，重启后从 DLQ topic 重新同步。
+- 不兼容旧数据、不保留升级路径：基线 `20261109000000_create-table.sql` 直接是最新结构，
+  不再创建 `dbz_dead_letter_retry`，`dbz_dead_letter` 唯一键为
+  `(connector_name, connector_id, topic, partition, offset)`；旧库删表重跑后从 DLQ
+  topic 重新同步。
 
 ### 配置（`[dbz.dead-letter]`，`dbz-svr.toml`）
 

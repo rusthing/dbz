@@ -256,11 +256,13 @@ impl DbzDeadLetterSvc {
         let stacktrace = header_text(headers, HDR_EXCEPTION_STACKTRACE).unwrap_or_default();
 
         // 幂等键必须包含连接器：同一源 topic 常被多条 sink 连接器订阅，同一条源记录
-        // 在每条连接器上失败都会各自写一条 DLQ 记录，只按源坐标查重会互相吞掉。
-        // DLQ 头里的连接器名反查不到本地记录时记 0（未归属），此时源坐标仍可区分。
+        // 在每条连接器上失败都会各自写一条 DLQ 记录。连接器名反查不到本地记录时
+        // connector_id 记 0，此时只有连接器名能把「未纳管的多个连接器」区分开。
         let connector_id = Self::find_sink_id(db, &connector_name).await;
+        let connector_name_key = truncate(&connector_name, 255);
         if Self::dead_letter_exists(
             db,
+            &connector_name_key,
             connector_id,
             &source_topic,
             source_partition,
@@ -290,6 +292,7 @@ impl DbzDeadLetterSvc {
         let active = DeadLetterActiveModel {
             connector_type: Set(i16::from(DeadLetterConnectorType::Sink)),
             connector_id: Set(connector_id),
+            connector_name: Set(connector_name_key.clone()),
             topic: Set(source_topic.clone()),
             record_key: Set(record_key),
             partition: Set(Some(source_partition)),
@@ -320,6 +323,7 @@ impl DbzDeadLetterSvc {
             // 复查到行就当成本轮跳过；其它错误照常上抛，不吞真实故障。
             if Self::dead_letter_exists(
                 db,
+                &connector_name_key,
                 connector_id,
                 &source_topic,
                 source_partition,
@@ -338,9 +342,10 @@ impl DbzDeadLetterSvc {
         Ok(true)
     }
 
-    /// 按四列幂等键查重；查重与插入之间不持分布式锁，靠这里的复查兜并发
+    /// 按幂等键查重；查重与插入之间不持分布式锁，靠这里的复查兜并发
     async fn dead_letter_exists(
         db: &DatabaseConnection,
+        connector_name: &str,
         connector_id: i64,
         topic: &str,
         partition: i32,
@@ -349,6 +354,7 @@ impl DbzDeadLetterSvc {
         Ok(DeadLetterEntity::find()
             .filter(
                 Condition::all()
+                    .add(DeadLetterColumn::ConnectorName.eq(connector_name))
                     .add(DeadLetterColumn::ConnectorId.eq(connector_id))
                     .add(DeadLetterColumn::Topic.eq(topic))
                     .add(DeadLetterColumn::Partition.eq(partition))
@@ -378,11 +384,18 @@ impl DbzDeadLetterSvc {
     pub async fn page(dto: DbzDeadLetterQueryDto) -> Result<Ro<PageRx<DbzDeadLetterVo>>, SvcError> {
         let db = get_db_conn().map_err(|e| anyhow!("获取数据库连接失败: {e}"))?;
 
-        let mut condition = Condition::all()
-            .add(DeadLetterColumn::ConnectorType.eq(i16::from(DeadLetterConnectorType::Sink)));
-        if let Some(connector_type) = dto.connector_type {
-            condition =
-                condition.add(DeadLetterColumn::ConnectorType.eq(i16::from(connector_type)));
+        let mut condition = Condition::all();
+        // Connect 的 DLQ 只对下游连接器有效，不传类型时默认只看下游；
+        // 显式传了类型就以调用方为准，不能和固定条件叠加（叠加后必然恒为空）。
+        match dto.connector_type {
+            Some(connector_type) => {
+                condition =
+                    condition.add(DeadLetterColumn::ConnectorType.eq(i16::from(connector_type)));
+            }
+            None => {
+                condition = condition
+                    .add(DeadLetterColumn::ConnectorType.eq(i16::from(DeadLetterConnectorType::Sink)));
+            }
         }
         if let Some(connector_id) = dto.connector_id {
             condition = condition.add(DeadLetterColumn::ConnectorId.eq(i64::from(connector_id)));
@@ -582,7 +595,7 @@ impl DbzDeadLetterSvc {
         let remark = dto.remark.as_deref().map(|value| truncate(value, 500));
         let ids: Vec<i64> = dto.ids.into_iter().map(i64::from).collect();
 
-        DeadLetterEntity::update_many()
+        let updated = DeadLetterEntity::update_many()
             .col_expr(
                 DeadLetterColumn::Status,
                 Expr::value(i16::from(DeadLetterStatus::Discarded)),
@@ -598,7 +611,12 @@ impl DbzDeadLetterSvc {
             .await
             .map_err(|e| anyhow!("更新死信状态失败: {e}"))?;
 
-        Ok(Ro::success(format!("已废弃 {} 条死信", ids.len())))
+        // 计数按实际影响行数：重复 ID 或不存在/已重投的记录不算进去
+        Ok(Ro::success(format!(
+            "已废弃 {} 条死信（跳过 {} 条不存在或已重投的记录）",
+            updated.rows_affected,
+            (ids.len() as u64).saturating_sub(updated.rows_affected)
+        )))
     }
 
     /// # 批量标记「已人工处理」
@@ -714,6 +732,14 @@ impl DbzDeadLetterSvc {
                 id,
                 success: false,
                 message: "该记录已标记「已人工处理」，如需重投请先撤销".to_string(),
+            });
+        }
+        // 已废弃是明确的人工结论，单条与批量口径一致：都不再重投
+        if model.status == i16::from(DeadLetterStatus::Discarded) {
+            return Ok(DbzDeadLetterRetryResultVo {
+                id,
+                success: false,
+                message: "该记录已废弃，不再重投".to_string(),
             });
         }
 

@@ -9,9 +9,10 @@ use serde::{Deserialize, Serialize};
 /// topic，本表只做可查询的镜像 + 人工处置结论（状态、备注、处理人），删行不会
 /// 丢 Kafka 里的原始报文。
 ///
-/// 幂等键是 `(connector_id, topic, partition, offset)`：DLQ 记录不可变，重复同步
-/// 直接跳过，不累加次数、也不覆盖人工结论。带上 `connector_id` 是因为同一源 topic
-/// 可能被多条 sink 连接器消费，各自的失败是独立死信。`connector_type` 恒为 Sink
+/// 幂等键是 `(connector_name, connector_id, topic, partition, offset)`：DLQ 记录不可变，
+/// 重复同步直接跳过，不累加次数、也不覆盖人工结论。带上连接器名是因为同一源 topic
+/// 可能被多条 sink 连接器消费，各自的失败是独立死信；绕过 dbz 创建的连接器反查不到
+/// 记录（`connector_id=0`）时，只有连接器名能把它们区分开。`connector_type` 恒为 Sink
 /// （Connect 的 DLQ 只对 sink 有效），`connector_id` 由 DLQ 头里的连接器名反查，
 /// 查不到记 0（未归属），不建外键。
 #[sea_orm::model]
@@ -24,6 +25,8 @@ pub struct Model {
     pub connector_type: i16,
     /// 下游连接器记录 ID（由 DLQ 头里的连接器名反查，未知为 0）；幂等键之一
     pub connector_id: i64,
+    /// 产生该死信的连接器名（DLQ 上下文头原值，未知为空串）；幂等键之一
+    pub connector_name: String,
     /// 原始消息所在的源 topic（来自 `__connect.errors.topic`）；幂等键之一
     pub topic: String,
     /// 原始消息的 key（来自 DLQ 记录 key，无 key 时空串）
