@@ -50,6 +50,10 @@ use wheel_rs::time_utils::now_ms;
 static QUALIFIED_NAME_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[A-Za-z0-9_$\-#]+\.[A-Za-z0-9_$\-#]+$").unwrap());
 
+/// 单个简单标识符（库名 / 表名）允许的字符，正则条目不能拿来拼数据库连接名
+static SIMPLE_IDENTIFIER_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^[A-Za-z0-9_$\-#]+$").unwrap());
+
 /// 系统库 / 系统模式：即使 include 正则写成 `.*`，也不把它们算进快照范围
 const SYSTEM_SCHEMAS: [&str; 7] = [
     "information_schema",
@@ -227,9 +231,24 @@ impl DbzSignalUtils {
         let host = text(&config, "database.hostname")
             .ok_or_else(|| anyhow!("连接器配置里没有 database.hostname，定位不到源库"))?
             .to_string();
-        let database = text(&config, "database.dbname")
-            .ok_or_else(|| anyhow!("连接器配置里没有 database.dbname，不知道连哪个库"))?
-            .to_string();
+        let database = match dialect {
+            SourceDialect::MySql => text(&config, "database.dbname")
+                .map(Cow::into_owned)
+                .or_else(|| {
+                    list_config(&config, "database.include.list")
+                        .into_iter()
+                        .find(|database| SIMPLE_IDENTIFIER_RE.is_match(database))
+                })
+                .ok_or_else(|| {
+                    anyhow!(
+                        "MySQL 连接器配置里没有 database.dbname；database.include.list 又是正则或多库，\
+                         预检无法确定要连接的库名，请补 database.dbname"
+                    )
+                })?,
+            SourceDialect::PostgreSql => text(&config, "database.dbname")
+                .ok_or_else(|| anyhow!("连接器配置里没有 database.dbname，不知道连哪个库"))?
+                .into_owned(),
+        };
         let user = text(&config, "database.user")
             .ok_or_else(|| anyhow!("连接器配置里没有 database.user，没账号写信号表"))?
             .to_string();
@@ -1257,6 +1276,24 @@ mod tests {
         )
     }
 
+    /// 线上常见 MySQL 配置不写 `database.dbname`，只写捕获库列表；预检要能从列表取首个库。
+    fn mysql_config_without_dbname(extra: &str) -> String {
+        format!(
+            r#"{{
+                "connector.class": "io.debezium.connector.mysql.MySqlConnector",
+                "database.hostname": "10.0.0.1",
+                "database.port": 3306,
+                "database.user": "debezium",
+                "database.password": "secret",
+                "database.include.list": "adm",
+                "signal.data.collection": "adm.debezium_signal",
+                "signal.enabled.channels": "source",
+                "table.include.list": "adm\\..*"
+                {extra}
+            }}"#
+        )
+    }
+
     /// 带信号表配置的那份，多数用例直接用这个
     fn mysql_config_with_signal(extra: &str) -> String {
         mysql_config(&format!(
@@ -1274,6 +1311,32 @@ mod tests {
         assert_eq!(config.signal_collection, "orders.debezium_signal");
         assert_eq!(config.schema_patterns, vec!["orders", "settle"]);
         assert_eq!(config.table_include.len(), 2);
+    }
+
+    /// MySQL 缺 `database.dbname` 时，用 `database.include.list` 的首个库作为预检连接库
+    #[test]
+    fn mysql_uses_include_list_when_dbname_missing() {
+        let config = mysql_config_without_dbname("");
+        let parsed = DbzSignalUtils::parse_connector_config(&config).unwrap();
+        assert_eq!(parsed.dialect, SourceDialect::MySql);
+        assert_eq!(parsed.database, "adm");
+        assert_eq!(parsed.schema_patterns, vec!["adm"]);
+        assert_eq!(parsed.signal_collection, "adm.debezium_signal");
+    }
+
+    /// MySQL 只有正则形式的 include list 时，不能拿正则当连接库名，应要求补 dbname
+    #[test]
+    fn mysql_rejects_regex_include_list_when_dbname_missing() {
+        let config = r#"{
+            "connector.class": "io.debezium.connector.mysql.MySqlConnector",
+            "database.hostname": "10.0.0.1",
+            "database.user": "debezium",
+            "database.include.list": "adm_.*",
+            "signal.data.collection": "adm.debezium_signal",
+            "signal.enabled.channels": "source"
+        }"#;
+        let error = DbzSignalUtils::parse_connector_config(config).unwrap_err();
+        assert!(error.to_string().contains("database.dbname"), "{error}");
     }
 
     /// 缺 `signal.data.collection` 时要点明缺什么、怎么补
