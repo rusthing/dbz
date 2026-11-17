@@ -56,8 +56,9 @@ export const deadLetterApi = {
     apiPost(BASE + '/unmark-handled', input),
 
   /**
-   * 清理死信：物理删除页面索引（按连接器/状态筛选，条件全空即清空整张表）；
-   * `clearTopic` 为真时同时清空 DLQ topic 的历史报文，不可恢复。
+   * 清理死信：按连接器/状态/topic/分类/原因/时间区间物理删除页面索引（条件全空即
+   * 清空整张表），被删记录的坐标会写成墓碑，同步重扫不会再插回来；
+   * `clearTopic` 为真时同时清空 DLQ topic 的历史报文，不可恢复且不受筛选条件限制。
    */
   purge: (input: DbzDeadLetterPurgeInput): Promise<void> =>
     apiPost(BASE + '/purge', input),

@@ -110,6 +110,40 @@ function initialDraft(params: URLSearchParams): FilterDraft {
   };
 }
 
+/** 清理弹窗里展示的「实际生效条件」：必须和 purgeRecords 传出去的条件保持一致 */
+function purgeScopeText(draft: FilterDraft): string {
+  const statusLabel =
+    draft.status === undefined
+      ? '全部状态'
+      : (deadLetterStatusDic.find((entry) => entry.value === draft.status)?.label ??
+        String(draft.status));
+  const parts = [draft.connectorId ? '当前选中的连接器' : '全部连接器', statusLabel];
+  if (draft.topic?.trim()) {
+    parts.push(`topic=${draft.topic.trim()}`);
+  }
+  if (draft.failureCategory !== undefined) {
+    const label =
+      deadLetterFailureCategoryDic.find((entry) => entry.value === draft.failureCategory)?.label ??
+      String(draft.failureCategory);
+    parts.push(`分类=${label}`);
+  }
+  if (draft.failureSubtype !== undefined) {
+    const label =
+      deadLetterFailureSubtypeDic.find((entry) => entry.value === draft.failureSubtype)?.label ??
+      String(draft.failureSubtype);
+    parts.push(`子类=${label}`);
+  }
+  if (draft.reason?.trim()) {
+    parts.push(`原因含「${draft.reason.trim()}」`);
+  }
+  if (draft.range?.[0] && draft.range?.[1]) {
+    parts.push(
+      `失败时间 ${draft.range[0].format('YYYY-MM-DD HH:mm')} ~ ${draft.range[1].format('YYYY-MM-DD HH:mm')}`,
+    );
+  }
+  return parts.join('、');
+}
+
 /** 把筛选草稿转成接口参数，导出与查询共用 */
 function filterParams(draft: FilterDraft): QueryParams {
   return {
@@ -233,7 +267,7 @@ export default function DeadLetterPage() {
     }
   };
 
-  /** 清理：物理删除索引（沿用当前筛选的连接器与状态），可按需连 DLQ topic 一起清 */
+  /** 清理：物理删除索引（沿用工具栏当前的全部筛选条件），可按需连 DLQ topic 一起清 */
   const purgeRecords = async () => {
     setPurging(true);
     try {
@@ -241,6 +275,13 @@ export default function DeadLetterPage() {
         connectorType: CONNECTOR_TYPE_SINK,
         connectorId: applied.connectorId,
         status: applied.status,
+        topic: applied.topic?.trim() || undefined,
+        failureCategory: applied.failureCategory,
+        failureSubtype: applied.failureSubtype,
+        reason: applied.reason?.trim() || undefined,
+        startMs: applied.range?.[0]?.valueOf(),
+        endMs: applied.range?.[1]?.valueOf(),
+        remark: '页面「清理死信」按当前筛选清理',
         clearTopic: purgeClearTopic,
       });
       message.success(
@@ -1267,11 +1308,7 @@ export default function DeadLetterPage() {
           description="「废弃」只是改状态、保留追溯；清理是把页面索引直接删掉，删完查不到。"
         />
         <div style={{ marginTop: 12 }}>
-          清理范围：{applied.connectorId ? '当前选中的连接器' : '全部连接器'}
-          {applied.status === undefined
-            ? '、全部状态'
-            : `、${deadLetterStatusDic.find((entry) => entry.value === applied.status)?.label ?? applied.status}`}
-          。连接器的筛选项与状态都取自工具栏当前条件，要缩小范围请先改筛选再清理。
+          清理范围：{purgeScopeText(applied)}。条件取自工具栏当前筛选，要缩小范围请先改筛选再清理。
         </div>
         <Checkbox
           style={{ marginTop: 12 }}
@@ -1282,7 +1319,8 @@ export default function DeadLetterPage() {
         </Checkbox>
         <div style={{ marginTop: 8, color: 'rgba(0,0,0,0.45)' }}>
           不勾选时只删 dbz 的索引，Kafka 里的报文仍按 topic 的 retention 保留；
-          勾选后报文被物理删除，之后无法再重投。
+          勾选后报文被物理删除，之后无法再重投。Kafka 只能按分区前缀截断，这一步是整个
+          topic 生效、不受上面的筛选条件限制。
         </div>
       </Modal>
     </Card>

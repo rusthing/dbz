@@ -681,13 +681,20 @@ export interface DbzDeadLetterDiscardInput {
   remark?: string;
 }
 
-/** # 清理死信请求体：物理删除页面索引，`clearTopic` 为真时连 DLQ topic 一起清 */
+/** # 清理死信请求体：物理删除页面索引，条件与分页查询同构；`clearTopic` 为真时连 DLQ topic 一起清 */
 export interface DbzDeadLetterPurgeInput {
   connectorType?: number;
   connectorId?: Id;
   status?: DeadLetterStatus;
-  beforeMs?: number;
+  topic?: string;
+  failureCategory?: DeadLetterFailureCategory;
+  failureSubtype?: DeadLetterFailureSubtype;
+  reason?: string;
+  startMs?: number;
+  endMs?: number;
   clearTopic?: boolean;
+  /** 清理备注，写进墓碑 */
+  remark?: string;
 }
 
 /** # 标记「已人工处理」请求体 */

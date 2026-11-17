@@ -1,6 +1,6 @@
 //! # 死信控制器
 //!
-//! 八个手写接口（死信由 Kafka Connect DLQ 产生，没有「上报」入口）：
+//! 九个手写接口（死信由 Kafka Connect DLQ 产生，没有「上报」入口）：
 //! - `POST /dbz/dead-letter/sync`：立即从 DLQ topic 同步一次
 //! - `GET  /dbz/dead-letter/page`：分页查询
 //! - `GET  /dbz/dead-letter/pending-count`：待处理计数（前端角标）
@@ -9,6 +9,7 @@
 //! - `POST /dbz/dead-letter/discard`：单条/批量废弃
 //! - `POST /dbz/dead-letter/mark-handled`：批量标记「已人工处理」
 //! - `POST /dbz/dead-letter/unmark-handled`：批量撤销「已人工处理」
+//! - `POST /dbz/dead-letter/purge`：按条件物理清理页面索引（坐标记墓碑）
 //!
 //! 所有写操作沿用框架约定，缺少 `X-User-Id` 按参数校验失败处理。
 
@@ -190,9 +191,10 @@ pub async fn unmark_handled(
 
 /// # 清理死信
 ///
-/// 物理删除页面索引，可按连接器/状态/时间筛选，条件全空等于清空整张索引表。
-/// `clearTopic=true` 时同时清空 DLQ topic 的历史报文（不可恢复）。与「废弃」不同，
-/// 清理不保留追溯，用于处置历史噪声。
+/// 按连接器/状态/topic/失败分类/原因关键字/时间区间物理删除页面索引，条件全空等于
+/// 清空整张索引表。被删记录的坐标写进墓碑，同步重扫时跳过，清理结论不会被重启打回。
+/// `clearTopic=true` 时同时清空 DLQ topic 的历史报文（不可恢复，且这一步不按条件，
+/// 整个 topic 生效）。与「废弃」不同，清理不保留追溯，用于处置历史噪声。
 #[utoipa::path(
     post,
     path = "/dbz/dead-letter/purge",
@@ -205,7 +207,6 @@ pub async fn purge(
     headers: HeaderMap,
     Json(dto): Json<DbzDeadLetterPurgeDto>,
 ) -> Result<Json<Ro<()>>, CtrlError> {
-    let _ = required_operator(&headers)?;
-    let ro = DbzDeadLetterSvc::purge(dto).await?;
+    let ro = DbzDeadLetterSvc::purge(dto, required_operator(&headers)?).await?;
     Ok(Json(ro))
 }

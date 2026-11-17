@@ -119,8 +119,10 @@ pub struct DbzDeadLetterUnmarkHandledDto {
 /// # 清理死信
 ///
 /// 与「废弃」的区别：废弃只改状态、保留追溯；清理是**物理删除**页面索引，不可恢复。
-/// 筛选条件全部不传等于清空整张索引表。`clearTopic=true` 时还会把 DLQ topic 里的
-/// 原始记录一并删掉（Kafka `DeleteRecords` 把各分区的起始位点推到末尾）。
+/// 筛选条件与分页查询同构，全部不传等于清空整张索引表。命中的记录会先被写成墓碑
+/// （坐标落库），同步任务重扫时跳过，清理结论不会被重启打回；`clearTopic=true` 时
+/// 还会把 DLQ topic 里的原始记录一并删掉（Kafka `DeleteRecords` 把各分区起始位点推到
+/// 末尾，这一步没有条件，整个 topic 生效）。
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
 #[serde(default, rename_all = "camelCase")]
 pub struct DbzDeadLetterPurgeDto {
@@ -130,12 +132,25 @@ pub struct DbzDeadLetterPurgeDto {
     pub connector_id: Option<U64>,
     /// 处理状态（不传表示不限）
     pub status: Option<DeadLetterStatus>,
-    /// 只清「末次失败时间」早于该毫秒时刻的记录（不传表示不限）
-    pub before_ms: Option<i64>,
+    /// topic 精确匹配（不传表示不限）
+    pub topic: Option<String>,
+    /// 失败分类（不传表示不限）
+    pub failure_category: Option<DeadLetterFailureCategory>,
+    /// 失败子类（不传表示不限）
+    pub failure_subtype: Option<DeadLetterFailureSubtype>,
+    /// 失败原因关键字（对后端生成的 `reason` 做包含匹配）
+    pub reason: Option<String>,
+    /// 末次失败时间下界（毫秒，含）
+    pub start_ms: Option<i64>,
+    /// 末次失败时间上界（毫秒，含）
+    pub end_ms: Option<i64>,
     /// 是否同时清空 DLQ topic 里的原始记录
     ///
     /// 默认否：只删 dbz 的页面索引，Kafka 里的报文由 retention 管。置 true 会调用
     /// Kafka 的 DeleteRecords 物理删除历史报文，不可恢复；topic 与分区保留，不会
-    /// 触发 Connect 重建 topic，也不会让下游连接器重扫。
+    /// 触发 Connect 重建 topic，也不会让下游连接器重扫。**这一步不按上面的筛选条件，
+    /// 清的是整个 topic**。
     pub clear_topic: bool,
+    /// 清理备注（写进墓碑，说明为什么清掉这批记录）
+    pub remark: Option<String>,
 }

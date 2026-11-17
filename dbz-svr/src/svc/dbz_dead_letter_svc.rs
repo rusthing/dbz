@@ -18,6 +18,16 @@
 //!    Connect 直接 POST 下游 HTTP 地址。重试策略、转换器、SMT 与 offset 语义因而
 //!    和原始链路完全一致。
 //!
+//! ## 清理与墓碑
+//!
+//! 「清理」物理删除页面索引（不可恢复），与「废弃」只改状态不同。Kafka 侧没有
+//! 「按条件删某几条记录」的接口：`DeleteRecords` 只能把分区前缀截断到某个 offset，
+//! compaction 只能按 key 留最新值，而 DLQ 记录的 key 就是源记录的业务主键、并不唯一
+//! （同一业务主键反复失败是多条独立死信），压实会把它们塌成一条。所以清理不碰 Kafka，
+//! 只往 `dbz_dead_letter_tombstone` 里记**被删记录的坐标**，`sync` 落库时命中墓碑就
+//! 跳过——服务重启、游标回到 earliest 重扫之后，「已经清掉」依然成立。墓碑与死信共用
+//! 同一个保留期口径，过期后连墓碑一起删。
+//!
 //! ## 不再做的事
 //!
 //! - 不再有「业务脚本上报失败」：`/report` 已删除。旧实现里脚本用 HTTP 200 +
@@ -52,6 +62,9 @@ use crate::mo::dbz_dead_letter::{
     ActiveModel as DeadLetterActiveModel, Column as DeadLetterColumn, Entity as DeadLetterEntity,
     Model as DeadLetterModel,
 };
+use crate::mo::dbz_dead_letter_tombstone::{
+    ActiveModel as TombstoneActiveModel, Column as TombstoneColumn, Entity as TombstoneEntity,
+};
 use crate::mo::dbz_kafka_broker::{
     Column as BrokerColumn, Entity as BrokerEntity, Model as BrokerModel,
 };
@@ -69,10 +82,10 @@ use robotech::db::get_db_conn;
 use robotech::svc::SvcError;
 use rskafka::client::partition::{OffsetAt, UnknownTopicHandling};
 use rskafka::record::Record;
-use sea_orm::sea_query::Expr;
+use sea_orm::sea_query::{Expr, OnConflict};
 use sea_orm::{
     ColumnTrait, Condition, ConnectionTrait, DatabaseConnection, EntityTrait, QueryFilter,
-    QuerySelect, Set,
+    QueryOrder, QuerySelect, Set,
 };
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -92,6 +105,9 @@ static DLQ_CURSORS: LazyLock<Mutex<HashMap<String, i64>>> =
 
 /// 保留清理周期：10 分钟一次
 const CLEANUP_INTERVAL_MS: i64 = 10 * 60 * 1_000;
+
+/// 单次清理处理的行数：先取一批写墓碑、再按 id 删除，保证两者是同一批
+const PURGE_BATCH: u64 = 500;
 
 /// 单次 fetch 的最大字节范围
 const FETCH_BYTES: std::ops::Range<i32> = 1..1_048_576;
@@ -260,6 +276,20 @@ impl DbzDeadLetterSvc {
         // connector_id 记 0，此时只有连接器名能把「未纳管的多个连接器」区分开。
         let connector_id = Self::find_sink_id(db, &connector_name).await;
         let connector_name_key = truncate(&connector_name, 255);
+        // 已经被人工清理过的记录不再插回索引：清理只删行，坐标记在墓碑里；重启后游标
+        // 回到 earliest 会重扫到这里，没有这道拦截清理结论就白做一遍。
+        if Self::dead_letter_tombstoned(
+            db,
+            &connector_name_key,
+            connector_id,
+            &source_topic,
+            source_partition,
+            source_offset,
+        )
+        .await?
+        {
+            return Ok(false);
+        }
         if Self::dead_letter_exists(
             db,
             &connector_name_key,
@@ -365,6 +395,32 @@ impl DbzDeadLetterSvc {
             .is_some())
     }
 
+    /// 按墓碑坐标判定这条 DLQ 记录是否已被清理过
+    ///
+    /// 与 [`Self::dead_letter_exists`] 同样按幂等键匹配：墓碑的坐标口径必须和索引
+    /// 完全一致，否则重扫时对不上、清理结论又会跑回来。
+    async fn dead_letter_tombstoned(
+        db: &DatabaseConnection,
+        connector_name: &str,
+        connector_id: i64,
+        topic: &str,
+        partition: i32,
+        offset: i64,
+    ) -> anyhow::Result<bool> {
+        Ok(TombstoneEntity::find()
+            .filter(
+                Condition::all()
+                    .add(TombstoneColumn::ConnectorName.eq(connector_name))
+                    .add(TombstoneColumn::ConnectorId.eq(connector_id))
+                    .add(TombstoneColumn::Topic.eq(topic))
+                    .add(TombstoneColumn::Partition.eq(partition))
+                    .add(TombstoneColumn::Offset.eq(offset)),
+            )
+            .one(db)
+            .await?
+            .is_some())
+    }
+
     /// 按 Connect 头里的连接器名反查本地下游连接器 ID，用于页面角标与筛选
     async fn find_sink_id(db: &DatabaseConnection, connector_name: &str) -> i64 {
         if connector_name.is_empty() {
@@ -393,8 +449,9 @@ impl DbzDeadLetterSvc {
                     condition.add(DeadLetterColumn::ConnectorType.eq(i16::from(connector_type)));
             }
             None => {
-                condition = condition
-                    .add(DeadLetterColumn::ConnectorType.eq(i16::from(DeadLetterConnectorType::Sink)));
+                condition = condition.add(
+                    DeadLetterColumn::ConnectorType.eq(i16::from(DeadLetterConnectorType::Sink)),
+                );
             }
         }
         if let Some(connector_id) = dto.connector_id {
@@ -904,32 +961,85 @@ impl DbzDeadLetterSvc {
 
     /// # 清理死信
     ///
-    /// 物理删除 `dbz_dead_letter` 里的页面索引（可按连接器/状态/时间筛选），
-    /// `clear_topic=true` 时再把 DLQ topic 里的原始记录一并清掉。
+    /// 按条件物理删除 `dbz_dead_letter` 里的页面索引，是**唯一**按条件删的入口：
+    /// 条件全部不传等于清空整张索引表。删之前把命中行的坐标写进墓碑，重扫时才不会
+    /// 把它们以「待处理」插回来；墓碑不影响 Kafka，DLQ topic 里的报文仍在。
+    ///
+    /// `clear_topic=true` 时额外把 DLQ topic 的历史报文整段清掉——Kafka 只能按分区
+    /// 前缀截断，那一步**没有条件可言**，清的是整个 topic，不只是本次命中的记录。
     ///
     /// 与 [`Self::discard`] 的区别：废弃只改状态、保留追溯；清理不可恢复，用于
     /// 处置历史噪声（例如某条链路长期 400 攒下的大量死信）。
-    pub async fn purge(dto: DbzDeadLetterPurgeDto) -> Result<Ro<()>, SvcError> {
+    pub async fn purge(dto: DbzDeadLetterPurgeDto, operator_id: U64) -> Result<Ro<()>, SvcError> {
         let db = get_db_conn().map_err(|e| anyhow!("获取数据库连接失败: {e}"))?;
+        let operator = i64::from(operator_id);
+        let now = now_ms() as i64;
+        let remark = dto.remark.as_deref().map(|value| truncate(value, 500));
 
-        let mut delete = DeadLetterEntity::delete_many();
+        let mut condition = Condition::all();
         if let Some(connector_type) = dto.connector_type {
-            delete = delete.filter(DeadLetterColumn::ConnectorType.eq(i16::from(connector_type)));
+            condition =
+                condition.add(DeadLetterColumn::ConnectorType.eq(i16::from(connector_type)));
         }
         if let Some(connector_id) = dto.connector_id {
-            delete = delete.filter(DeadLetterColumn::ConnectorId.eq(i64::from(connector_id)));
+            condition = condition.add(DeadLetterColumn::ConnectorId.eq(i64::from(connector_id)));
         }
         if let Some(status) = dto.status {
-            delete = delete.filter(DeadLetterColumn::Status.eq(i16::from(status)));
+            condition = condition.add(DeadLetterColumn::Status.eq(i16::from(status)));
         }
-        if let Some(before_ms) = dto.before_ms {
-            delete = delete.filter(DeadLetterColumn::LastSeenMs.lt(before_ms));
+        if let Some(topic) = dto.topic.filter(|topic| !topic.trim().is_empty()) {
+            condition = condition.add(DeadLetterColumn::Topic.eq(topic.trim()));
         }
-        let rows = delete
-            .exec(db.as_ref())
-            .await
-            .map_err(|e| anyhow!("清理死信索引失败: {e}"))?
-            .rows_affected;
+        if let Some(category) = dto.failure_category {
+            condition = condition.add(DeadLetterColumn::FailureCategory.eq(i16::from(category)));
+        }
+        if let Some(subtype) = dto.failure_subtype {
+            condition = condition.add(DeadLetterColumn::FailureSubtype.eq(i16::from(subtype)));
+        }
+        if let Some(reason) = dto.reason.filter(|reason| !reason.trim().is_empty()) {
+            condition = condition.add(DeadLetterColumn::Reason.contains(reason.trim()));
+        }
+        if let Some(start_ms) = dto.start_ms {
+            condition = condition.add(DeadLetterColumn::LastSeenMs.gte(start_ms));
+        }
+        if let Some(end_ms) = dto.end_ms {
+            condition = condition.add(DeadLetterColumn::LastSeenMs.lte(end_ms));
+        }
+
+        // 分批：先查这一批命中的行 → 写墓碑 → 按 id 删除。按 id 删而不是按同一条件再删一次，
+        // 是为了让「墓碑记下的坐标」和「实际删掉的行」严格是同一批，不会漏记。
+        let mut rows = 0u64;
+        loop {
+            let batch = DeadLetterEntity::find()
+                .filter(condition.clone())
+                .order_by_asc(DeadLetterColumn::Id)
+                .limit(PURGE_BATCH)
+                .all(db.as_ref())
+                .await
+                .map_err(|e| anyhow!("查询待清理死信失败: {e}"))?;
+            if batch.is_empty() {
+                break;
+            }
+            let batch_len = batch.len();
+            Self::write_tombstones(db.as_ref(), &batch, operator, now, remark.as_deref()).await?;
+
+            let ids: Vec<i64> = batch.into_iter().map(|one| one.id).collect();
+            let deleted = DeadLetterEntity::delete_many()
+                .filter(DeadLetterColumn::Id.is_in(ids))
+                .exec(db.as_ref())
+                .await
+                .map_err(|e| anyhow!("清理死信索引失败: {e}"))?
+                .rows_affected;
+            rows += deleted;
+            // 槽位没删掉就别再选同一批，否则会在这里空转
+            if deleted == 0 {
+                warn!("清理死信：墓碑已写入但索引未删除，停止本轮清理");
+                break;
+            }
+            if batch_len < PURGE_BATCH as usize {
+                break;
+            }
+        }
 
         let purged = if dto.clear_topic {
             Self::purge_dlq_topic()
@@ -940,10 +1050,62 @@ impl DbzDeadLetterSvc {
         };
 
         Ok(Ro::success(if dto.clear_topic {
-            format!("已删除 {rows} 条死信索引，并清空 DLQ topic 历史记录 {purged} 条")
+            format!(
+                "已删除 {rows} 条死信索引（坐标已记入墓碑），并清空 DLQ topic 历史记录 {purged} 条"
+            )
         } else {
-            format!("已删除 {rows} 条死信索引（DLQ topic 未改动）")
+            format!("已删除 {rows} 条死信索引（坐标已记入墓碑，DLQ topic 未改动）")
         }))
+    }
+
+    /// # 把被删记录的坐标写成墓碑
+    ///
+    /// 批量 upsert：同一坐标重复清理只留一行（`ON CONFLICT DO NOTHING`），落库失败
+    /// 直接上抛——墓碑没写成功就不该继续删索引，否则这些记录重启后会被重扫插回来。
+    async fn write_tombstones(
+        db: &DatabaseConnection,
+        models: &[DeadLetterModel],
+        operator: i64,
+        now: i64,
+        remark: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let mut rows = Vec::with_capacity(models.len());
+        for model in models {
+            let id = idworker::next_id().map_err(|e| anyhow!("生成墓碑主键失败: {e}"))? as i64;
+            rows.push(TombstoneActiveModel {
+                id: Set(id),
+                connector_type: Set(model.connector_type),
+                connector_id: Set(model.connector_id),
+                connector_name: Set(model.connector_name.clone()),
+                topic: Set(model.topic.clone()),
+                partition: Set(model.partition.unwrap_or_default()),
+                offset: Set(model.offset.unwrap_or_default()),
+                purged_by: Set(Some(operator)),
+                purged_ms: Set(now),
+                remark: Set(remark.map(str::to_string)),
+                creater_id: Set(operator),
+                create_ms: Set(now),
+                updater_id: Set(operator),
+                update_ms: Set(now),
+            });
+        }
+
+        TombstoneEntity::insert_many(rows)
+            .on_conflict(
+                OnConflict::columns([
+                    TombstoneColumn::ConnectorName,
+                    TombstoneColumn::ConnectorId,
+                    TombstoneColumn::Topic,
+                    TombstoneColumn::Partition,
+                    TombstoneColumn::Offset,
+                ])
+                .do_nothing()
+                .to_owned(),
+            )
+            .exec(db)
+            .await
+            .map_err(|e| anyhow!("写入死信清理墓碑失败: {e}"))?;
+        Ok(())
     }
 
     /// # 清空 DLQ topic 的历史记录
@@ -1011,6 +1173,13 @@ impl DbzDeadLetterSvc {
         let cutoff = retention_cutoff(cfg);
         DeadLetterEntity::delete_many()
             .filter(DeadLetterColumn::LastSeenMs.lt(cutoff))
+            .exec(db)
+            .await?;
+
+        // 墓碑与死信同一口径过期：命中墓碑的记录一定早于保留期起点，那时同步按 cutoff
+        // 本来就会跳过，墓碑没有继续占位的必要。
+        TombstoneEntity::delete_many()
+            .filter(TombstoneColumn::PurgedMs.lt(cutoff))
             .exec(db)
             .await?;
 
