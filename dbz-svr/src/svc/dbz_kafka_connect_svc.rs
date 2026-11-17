@@ -42,6 +42,7 @@ use robotech::macros::svc;
 use sea_orm::{ColumnTrait, DatabaseConnection, EntityTrait, QueryFilter, Set};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use tracing::{info, warn};
 use wheel_rs::time_utils::now_ms;
@@ -51,6 +52,40 @@ const DEPLOY_STATUS_RETRIES: usize = 5;
 
 /// 刚部署的连接器等待状态就绪的重试间隔（毫秒）
 const DEPLOY_STATUS_INTERVAL_MS: u64 = 300;
+
+/// 自动重启的冷却窗（毫秒）
+///
+/// 恢复 schema history 这类任务，重启一次要几十秒到几分钟。巡检每轮都看到
+/// FAILED 就再发一次 restart，新任务会和还没退出的旧任务并存、抢同名 JMX
+/// MBean，最后把任务推成永久失败。冷却窗只给一次重启留出跑完的时间，不保证
+/// 重启一定成功。
+const REPAIR_COOLDOWN_MS: u64 = 10 * 60 * 1000;
+
+/// 停连接器后等旧任务退出的上限。Debezium 恢复 schema history 时旧任务要几十秒
+/// 才会从 poll 循环返回，1 分钟留够余量；超时也照常恢复，残留交给下一轮。
+const REPAIR_DRAIN_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// 上次自动重启的时间：键形如 `connector:<name>` 或 `task:<name>:<id>`
+static LAST_REPAIR_MS: LazyLock<Mutex<HashMap<String, u64>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// # 冷却窗判定
+///
+/// 同一目标在 [`REPAIR_COOLDOWN_MS`] 内只放行一次重启：首次调用返回 `true`
+/// 并记下时间，冷却窗内的重复调用返回 `false`，由调用方跳过并记日志。
+fn repair_cooldown_ok(key: &str) -> bool {
+    let now = now_ms();
+    let mut last = LAST_REPAIR_MS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    match last.get(key) {
+        Some(previous) if now.saturating_sub(*previous) < REPAIR_COOLDOWN_MS => false,
+        _ => {
+            last.insert(key.to_string(), now);
+            true
+        }
+    }
+}
 
 #[svc(
     before_add = DbzKafkaConnectSvc::before_add_hook,
@@ -1457,30 +1492,58 @@ impl DbzKafkaConnectSvc {
         match action {
             RepairAction::None => {}
             RepairAction::RestartConnector => {
+                let key = format!("connector:{connector_name}");
+                if !repair_cooldown_ok(&key) {
+                    warn!(
+                        "连接器<{connector_name}>状态异常，但上一轮重启还在冷却窗内（{} 秒），本轮跳过自动重启",
+                        REPAIR_COOLDOWN_MS / 1000
+                    );
+                    return;
+                }
                 info!("连接器<{connector_name}>状态异常，自动重启连接器");
-                // 连接器自身异常，连任务一起重启
-                if let Err(e) =
-                    KafkaConnectorUtils::restart_connector(base_url, connector_name, true, false)
-                        .await
+                // 用「停干净再恢复」而不是 restart：restart 不会让卡在 poll 里的旧任务
+                // 退出，两个实例并存会抢同名 JMX MBean
+                if let Err(e) = KafkaConnectorUtils::restart_connector_clean(
+                    base_url,
+                    connector_name,
+                    REPAIR_DRAIN_TIMEOUT,
+                )
+                .await
                 {
                     warn!("连接器<{connector_name}>自动重启失败: {e}");
                 }
             }
             RepairAction::RestartTasks(task_ids) => {
+                let ready: Vec<_> = task_ids
+                    .into_iter()
+                    .filter(|task_id| {
+                        let key = format!("task:{connector_name}:{task_id}");
+                        if repair_cooldown_ok(&key) {
+                            return true;
+                        }
+                        warn!(
+                            "连接器<{connector_name}>的任务<{task_id}>异常，但上一轮重启还在冷却窗内，本轮跳过"
+                        );
+                        false
+                    })
+                    .collect();
+                if ready.is_empty() {
+                    return;
+                }
+                // Connect 没有「停单个任务」的接口，要保证不并存只能整条连接器停一次：
+                // 同连接器的其它任务会跟着短暂停机，代价远小于任务被判永久失败
                 info!(
-                    "连接器<{connector_name}>有 {} 个任务异常，自动重启: {task_ids:?}",
-                    task_ids.len()
+                    "连接器<{connector_name}>有 {} 个任务异常，停干净后整条恢复: {ready:?}",
+                    ready.len()
                 );
-                for task_id in task_ids {
-                    if let Err(e) = KafkaConnectorUtils::restart_connector_task(
-                        base_url,
-                        connector_name,
-                        task_id,
-                    )
-                    .await
-                    {
-                        warn!("连接器<{connector_name}>的任务<{task_id}>自动重启失败: {e}");
-                    }
+                if let Err(e) = KafkaConnectorUtils::restart_connector_clean(
+                    base_url,
+                    connector_name,
+                    REPAIR_DRAIN_TIMEOUT,
+                )
+                .await
+                {
+                    warn!("连接器<{connector_name}>自动重启失败: {e}");
                 }
             }
         }

@@ -681,6 +681,15 @@ export interface DbzDeadLetterDiscardInput {
   remark?: string;
 }
 
+/** # 清理死信请求体：物理删除页面索引，`clearTopic` 为真时连 DLQ topic 一起清 */
+export interface DbzDeadLetterPurgeInput {
+  connectorType?: number;
+  connectorId?: Id;
+  status?: DeadLetterStatus;
+  beforeMs?: number;
+  clearTopic?: boolean;
+}
+
 /** # 标记「已人工处理」请求体 */
 export interface DbzDeadLetterMarkHandledInput {
   ids: Id[];

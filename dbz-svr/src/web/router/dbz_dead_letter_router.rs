@@ -17,5 +17,6 @@ use robotech::macros::router;
     ("/dbz/dead-letter/discard", post(discard)),
     ("/dbz/dead-letter/mark-handled", post(mark_handled)),
     ("/dbz/dead-letter/unmark-handled", post(unmark_handled)),
+    ("/dbz/dead-letter/purge", post(purge)),
 ])]
 struct DbzDeadLetterRouter;

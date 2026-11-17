@@ -13,6 +13,7 @@ import type {
   DbzDeadLetterDiscardInput,
   DbzDeadLetterEditPayloadInput,
   DbzDeadLetterMarkHandledInput,
+  DbzDeadLetterPurgeInput,
   DbzDeadLetterRetryInput,
   DbzDeadLetterUnmarkHandledInput,
   DbzDeadLetterRetryResultVo,
@@ -53,4 +54,11 @@ export const deadLetterApi = {
   /** 撤销「已人工处理」，恢复为「待处理」 */
   unmarkHandled: (input: DbzDeadLetterUnmarkHandledInput): Promise<void> =>
     apiPost(BASE + '/unmark-handled', input),
+
+  /**
+   * 清理死信：物理删除页面索引（按连接器/状态筛选，条件全空即清空整张表）；
+   * `clearTopic` 为真时同时清空 DLQ topic 的历史报文，不可恢复。
+   */
+  purge: (input: DbzDeadLetterPurgeInput): Promise<void> =>
+    apiPost(BASE + '/purge', input),
 };

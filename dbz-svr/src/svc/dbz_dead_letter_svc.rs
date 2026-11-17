@@ -45,8 +45,8 @@ use crate::dic::{
 };
 use crate::dto::{
     DbzDeadLetterCountDto, DbzDeadLetterDiscardDto, DbzDeadLetterEditPayloadDto,
-    DbzDeadLetterMarkHandledDto, DbzDeadLetterQueryDto, DbzDeadLetterRetryDto,
-    DbzDeadLetterUnmarkHandledDto,
+    DbzDeadLetterMarkHandledDto, DbzDeadLetterPurgeDto, DbzDeadLetterQueryDto,
+    DbzDeadLetterRetryDto, DbzDeadLetterUnmarkHandledDto,
 };
 use crate::mo::dbz_dead_letter::{
     ActiveModel as DeadLetterActiveModel, Column as DeadLetterColumn, Entity as DeadLetterEntity,
@@ -900,6 +900,98 @@ impl DbzDeadLetterSvc {
             return Err("待投报文必须是 JSON 对象（{...}）".to_string());
         }
         Ok(())
+    }
+
+    /// # 清理死信
+    ///
+    /// 物理删除 `dbz_dead_letter` 里的页面索引（可按连接器/状态/时间筛选），
+    /// `clear_topic=true` 时再把 DLQ topic 里的原始记录一并清掉。
+    ///
+    /// 与 [`Self::discard`] 的区别：废弃只改状态、保留追溯；清理不可恢复，用于
+    /// 处置历史噪声（例如某条链路长期 400 攒下的大量死信）。
+    pub async fn purge(dto: DbzDeadLetterPurgeDto) -> Result<Ro<()>, SvcError> {
+        let db = get_db_conn().map_err(|e| anyhow!("获取数据库连接失败: {e}"))?;
+
+        let mut delete = DeadLetterEntity::delete_many();
+        if let Some(connector_type) = dto.connector_type {
+            delete = delete.filter(DeadLetterColumn::ConnectorType.eq(i16::from(connector_type)));
+        }
+        if let Some(connector_id) = dto.connector_id {
+            delete = delete.filter(DeadLetterColumn::ConnectorId.eq(i64::from(connector_id)));
+        }
+        if let Some(status) = dto.status {
+            delete = delete.filter(DeadLetterColumn::Status.eq(i16::from(status)));
+        }
+        if let Some(before_ms) = dto.before_ms {
+            delete = delete.filter(DeadLetterColumn::LastSeenMs.lt(before_ms));
+        }
+        let rows = delete
+            .exec(db.as_ref())
+            .await
+            .map_err(|e| anyhow!("清理死信索引失败: {e}"))?
+            .rows_affected;
+
+        let purged = if dto.clear_topic {
+            Self::purge_dlq_topic()
+                .await
+                .map_err(|e| anyhow!("清空 DLQ topic 失败: {e}"))?
+        } else {
+            0
+        };
+
+        Ok(Ro::success(if dto.clear_topic {
+            format!("已删除 {rows} 条死信索引，并清空 DLQ topic 历史记录 {purged} 条")
+        } else {
+            format!("已删除 {rows} 条死信索引（DLQ topic 未改动）")
+        }))
+    }
+
+    /// # 清空 DLQ topic 的历史记录
+    ///
+    /// 用 Kafka 的 `DeleteRecords` 把每个分区的 log start offset 推到末尾：报文被
+    /// 物理删除，topic 与分区结构保留（不会触发 Connect 重建 topic，也不会让下游
+    /// 连接器重扫）。顺手把进程内游标推进到末尾，否则下一次同步又会从 earliest
+    /// 把刚删掉的记录读回来。
+    ///
+    /// ## 返回值
+    /// * `Ok(u64)` - 本次被清掉的记录条数（各分区 `latest - earliest` 之和）
+    async fn purge_dlq_topic() -> anyhow::Result<u64> {
+        let cfg = current_config();
+        let topic = dlq_topic(&cfg).to_string();
+        let db = get_db_conn().map_err(|e| anyhow!("获取数据库连接失败: {e}"))?;
+        let brokers = BrokerEntity::find()
+            .filter(BrokerColumn::Enabled.eq(true))
+            .all(db.as_ref())
+            .await?;
+
+        let mut seen = HashSet::new();
+        let mut purged = 0u64;
+        for broker in brokers {
+            if !seen.insert(broker.bootstrap_servers.clone()) {
+                continue;
+            }
+            let conn = BrokerConn::from_model(&broker);
+            let client = KafkaBrokerUtils::connect(&conn).await?;
+            let topics = client.list_topics().await?;
+            // topic 还没被 Connect 创建过（从未出现坏记录）时无事可做
+            let Some(metadata) = topics.iter().find(|one| one.name == topic) else {
+                continue;
+            };
+            for partition in &metadata.partitions {
+                let partitioned = client
+                    .partition_client(&topic, *partition, UnknownTopicHandling::Error)
+                    .await?;
+                let earliest = partitioned.get_offset(OffsetAt::Earliest).await?;
+                let latest = partitioned.get_offset(OffsetAt::Latest).await?;
+                if latest > earliest {
+                    partitioned.delete_records(latest, 30_000).await?;
+                    purged += (latest - earliest) as u64;
+                }
+                let cursor_key = format!("{}|{}|{}", broker.bootstrap_servers, topic, partition);
+                DLQ_CURSORS.lock().await.insert(cursor_key, latest);
+            }
+        }
+        Ok(purged)
     }
 
     /// # 保留清理

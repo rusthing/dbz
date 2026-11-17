@@ -29,6 +29,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::{BTreeSet, HashMap};
 use std::sync::LazyLock;
+use std::time::{Duration, Instant};
 use tracing::{info, warn};
 
 /// 复用的 HTTP 客户端
@@ -728,6 +729,91 @@ impl KafkaConnectorUtils {
         .await?;
         info!("连接器<{connector_name}>恢复请求已接受");
         Ok(())
+    }
+
+    /// # 停干净再恢复
+    ///
+    /// `PUT /{name}/restart`（含 `?force=true`）只是让 Connect 重新拉起任务：旧任务
+    /// 如果卡在 poll 循环里（Debezium 恢复 schema history 正是这么卡的），它不会因为
+    /// restart 而退出，新任务起来后两个实例抢同一批 JMX MBean，任务随即被判永久失败。
+    ///
+    /// 停 → 等 `tasks` 清空 → 恢复 是唯一能保证「只有一个实例」的顺序：任务列表为空
+    /// 是旧实例真的退出的判据，不能只看 `connector.state=STOPPED`（它先变）。
+    ///
+    /// 旧实例退不干净时仍然恢复（记 warn）：让连接器长期停摆比多一个实例更糟，
+    /// 残留交给下一轮巡检和冷却窗处理。
+    ///
+    /// ## 参数
+    /// * `base_url` - Kafka Connect 地址
+    /// * `connector_name` - 连接器名称
+    /// * `drain_timeout` - 等待旧任务退出的上限
+    ///
+    /// ## 返回值
+    /// * `Ok(())` - 已停止并恢复（不保证恢复后立刻 RUNNING）
+    /// * `Err(KafkaConnectorError)` - 连接器不存在或停止/恢复请求失败
+    pub async fn restart_connector_clean(
+        base_url: &str,
+        connector_name: &str,
+        drain_timeout: Duration,
+    ) -> Result<(), KafkaConnectorError> {
+        Self::stop_connector(base_url, connector_name).await?;
+
+        let deadline = Instant::now() + drain_timeout;
+        let mut drained = false;
+        while Instant::now() < deadline {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            match Self::connector_task_count(base_url, connector_name).await {
+                Ok((_, 0)) => {
+                    drained = true;
+                    break;
+                }
+                // 还有任务挂着 = 旧实例没退，继续等
+                Ok(_) => continue,
+                Err(KafkaConnectorError::NotFound) => return Err(KafkaConnectorError::NotFound),
+                Err(e) => warn!("连接器<{connector_name}>停机期间查询状态失败: {e}"),
+            }
+        }
+        if drained {
+            info!("连接器<{connector_name}>的旧任务已全部退出，恢复");
+        } else {
+            warn!(
+                "连接器<{connector_name}>的旧任务未在 {} 秒内退净，仍按计划恢复",
+                drain_timeout.as_secs()
+            );
+        }
+
+        Self::resume_connector(base_url, connector_name).await
+    }
+
+    /// # 当前挂着几个任务
+    ///
+    /// 返回 `(connector.state, tasks.len())`。停机判据只认 `tasks.len()==0`：
+    /// `state` 在 stop 之后立刻变 STOPPED，此时旧任务可能还在跑。
+    async fn connector_task_count(
+        base_url: &str,
+        connector_name: &str,
+    ) -> Result<(String, usize), KafkaConnectorError> {
+        let url = format!(
+            "{}/connectors/{}/status",
+            base_url.trim_end_matches('/'),
+            connector_name
+        );
+        let resp = HTTP_CLIENT.get(&url).send().await.map_err(|e| {
+            KafkaConnectorError::Request(format!("查询连接器<{connector_name}>状态失败: {e}"))
+        })?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Err(KafkaConnectorError::NotFound);
+        }
+        if !resp.status().is_success() {
+            let body = resp.text().await.unwrap_or_default();
+            return Err(KafkaConnectorError::Request(format!(
+                "查询连接器<{connector_name}>状态失败: {body}"
+            )));
+        }
+        let status: ConnectorStatusResponse = resp.json().await.map_err(|e| {
+            KafkaConnectorError::Parse(format!("解析连接器<{connector_name}>状态响应失败: {e}"))
+        })?;
+        Ok((status.connector.state, status.tasks.len()))
     }
 
     /// # 清空连接器位点

@@ -14,6 +14,7 @@ import {
   App as AntdApp,
   Button,
   Card,
+  Checkbox,
   Col,
   DatePicker,
   Drawer,
@@ -167,6 +168,10 @@ export default function DeadLetterPage() {
   const [applied, setApplied] = useState<FilterDraft>(() => initialDraft(searchParams));
   const [exporting, setExporting] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  // 清理死信：物理删除索引，可选连 DLQ topic 的历史报文一起删
+  const [purging, setPurging] = useState(false);
+  const [purgeOpen, setPurgeOpen] = useState(false);
+  const [purgeClearTopic, setPurgeClearTopic] = useState(false);
   const [handledOpen, setHandledOpen] = useState(false);
   const [handledTargets, setHandledTargets] = useState<DbzDeadLetterVo[]>([]);
   const [handledRemark, setHandledRemark] = useState('');
@@ -225,6 +230,31 @@ export default function DeadLetterPage() {
       message.error(errorMessage(reason));
     } finally {
       setSyncing(false);
+    }
+  };
+
+  /** 清理：物理删除索引（沿用当前筛选的连接器与状态），可按需连 DLQ topic 一起清 */
+  const purgeRecords = async () => {
+    setPurging(true);
+    try {
+      await deadLetterApi.purge({
+        connectorType: CONNECTOR_TYPE_SINK,
+        connectorId: applied.connectorId,
+        status: applied.status,
+        clearTopic: purgeClearTopic,
+      });
+      message.success(
+        purgeClearTopic
+          ? '已清理死信索引，并清空了 DLQ topic 的历史报文'
+          : '已清理死信索引（DLQ topic 未改动）',
+      );
+      setPurgeOpen(false);
+      setSelectedIds([]);
+      reload();
+    } catch (reason) {
+      message.error(errorMessage(reason));
+    } finally {
+      setPurging(false);
     }
   };
 
@@ -846,6 +876,14 @@ export default function DeadLetterPage() {
           废弃选中
         </Button>
         <Button
+          onClick={() => {
+            setPurgeClearTopic(false);
+            setPurgeOpen(true);
+          }}
+        >
+          清理
+        </Button>
+        <Button
           icon={<UndoOutlined />}
           disabled={manualTargets.length === 0}
           loading={acting}
@@ -1212,6 +1250,41 @@ export default function DeadLetterPage() {
           </div>
         )}
       </Drawer>
+
+      <Modal
+        title="清理死信"
+        open={purgeOpen}
+        okText="确认清理"
+        okButtonProps={{ danger: true, loading: purging }}
+        onOk={() => void purgeRecords()}
+        onCancel={() => setPurgeOpen(false)}
+      >
+        <Alert
+          type="error"
+          showIcon
+          icon={<WarningOutlined />}
+          message="物理删除，不可恢复"
+          description="「废弃」只是改状态、保留追溯；清理是把页面索引直接删掉，删完查不到。"
+        />
+        <div style={{ marginTop: 12 }}>
+          清理范围：{applied.connectorId ? '当前选中的连接器' : '全部连接器'}
+          {applied.status === undefined
+            ? '、全部状态'
+            : `、${deadLetterStatusDic.find((entry) => entry.value === applied.status)?.label ?? applied.status}`}
+          。连接器的筛选项与状态都取自工具栏当前条件，要缩小范围请先改筛选再清理。
+        </div>
+        <Checkbox
+          style={{ marginTop: 12 }}
+          checked={purgeClearTopic}
+          onChange={(event) => setPurgeClearTopic(event.target.checked)}
+        >
+          同时清空 DLQ topic 的历史报文（Kafka DeleteRecords，topic 与分区保留）
+        </Checkbox>
+        <div style={{ marginTop: 8, color: 'rgba(0,0,0,0.45)' }}>
+          不勾选时只删 dbz 的索引，Kafka 里的报文仍按 topic 的 retention 保留；
+          勾选后报文被物理删除，之后无法再重投。
+        </div>
+      </Modal>
     </Card>
   );
 }

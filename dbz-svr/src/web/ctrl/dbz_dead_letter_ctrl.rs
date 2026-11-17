@@ -14,8 +14,8 @@
 
 use crate::dto::{
     DbzDeadLetterCountDto, DbzDeadLetterDiscardDto, DbzDeadLetterEditPayloadDto,
-    DbzDeadLetterMarkHandledDto, DbzDeadLetterQueryDto, DbzDeadLetterRetryDto,
-    DbzDeadLetterUnmarkHandledDto,
+    DbzDeadLetterMarkHandledDto, DbzDeadLetterPurgeDto, DbzDeadLetterQueryDto,
+    DbzDeadLetterRetryDto, DbzDeadLetterUnmarkHandledDto,
 };
 use crate::svc::DbzDeadLetterSvc;
 use crate::vo::{DbzDeadLetterCountVo, DbzDeadLetterRetryResultVo, DbzDeadLetterVo};
@@ -185,5 +185,27 @@ pub async fn unmark_handled(
     Json(dto): Json<DbzDeadLetterUnmarkHandledDto>,
 ) -> Result<Json<Ro<()>>, CtrlError> {
     let ro = DbzDeadLetterSvc::unmark_handled(dto, required_operator(&headers)?).await?;
+    Ok(Json(ro))
+}
+
+/// # 清理死信
+///
+/// 物理删除页面索引，可按连接器/状态/时间筛选，条件全空等于清空整张索引表。
+/// `clearTopic=true` 时同时清空 DLQ topic 的历史报文（不可恢复）。与「废弃」不同，
+/// 清理不保留追溯，用于处置历史噪声。
+#[utoipa::path(
+    post,
+    path = "/dbz/dead-letter/purge",
+    request_body = DbzDeadLetterPurgeDto,
+    responses((status = OK, description = "已清理"))
+)]
+#[debug_handler]
+#[log_call]
+pub async fn purge(
+    headers: HeaderMap,
+    Json(dto): Json<DbzDeadLetterPurgeDto>,
+) -> Result<Json<Ro<()>>, CtrlError> {
+    let _ = required_operator(&headers)?;
+    let ro = DbzDeadLetterSvc::purge(dto).await?;
     Ok(Json(ro))
 }
