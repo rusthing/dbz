@@ -41,7 +41,7 @@ timeout = "800ms"
 #
 #   [alarm.event-source]  事件来源 code / name / remark
 #   [alarm.alert-level]   级别分组 + 级别（默认复用报警中心的
-#                         industrial_control 组、2 级「严重」）
+#                         default_alarm_level 组、2 级「严重」）
 #   [alarm.policy]        事件编码、标题/内容模板、合并窗口、重复提醒间隔
 #
 # 消息队列不配：按级别值拼 `msg.publish.alarm.{value}` 去报警中心查。

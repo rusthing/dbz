@@ -16,7 +16,7 @@
 //! ## 级别与队列都是共享字典
 //!
 //! 报警级别分组、级别、消息队列都由报警中心的迁移脚本种好，dbz 只是按编码
-//! 复用其中一条，不新建：级别用 `industrial_control` 组的 2 级「严重」——
+//! 复用其中一条，不新建：级别用 `default_alarm_level` 组的 2 级「严重」——
 //! 连接器挂掉是「功能严重受损，需尽快处理」，但服务本身还在跑，不到 1 级
 //! 「紧急」（那是 dtw 的 SOS 用的）。
 //!
@@ -218,17 +218,17 @@ const ALARM_EVENT_SOURCE_NAME_DEFAULT: &str = "数据同步";
 const ALARM_EVENT_SOURCE_REMARK_DEFAULT: &str = "dbz 的 Debezium 连接器与数据同步状态";
 /// 报警级别分组的编码
 ///
-/// 级别是报警中心的共享字典，按分组维护。dbz 用「工业自动化监控」这一组，它
-/// 是报警中心迁移脚本里已经种好的工业场景五级告警，这里只是按编码复用。
-const ALARM_LEVEL_GROUP_CODE_DEFAULT: &str = "industrial_control";
+/// 级别是报警中心的共享字典，按分组维护。dbz 用「报警级别」这一组，它是
+/// 报警中心迁移脚本里已经种好的系统默认四级分级，这里只是按编码复用。
+const ALARM_LEVEL_GROUP_CODE_DEFAULT: &str = "default_alarm_level";
 /// 报警级别分组的名称
-const ALARM_LEVEL_GROUP_NAME_DEFAULT: &str = "工业自动化监控";
+const ALARM_LEVEL_GROUP_NAME_DEFAULT: &str = "报警级别";
 /// 报警级别分组的备注
-const ALARM_LEVEL_GROUP_REMARK_DEFAULT: &str = "工业/自动化/监控系统通用的五级告警，1 级最严重";
+const ALARM_LEVEL_GROUP_REMARK_DEFAULT: &str = "系统默认的四级报警级别，一般最轻、紧急最严重";
 /// 报警级别编码
 ///
 /// 编码与名称都不带来源前缀：同一级别多个发布方共用。
-const ALARM_LEVEL_CODE_DEFAULT: &str = "industrial_control_2";
+const ALARM_LEVEL_CODE_DEFAULT: &str = "default_severe";
 /// 报警级别名称
 const ALARM_LEVEL_NAME_DEFAULT: &str = "严重";
 /// 报警级别的值
@@ -237,7 +237,7 @@ const ALARM_LEVEL_NAME_DEFAULT: &str = "严重";
 /// （`msg.publish.alarm.2`），所以改这个值等于把报警改投到另一条队列上。
 const ALARM_LEVEL_VALUE_DEFAULT: i16 = 2;
 /// 报警级别备注
-const ALARM_LEVEL_REMARK_DEFAULT: &str = "功能严重受损，需尽快处理";
+const ALARM_LEVEL_REMARK_DEFAULT: &str = "默认级别：严重";
 /// 连接器异常的事件编码
 const CONNECTOR_ERROR_EVENT_CODE_DEFAULT: &str = "dbz.connector.error";
 /// 连接器异常的事件名称（也是报警中心里消息模板的名称，全局唯一）
