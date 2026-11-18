@@ -374,6 +374,7 @@ pub async fn setup_dbz_alarm(config: &AlarmConfig) -> anyhow::Result<()> {
         &api_client.event_policy,
         &config.policy,
         event_source_id,
+        alert_level_group_id,
         alert_level_id,
         message_queue_id,
     )
@@ -634,6 +635,7 @@ async fn register_event_policy(
     api_client: &AlarmEventPolicyApiClient,
     config: &AlarmPolicyConfig,
     event_source_id: u64,
+    level_group_id: u64,
     alert_level_id: u64,
     message_queue_id: u64,
 ) -> anyhow::Result<()> {
@@ -644,6 +646,8 @@ async fn register_event_policy(
         title_template: Some(config.title_template.clone()),
         content_template: Some(config.content_template.clone()),
         event_source_id: Some(U64(event_source_id)),
+        // 分组必填：策略的级别必须属于该分组，级别本来就登记在这个分组下
+        level_group_id: Some(U64(level_group_id)),
         alert_level_id: Some(Some(U64(alert_level_id))),
         message_queue_id: Some(Some(U64(message_queue_id))),
         repeat_interval_ms: Some(config.repeat_interval_ms.map(U64)),
