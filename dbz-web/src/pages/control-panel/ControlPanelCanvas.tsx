@@ -1,21 +1,31 @@
 /**
- * # 控制面板画布
+ * # 控制面板泳道图
  *
- * 交互按「只选上游、其余自动推导」收敛：
- * - 节点可拖、空白可平移、滚轮以指针为中心缩放、缩略图、正交折线箭头；
- * - 连线只作展示：两端的连接点可左右拖动避让、中间折点可上下拖动，不能改上下游，也不能删除；
+ * 四类节点各占一列泳道，从左到右按归属链排列（Kafka 集群 → Connect →
+ * 上游连接器 → 下游连接器）；列头像表头一样固定在视口顶部，横向跟随泳道列、
+ * 纵向不随平移缩放移动。列内按父级分组自动排列，位置由数据推导，不提供节点
+ * 拖拽、也不持久化布局。
+ *
+ * 交互收敛为（与 uiam / syn 的控制面板同一套做法）：
+ * - 空白可平移、滚轮以指针为中心缩放；列头像表头钉在视口顶部，列宽可拖、
+ *   双击复位并记在本地；列头的「＋」新建本列节点，子列先挑父级；
+ *   右下角一个缩放坞（−/百分比/＋/适应/定位选中）+ 缩略图；
+ * - 连线只作展示：父右缘中点 → 子左缘中点画三次贝塞尔，带箭头与流动光点，
+ *   不能改上下游，也不能删除；
  * - 新增下级只走节点底部的「+」按钮，点击后由页面打开父级已固定的表单；
  * - 四类卡片同一骨架，类型图标 + 类型文字 + 主色用于识别，状态只用标签表达。
  *
- * 组件只负责画与拖，真正写库的动作（保存位置、打开表单、节点操作）由页面调用。
+ * 组件只负责画与视口，真正写库的动作（打开表单、节点操作）由页面调用。
  */
 
 import {
+  AimOutlined,
   CloudServerOutlined,
   DatabaseOutlined,
   DeleteOutlined,
   DownloadOutlined,
   EditOutlined,
+  ExpandOutlined,
   ExportOutlined,
   CloseOutlined,
   HistoryOutlined,
@@ -28,7 +38,7 @@ import {
   ThunderboltOutlined,
   UploadOutlined,
 } from '@ant-design/icons';
-import { Button, Switch, Tag, Tooltip } from 'antd';
+import { Button, Dropdown, Switch, Tag, Tooltip } from 'antd';
 import {
   useCallback,
   useEffect,
@@ -43,35 +53,60 @@ import { formatMs } from '../../utils/format';
 import { connectorRunStatusDic } from '../../dic';
 import { taskSummary, type ManagedConnectorRecord } from './model';
 import {
+  DEFAULT_LANE_COLUMNS,
+  LANE_HEADER_H,
   NODE_KIND_COLOR,
   NODE_KIND_LABEL,
-  NODE_SIZE,
-  defaultPosition,
+  buildSwimlaneLayout,
+  clampLaneColumn,
   nodeTone,
+  normalizeLaneColumns,
   type CanvasEdge,
   type CanvasNode,
   type CanvasNodeAction,
   type CanvasNodeKind,
-  type EdgeAnchor,
 } from './canvas-model';
 
 /** 画布缩放范围 */
 const MIN_SCALE = 0.35;
 const MAX_SCALE = 2;
 
-/** 悬浮属性面板的宽度边界（px）：拖左缘调整，双击恢复默认 */
+/** 属性面板的宽度边界（px）：拖左缘调整，双击恢复默认 */
 const INSPECTOR_MIN_W = 280;
 const INSPECTOR_MAX_W = 560;
 const INSPECTOR_DEFAULT_W = 340;
-/** 世界坐标系的逻辑尺寸，节点被拖到边缘也不会裁掉 */
-const WORLD_WIDTH = 2400;
-const WORLD_HEIGHT = 1600;
+
+/** 泳道列宽：四列各自记忆在本地，拖列头右缘调整、双击复位 */
+const LANE_COLUMNS_KEY = 'dbz-lane-columns';
+
+function readLaneColumns(): number[] {
+  try {
+    return normalizeLaneColumns(JSON.parse(localStorage.getItem(LANE_COLUMNS_KEY) ?? 'null'));
+  } catch {
+    return DEFAULT_LANE_COLUMNS.slice();
+  }
+}
+
+function writeLaneColumns(columns: number[]): void {
+  try {
+    localStorage.setItem(LANE_COLUMNS_KEY, JSON.stringify(columns));
+  } catch {
+    /* 隐私模式等存不了就算了，下次打开回到默认列宽 */
+  }
+}
 
 /** 「+」能新增的下级类型；下游连接器没有下一级，不显示按钮 */
 const CHILD_KIND: Partial<Record<CanvasNodeKind, CanvasNodeKind>> = {
   broker: 'connect',
   connect: 'source',
   source: 'sink',
+};
+
+/** 列头「＋」新增本列节点时，要先挑一个上一级；Kafka 集群没有父级 */
+const PARENT_KIND: Partial<Record<CanvasNodeKind, CanvasNodeKind>> = {
+  connect: 'broker',
+  source: 'connect',
+  sink: 'source',
 };
 
 interface Point {
@@ -88,17 +123,6 @@ interface ViewState {
 interface EdgeGeometry {
   edge: CanvasEdge;
   path: string;
-  start: Point;
-  end: Point;
-  /** 两端连接点的横向可拖动范围（相对卡片中心的偏移） */
-  startDx: { min: number; max: number };
-  endDx: { min: number; max: number };
-  /** 两端未加用户偏移时的基准 X（卡片中心 + 同源错开） */
-  startBaseX: number;
-  endBaseX: number;
-  /** 正交走线的中间水平段 Y；拖动折点即改这个值 */
-  midY: number;
-  handle: Point;
   color: string;
   marker: string;
 }
@@ -106,28 +130,14 @@ interface EdgeGeometry {
 interface ControlPanelCanvasProps {
   nodes: CanvasNode[];
   edges: CanvasEdge[];
-  positions: Record<string, Point>;
-  /** 已持久化的连线折点：edgeId → 中间水平段 Y */
-  edgeBends: Record<string, number>;
-  /** 已持久化的连接点横向偏移：edgeId → 两端偏移 */
-  edgeAnchors: Record<string, EdgeAnchor>;
   selectedNodeKey: string | null;
   selectedEdgeId: string | null;
-  /** 拖动过程中持续回调，`commit=false`；松手时 `commit=true` 由页面落库 */
-  onNodeMove: (key: string, x: number, y: number, commit: boolean) => void;
-  /** 拖动折点：commit=false 只更新本地，松手才落库 */
-  onEdgeBend: (edgeId: string, midY: number, commit: boolean) => void;
-  /** 左右拖动连接点：commit=false 只更新本地，松手才落库 */
-  onEdgeAnchor: (
-    edgeId: string,
-    anchor: 'start' | 'end',
-    dx: number,
-    commit: boolean,
-  ) => void;
   onSelectNode: (key: string | null) => void;
   onSelectEdge: (id: string | null) => void;
   /** 点击节点底部「+」：父级固定，页面按子类型打开新增表单 */
   onAddChild: (node: CanvasNode) => void;
+  /** 点击列头「+」：新增一条本级记录（Kafka 集群没有父级，直接开新建表单） */
+  onAddRoot: () => void;
   /** 卡片上的重启/编辑/删除/检测/重新同步 */
   onNodeAction: (node: CanvasNode, action: CanvasNodeAction) => void;
   /** 卡片上的启用开关：选中即启用，关闭即停用 */
@@ -145,7 +155,7 @@ interface ControlPanelCanvasProps {
   focusToken: number;
   /** 右侧检查器内容 */
   renderInspector: () => ReactNode;
-  /** 属性面板开关：悬浮层，点卡片只选中，由顶栏按钮/边缘把手/双击卡片控制 */
+  /** 属性面板开关：画布右侧独立一列，点卡片只选中，由顶栏按钮/边缘把手/双击卡片控制 */
   inspectorOpen: boolean;
   onToggleInspector: () => void;
   /** 双击卡片：选中并展开属性面板 */
@@ -162,79 +172,6 @@ function nodeDisabledOf(node: CanvasNode): boolean {
     return !node.cluster?.enabled;
   }
   return !(node.record as { enabled: boolean }).enabled;
-}
-
-/** 连线折点的取值范围：留出画布内边距，拖出卡片重叠区也不会跑到世界外 */
-const BEND_MIN_Y = 16;
-const BEND_MAX_Y = WORLD_HEIGHT - 16;
-
-/** 正交走线的默认中间水平段 Y：两端上下居中的位置 */
-function defaultMidY(start: Point, end: Point): number {
-  return (start.y + end.y) / 2;
-}
-
-/** 连线几何：归属关系统一走竖向折线；同源多条线在底部错开，避免重叠 */
-function geometryOf(
-  edge: CanvasEdge,
-  nodeMap: Map<string, CanvasNode>,
-  positions: Record<string, Point>,
-  offset: number,
-  bend?: number,
-  anchor?: EdgeAnchor,
-): EdgeGeometry | null {
-  const from = nodeMap.get(edge.from);
-  const to = nodeMap.get(edge.to);
-  if (!from || !to) {
-    return null;
-  }
-  const fromPos = positions[from.key] ?? defaultPosition(from.kind, 0);
-  const toPos = positions[to.key] ?? defaultPosition(to.kind, 0);
-  const fromSize = NODE_SIZE[from.kind];
-  const toSize = NODE_SIZE[to.kind];
-
-  // 连接点 = 卡片中心 + 同源错开 + 用户拖动偏移；偏移存相对中心，节点移动时跟着走
-  const startBaseX = fromPos.x + fromSize.w / 2 + offset;
-  const endBaseX = toPos.x + toSize.w / 2;
-  const startDx = {
-    min: fromPos.x + 18 - startBaseX,
-    max: fromPos.x + fromSize.w - 18 - startBaseX,
-  };
-  const endDx = {
-    min: toPos.x + 18 - endBaseX,
-    max: toPos.x + toSize.w - 18 - endBaseX,
-  };
-  const startX = clamp(
-    startBaseX + clamp(anchor?.startDx ?? 0, startDx.min, startDx.max),
-    fromPos.x + 18,
-    fromPos.x + fromSize.w - 18,
-  );
-  const endX = clamp(
-    endBaseX + clamp(anchor?.endDx ?? 0, endDx.min, endDx.max),
-    toPos.x + 18,
-    toPos.x + toSize.w - 18,
-  );
-  const start = { x: startX, y: fromPos.y + fromSize.h };
-  const end = { x: endX, y: toPos.y };
-  // 连接点可左右拖，中间水平段可上下拖；拖过的值优先
-  const midY = clamp(
-    typeof bend === 'number' && Number.isFinite(bend) ? bend : defaultMidY(start, end),
-    BEND_MIN_Y,
-    BEND_MAX_Y,
-  );
-  return {
-    edge,
-    start,
-    end,
-    startDx,
-    endDx,
-    startBaseX,
-    endBaseX,
-    midY,
-    handle: { x: (start.x + end.x) / 2, y: midY },
-    path: `M${start.x},${start.y} L${start.x},${midY} L${end.x},${midY} L${end.x},${end.y}`,
-    color: '#b7c2d1',
-    marker: 'dbz-arrow-edge',
-  };
 }
 
 /**
@@ -322,7 +259,7 @@ function StatusHint({ node }: { node: CanvasNode }) {
   );
 }
 
-/** 状态标签：悬停给出运行详情；标签本身不参与卡片拖动 */
+/** 状态标签：悬停给出运行详情 */
 function NodeStatus({ node }: { node: CanvasNode }) {
   return (
     <Tooltip
@@ -508,7 +445,7 @@ function NodeActions({
   );
 }
 
-/** 卡片头部：类型标识在前，启用开关统一贴右上角；开关不参与卡片拖动 */
+/** 卡片头部：类型标识在前，启用开关统一贴右上角 */
 function NodeHead({
   node,
   togglingNodeKey,
@@ -559,17 +496,12 @@ function NodeHead({
 export default function ControlPanelCanvas({
   nodes,
   edges,
-  positions,
-  edgeBends,
-  edgeAnchors,
   selectedNodeKey,
   selectedEdgeId,
-  onNodeMove,
-  onEdgeBend,
-  onEdgeAnchor,
   onSelectNode,
   onSelectEdge,
   onAddChild,
+  onAddRoot,
   onNodeAction,
   onToggleNode,
   busyNodeKey,
@@ -587,9 +519,9 @@ export default function ControlPanelCanvas({
   const viewportRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<ViewState>({ x: 0, y: 0, scale: 1 });
   const [viewportSize, setViewportSize] = useState({ w: 0, h: 0 });
-  /** 任意拖拽（画布/卡片/走线）进行中：临时隐藏缩略图，避免盖住右下角 */
+  /** 平移进行中：临时隐藏缩略图，避免盖住右下角 */
   const [interacting, setInteracting] = useState(false);
-  /** 悬浮属性面板宽度：拖左缘调整，双击恢复默认，localStorage 记住 */
+  /** 属性面板宽度：拖左缘调整，双击恢复默认，localStorage 记住 */
   const [inspectorWidth, setInspectorWidth] = useState(() => {
     try {
       const raw = Number(localStorage.getItem('dbz-inspector-width'));
@@ -600,68 +532,74 @@ export default function ControlPanelCanvas({
       return INSPECTOR_DEFAULT_W;
     }
   });
+  /** 泳道列宽：四列各自可拖，localStorage 记住 */
+  const [columns, setColumns] = useState<number[]>(readLaneColumns);
   const fittedRef = useRef(false);
+
+  /** 泳道布局：位置完全由数据推导，节点增删后自动重排；列宽变了卡片宽度跟着变 */
+  const layout = useMemo(
+    () => buildSwimlaneLayout(nodes, edges, columns),
+    [nodes, edges, columns],
+  );
+  const positions = layout.positions;
+  const sizes = layout.sizes;
 
   const nodeMap = useMemo(() => new Map(nodes.map((node) => [node.key, node])), [nodes]);
 
-  /** 同一个上游节点引出的多条归属线在底部错开，避免叠在同一个点上 */
-  const edgeOffsets = useMemo(() => {
-    const groups = new Map<string, CanvasEdge[]>();
+  /** 连线几何：归属关系用三次贝塞尔横着连过去，父右缘中点 → 子左缘中点 */
+  const geometries = useMemo(() => {
+    const result: EdgeGeometry[] = [];
     for (const edge of edges) {
-      const list = groups.get(edge.from);
-      if (list) {
-        list.push(edge);
-      } else {
-        groups.set(edge.from, [edge]);
+      const from = nodeMap.get(edge.from);
+      const to = nodeMap.get(edge.to);
+      if (!from || !to) {
+        continue;
       }
-    }
-    const result = new Map<string, number>();
-    for (const list of groups.values()) {
-      list.forEach((edge, index) => {
-        result.set(edge.id, (index - (list.length - 1) / 2) * 26);
+      const fromPos = positions[from.key];
+      const toPos = positions[to.key];
+      const fromSize = sizes[from.key];
+      const toSize = sizes[to.key];
+      if (!fromPos || !toPos || !fromSize || !toSize) {
+        continue;
+      }
+      const start: Point = { x: fromPos.x + fromSize.w, y: fromPos.y + fromSize.h / 2 };
+      const end: Point = { x: toPos.x, y: toPos.y + toSize.h / 2 };
+      // 控制点按水平距离取一半，短连线也留一点弯，长连线中途不鼓包
+      const dx = Math.max(24, Math.abs(end.x - start.x) / 2);
+      result.push({
+        edge,
+        path: `M${start.x},${start.y} C${start.x + dx},${start.y} ${end.x - dx},${end.y} ${end.x},${end.y}`,
+        color: '#b7c2d1',
+        marker: 'dbz-arrow-edge',
       });
     }
     return result;
-  }, [edges]);
-
-  const geometries = useMemo(
-    () =>
-      edges
-        .map((edge) =>
-          geometryOf(
-            edge,
-            nodeMap,
-            positions,
-            edgeOffsets.get(edge.id) ?? 0,
-            edgeBends[edge.id],
-            edgeAnchors[edge.id],
-          ),
-        )
-        .filter((item): item is EdgeGeometry => Boolean(item)),
-    [edges, nodeMap, positions, edgeOffsets, edgeBends, edgeAnchors],
-  );
+  }, [edges, nodeMap, positions, sizes]);
 
   /** 搜索高亮：命中节点只高亮，不隐藏其它节点，整体拓扑始终保留 */
   const hitSet = useMemo(() => new Set(searchHits), [searchHits]);
 
-  /** 定位到当前命中：把节点中心移到视口中心，缩放保持用户当前值 */
+  /** 定位到当前命中：把节点中心移到可见区域中心（列头下方），缩放保持用户当前值 */
   useEffect(() => {
     if (!activeHitKey || !viewportSize.w || !viewportSize.h) {
       return;
     }
     const node = nodeMap.get(activeHitKey);
-    if (!node) {
+    const pos = positions[activeHitKey];
+    const size = sizes[activeHitKey];
+    if (!node || !pos || !size) {
       return;
     }
-    const pos = positions[activeHitKey] ?? defaultPosition(node.kind, 0);
-    const size = NODE_SIZE[node.kind];
     setView((previous) => ({
       ...previous,
       x: viewportSize.w / 2 - (pos.x + size.w / 2) * previous.scale,
-      y: viewportSize.h / 2 - (pos.y + size.h / 2) * previous.scale,
+      y:
+        LANE_HEADER_H +
+        (viewportSize.h - LANE_HEADER_H) / 2 -
+        (pos.y + size.h / 2) * previous.scale,
     }));
     // focusToken 让同一个命中在反复点「下一个」时也能重新居中
-  }, [activeHitKey, focusToken, nodeMap, positions, viewportSize]);
+  }, [activeHitKey, focusToken, nodeMap, positions, sizes, viewportSize]);
 
   /** 画布尺寸跟着容器变化，缩略图与适应画布要用 */
   useEffect(() => {
@@ -676,39 +614,32 @@ export default function ControlPanelCanvas({
     return () => observer.disconnect();
   }, []);
 
-  const fitView = useCallback(() => {
-    if (!nodes.length || !viewportSize.w || !viewportSize.h) {
-      return;
-    }
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    for (const node of nodes) {
-      const pos = positions[node.key] ?? defaultPosition(node.kind, 0);
-      const size = NODE_SIZE[node.kind];
-      minX = Math.min(minX, pos.x);
-      minY = Math.min(minY, pos.y);
-      maxX = Math.max(maxX, pos.x + size.w);
-      maxY = Math.max(maxY, pos.y + size.h);
-    }
-    const width = Math.max(1, maxX - minX);
-    const height = Math.max(1, maxY - minY);
-    // 整图可见时缩略图与图例会隐藏，这里按整个视口计算，不再为覆盖层预留空间
-    const pad = 16;
-    const availableWidth = Math.max(1, viewportSize.w - pad * 2);
-    const availableHeight = Math.max(1, viewportSize.h - pad * 2);
-    const scale = clamp(
-      Math.min(availableWidth / width, availableHeight / height),
-      MIN_SCALE,
-      1.1,
-    );
-    setView({
-      scale,
-      x: pad + (availableWidth - width * scale) / 2 - minX * scale,
-      y: pad + (availableHeight - height * scale) / 2 - minY * scale,
-    });
-  }, [nodes, positions, viewportSize]);
+  const fitView = useCallback(
+    (widthOverride?: number) => {
+      if (!nodes.length || !viewportSize.w || !viewportSize.h) {
+        return;
+      }
+    // 属性面板是画布右侧的一列，视口本身就少掉那块宽度，不再另留空间；
+    // 顶部让出固定列头，图从表头下面往下排（与 syn / uiam 一样贴顶，不垂直居中），
+    // 横向居中只是在窄图时让左右留白均匀
+      const pad = 16;
+      // 面板开合后视口宽度会先于 ResizeObserver 回调变化，这里允许直接传入新宽度
+      const width = widthOverride ?? viewportSize.w;
+      const availableWidth = Math.max(1, width - pad * 2);
+      const availableHeight = Math.max(1, viewportSize.h - LANE_HEADER_H - pad * 2);
+      const scale = clamp(
+        Math.min(availableWidth / layout.width, availableHeight / layout.height),
+        MIN_SCALE,
+        1.1,
+      );
+      setView({
+        scale,
+        x: pad + (availableWidth - layout.width * scale) / 2,
+        y: LANE_HEADER_H + pad,
+      });
+    },
+    [nodes.length, layout.width, layout.height, viewportSize],
+  );
 
   /** 第一次拿到节点时自动适应一次；之后由用户自己控制视口 */
   useEffect(() => {
@@ -717,6 +648,23 @@ export default function ControlPanelCanvas({
       fitView();
     }
   }, [fitView, nodes.length, viewportSize.w]);
+
+  /**
+   * 属性面板开合会改变视口宽度：立刻按新的容器宽度适应一次，
+   * 否则右侧两列会被新开的面板挤到看不见（画布不滚动，躲不出去）。
+   * 这里直接量 DOM，不等 ResizeObserver，避免它晚一步把用户刚点的缩放盖掉。
+   */
+  const inspectorOpenRef = useRef(inspectorOpen);
+  useEffect(() => {
+    if (inspectorOpenRef.current === inspectorOpen) {
+      return;
+    }
+    inspectorOpenRef.current = inspectorOpen;
+    const width = viewportRef.current?.clientWidth;
+    if (width) {
+      fitView(width);
+    }
+  }, [inspectorOpen, fitView]);
 
   /** 滚轮缩放：以指针为中心，缩放前后指针下的世界坐标不移动 */
   useEffect(() => {
@@ -754,10 +702,9 @@ export default function ControlPanelCanvas({
     if (
       target.closest('.dbz-graph-node') ||
       target.closest('.dbz-graph-edge-hit') ||
-      target.closest('.dbz-graph-bend-handle') ||
-      target.closest('.dbz-graph-anchor-handle') ||
-      target.closest('.dbz-graph-controls') ||
-      target.closest('.dbz-graph-minimap')
+      target.closest('.dbz-graph-dock') ||
+      target.closest('.dbz-graph-lane-grip') ||
+      target.closest('.dbz-graph-lane-add')
     ) {
       return;
     }
@@ -783,139 +730,6 @@ export default function ControlPanelCanvas({
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
       setInteracting(false);
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
-  };
-
-  /** 节点拖拽：pointerdown 记录起点，move 更新本地位置，up 落库 */
-  const handleNodePointerDown = (event: ReactPointerEvent<HTMLDivElement>, node: CanvasNode) => {
-    if (event.button !== 0) {
-      return;
-    }
-    if ((event.target as HTMLElement).closest('[data-no-drag]')) {
-      return;
-    }
-    event.stopPropagation();
-    onSelectNode(node.key);
-    const origin = positions[node.key] ?? defaultPosition(node.kind, 0);
-    const startClientX = event.clientX;
-    const startClientY = event.clientY;
-    const scale = view.scale;
-    let moved = false;
-
-    const move = (moveEvent: PointerEvent) => {
-      const dx = (moveEvent.clientX - startClientX) / scale;
-      const dy = (moveEvent.clientY - startClientY) / scale;
-      if (Math.abs(dx) > 2 || Math.abs(dy) > 2) {
-        if (!moved) {
-          setInteracting(true);
-        }
-        moved = true;
-      }
-      if (moved) {
-        onNodeMove(node.key, origin.x + dx, origin.y + dy, false);
-      }
-    };
-    const up = (upEvent: PointerEvent) => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      setInteracting(false);
-      if (moved) {
-        const dx = (upEvent.clientX - startClientX) / scale;
-        const dy = (upEvent.clientY - startClientY) / scale;
-        onNodeMove(node.key, origin.x + dx, origin.y + dy, true);
-      }
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
-  };
-
-  /**
-   * # 拖动连线折点
-   *
-   * 只改正交走线中间水平段的 Y：两端仍锚在卡片边上，上游端不可拖、下游端锁定，
-   * 连线本身也不提供删除。拖动过程只更新本地（`commit=false`），松手才落库。
-   */
-  const handleBendPointerDown = (
-    event: ReactPointerEvent<SVGElement>,
-    geometry: EdgeGeometry,
-  ) => {
-    if (event.button !== 0) {
-      return;
-    }
-    event.stopPropagation();
-    onSelectEdge(geometry.edge.id);
-    const startClientY = event.clientY;
-    const originY = geometry.midY;
-    const scale = view.scale;
-    let moved = false;
-
-    const move = (moveEvent: PointerEvent) => {
-      const nextY = originY + (moveEvent.clientY - startClientY) / scale;
-      if (Math.abs(moveEvent.clientY - startClientY) > 2) {
-        if (!moved) {
-          setInteracting(true);
-        }
-        moved = true;
-      }
-      onEdgeBend(geometry.edge.id, clamp(nextY, BEND_MIN_Y, BEND_MAX_Y), false);
-    };
-    const up = (upEvent: PointerEvent) => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      setInteracting(false);
-      if (moved) {
-        const nextY = originY + (upEvent.clientY - startClientY) / scale;
-        onEdgeBend(geometry.edge.id, clamp(nextY, BEND_MIN_Y, BEND_MAX_Y), true);
-      }
-    };
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
-  };
-
-  /**
-   * # 左右拖动连接点
-   *
-   * 只改连接点相对卡片中心的横向偏移，两端的纵向归属不变；拖动过程只更新本地
-   * （`commit=false`），松手才落库，刷新后仍按保存的偏移绘制。
-   */
-  const handleAnchorPointerDown = (
-    event: ReactPointerEvent<SVGElement>,
-    geometry: EdgeGeometry,
-    which: 'start' | 'end',
-  ) => {
-    if (event.button !== 0) {
-      return;
-    }
-    event.stopPropagation();
-    onSelectEdge(geometry.edge.id);
-    const baseX = which === 'start' ? geometry.startBaseX : geometry.endBaseX;
-    const currentX = which === 'start' ? geometry.start.x : geometry.end.x;
-    const range = which === 'start' ? geometry.startDx : geometry.endDx;
-    const originDx = currentX - baseX;
-    const startClientX = event.clientX;
-    const scale = view.scale;
-    let moved = false;
-
-    const nextDxOf = (clientX: number) =>
-      clamp(originDx + (clientX - startClientX) / scale, range.min, range.max);
-    const move = (moveEvent: PointerEvent) => {
-      if (Math.abs(moveEvent.clientX - startClientX) > 2) {
-        if (!moved) {
-          setInteracting(true);
-        }
-        moved = true;
-      }
-      onEdgeAnchor(geometry.edge.id, which, nextDxOf(moveEvent.clientX), false);
-    };
-    const up = (upEvent: PointerEvent) => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      setInteracting(false);
-      if (moved) {
-        onEdgeAnchor(geometry.edge.id, which, nextDxOf(upEvent.clientX), true);
-      }
     };
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
@@ -962,25 +776,108 @@ export default function ControlPanelCanvas({
     }
   };
 
-  /** 缩略图范围 */
-  const bounds = useMemo(() => {
-    if (!nodes.length) {
-      return { minX: 0, minY: 0, width: 1200, height: 700 };
+  /**
+   * # 拖动列头右缘调列宽
+   *
+   * 只改自己这一列，不动相邻列；拖动距离要除以画布缩放比，否则缩放后手感不对。
+   * 拖动期间锁住文字选择与光标，Esc 整份回退，松手才写 localStorage。
+   * 双击同一根拖手：该列回到默认宽度。
+   */
+  const startColumnDrag = (index: number) => (event: ReactPointerEvent<HTMLElement>) => {
+    if (event.button !== 0) {
+      return;
     }
-    let minX = Infinity;
-    let minY = Infinity;
-    let maxX = -Infinity;
-    let maxY = -Infinity;
-    for (const node of nodes) {
-      const pos = positions[node.key] ?? defaultPosition(node.kind, 0);
-      const size = NODE_SIZE[node.kind];
-      minX = Math.min(minX, pos.x);
-      minY = Math.min(minY, pos.y);
-      maxX = Math.max(maxX, pos.x + size.w);
-      maxY = Math.max(maxY, pos.y + size.h);
+    event.stopPropagation();
+    const startX = event.clientX;
+    const startWidth = columns[index];
+    const origin = columns.slice();
+    const nextWidthOf = (clientX: number) =>
+      clampLaneColumn(startWidth + (clientX - startX) / view.scale);
+
+    const apply = (width: number) => {
+      setColumns((previous) => {
+        const next = previous.slice();
+        next[index] = width;
+        return next;
+      });
+    };
+    const body = document.body;
+    const bodyCursor = body.style.cursor;
+    const bodySelect = body.style.userSelect;
+    body.style.cursor = 'col-resize';
+    body.style.userSelect = 'none';
+
+    let latest = startWidth;
+    const finish = () => {
+      window.removeEventListener('pointermove', move);
+      window.removeEventListener('pointerup', up);
+      window.removeEventListener('keydown', onKeyDown);
+      body.style.cursor = bodyCursor;
+      body.style.userSelect = bodySelect;
+    };
+    const move = (moveEvent: PointerEvent) => {
+      latest = nextWidthOf(moveEvent.clientX);
+      apply(latest);
+    };
+    const up = () => {
+      finish();
+      writeLaneColumns(
+        columns.map((width, columnIndex) => (columnIndex === index ? latest : width)),
+      );
+    };
+    const onKeyDown = (keyEvent: KeyboardEvent) => {
+      if (keyEvent.key !== 'Escape') {
+        return;
+      }
+      keyEvent.preventDefault();
+      finish();
+      setColumns(origin);
+    };
+    window.addEventListener('pointermove', move);
+    window.addEventListener('pointerup', up);
+    window.addEventListener('keydown', onKeyDown);
+  };
+
+  const resetColumnWidth = (index: number) => {
+    const next = columns.slice();
+    next[index] = DEFAULT_LANE_COLUMNS[index];
+    setColumns(next);
+    writeLaneColumns(next);
+  };
+
+  /** 百分比点击回到 100%，与参考实现的缩放控制一致 */
+  const resetZoom = () => {
+    setView((previous) => ({ ...previous, scale: 1 }));
+  };
+
+  /** 定位当前选中节点：缩放到可读比例后把节点居中 */
+  const focusSelectedNode = () => {
+    if (!selectedNodeKey) {
+      return;
     }
-    return { minX, minY, width: Math.max(1, maxX - minX), height: Math.max(1, maxY - minY) };
-  }, [nodes, positions]);
+    const pos = positions[selectedNodeKey];
+    const size = sizes[selectedNodeKey];
+    if (!pos || !size || !viewportSize.w || !viewportSize.h) {
+      return;
+    }
+    setView((previous) => {
+      const scale = clamp(previous.scale, 0.7, 1.2);
+      return {
+        scale,
+        x: viewportSize.w / 2 - (pos.x + size.w / 2) * scale,
+        y:
+          LANE_HEADER_H +
+          (viewportSize.h - LANE_HEADER_H) / 2 -
+          (pos.y + size.h / 2) * scale,
+      };
+    });
+  };
+
+  /** 缩略图范围：整张泳道图（含标题列与走线通道） */
+  const bounds = useMemo(
+    () => ({ minX: 0, minY: 0, width: layout.width, height: layout.height }),
+    [layout.width, layout.height],
+  );
 
   const minimapViewport = useMemo(() => {
     if (!viewportSize.w || !viewportSize.h) {
@@ -994,76 +891,16 @@ export default function ControlPanelCanvas({
     };
   }, [bounds, view, viewportSize]);
 
-  /** 整图都已可见时隐藏覆盖层，避免缩略图与图例盖住被适应放大的卡片 */
+  /** 整图都已可见时隐藏覆盖层，避免缩略图盖住被适应放大的卡片 */
   const overviewScale = Math.min(
     viewportSize.w / bounds.width,
     viewportSize.h / bounds.height,
   );
   const hideOverlays = !nodes.length || !viewportSize.w || view.scale <= overviewScale * 1.03;
 
-  /** 选中连线的手柄：单独画在节点之上，折点被拖进卡片范围后仍能再拖出来 */
-  const renderEdgeHandles = (geometry: EdgeGeometry) => (
-    <g key={geometry.edge.id}>
-      <g
-        className="dbz-graph-anchor-handle"
-        data-edge-anchor={`${geometry.edge.id}:start`}
-        transform={`translate(${geometry.start.x}, ${geometry.start.y + 18})`}
-        onPointerDown={(event) => handleAnchorPointerDown(event, geometry, 'start')}
-      >
-        <circle r={11} className="dbz-graph-anchor-hit" />
-        <rect
-          x={-12}
-          y={-6}
-          width={24}
-          height={12}
-          rx={6}
-          className="dbz-graph-anchor-shape"
-        />
-        <title>左右拖动，调整上游连接点位置</title>
-      </g>
-      <g
-        className="dbz-graph-anchor-handle"
-        data-edge-anchor={`${geometry.edge.id}:end`}
-        transform={`translate(${geometry.end.x}, ${geometry.end.y - 18})`}
-        onPointerDown={(event) => handleAnchorPointerDown(event, geometry, 'end')}
-      >
-        <circle r={11} className="dbz-graph-anchor-hit" />
-        <rect
-          x={-12}
-          y={-6}
-          width={24}
-          height={12}
-          rx={6}
-          className="dbz-graph-anchor-shape"
-        />
-        <title>左右拖动，调整下游连接点位置</title>
-      </g>
-      <g
-        className="dbz-graph-bend-handle"
-        data-edge-bend={geometry.edge.id}
-        transform={`translate(${geometry.handle.x}, ${geometry.handle.y})`}
-        onPointerDown={(event) => handleBendPointerDown(event, geometry)}
-      >
-        <circle r={10} className="dbz-graph-bend-hit" />
-        <rect
-          x={-14}
-          y={-4}
-          width={28}
-          height={8}
-          rx={4}
-          className="dbz-graph-bend-shape"
-        />
-        <title>上下拖动这个折点调整走线，避开卡片重叠</title>
-      </g>
-    </g>
-  );
-
   return (
     <div className="dbz-canvas-shell">
-      <div
-        className="dbz-canvas-main"
-        style={{ '--inspector-w': inspectorOpen ? `${inspectorWidth}px` : '0px' } as React.CSSProperties}
-      >
+      <div className="dbz-canvas-main">
         <div
           className="dbz-graph-viewport"
           ref={viewportRef}
@@ -1072,15 +909,31 @@ export default function ControlPanelCanvas({
           <div
             className="dbz-graph-world"
             style={{
-              width: WORLD_WIDTH,
-              height: WORLD_HEIGHT,
+              width: layout.width,
+              height: layout.height,
               transform: `translate(${view.x}px, ${view.y}px) scale(${view.scale})`,
             }}
           >
+            {/* 泳道列：纵向带，列头单独固定在视口顶部；空列保留可见带并给出提示 */}
+            {layout.lanes.map((lane) => (
+              <div
+                key={lane.kind}
+                className={`dbz-graph-lane dbz-graph-lane--${lane.kind}`}
+                data-lane={lane.kind}
+                style={{ left: lane.x, width: lane.w, top: 0, height: layout.height }}
+              >
+                {lane.count === 0 && (
+                  <div className="dbz-graph-lane-empty">
+                    暂无{NODE_KIND_LABEL[lane.kind]}，从上一级卡片的「+」新增
+                  </div>
+                )}
+              </div>
+            ))}
+
             <svg
               className="dbz-graph-edges"
-              width={WORLD_WIDTH}
-              height={WORLD_HEIGHT}
+              width={layout.width}
+              height={layout.height}
               aria-hidden
             >
               <defs>
@@ -1098,7 +951,7 @@ export default function ControlPanelCanvas({
                   />
                   {/* 流向动画：小圆点从上游流向下游；选中后加快。reduced-motion 下静止隐藏 */}
                   <path className="dbz-graph-edge-flow" d={geometry.path} stroke={geometry.color} />
-                  {/* 上下游归属固定；选中后连接点可左右拖、中间水平段可上下拖，连线不能删除 */}
+                  {/* 上下游归属固定，走线自动路由；点选只查看归属说明，不能删除 */}
                   <path
                     className="dbz-graph-edge-hit"
                     data-edge-id={geometry.edge.id}
@@ -1108,16 +961,18 @@ export default function ControlPanelCanvas({
                       onSelectEdge(geometry.edge.id);
                     }}
                   >
-                    <title>选中后可左右拖动两端的连接点、上下拖动中间折点；不能删除</title>
+                    <title>归属连线：上下游关系固定，走线自动路由，不能删除</title>
                   </path>
-                  {/* 连接点与折点手柄在节点之上单独渲染，见下方 .dbz-graph-handles */}
                 </g>
               ))}
             </svg>
 
             {nodes.map((node) => {
-              const pos = positions[node.key] ?? defaultPosition(node.kind, 0);
-              const size = NODE_SIZE[node.kind];
+              const pos = positions[node.key];
+              const size = sizes[node.key];
+              if (!pos || !size) {
+                return null;
+              }
               const selected = selectedNodeKey === node.key;
               const childKind = CHILD_KIND[node.kind];
               return (
@@ -1130,7 +985,7 @@ export default function ControlPanelCanvas({
                   }${activeHitKey === node.key ? ' is-active-hit' : ''}`}
                   data-node-key={node.key}
                   data-node-type={node.kind}
-                  // 卡片是画布上唯一的可选单元：键盘也要能停上去选中，不能只有鼠标
+                  // 卡片是图上唯一的可选单元：键盘也要能停上去选中，不能只有鼠标
                   tabIndex={0}
                   role="group"
                   aria-label={`${NODE_KIND_LABEL[node.kind]} ${node.name}`}
@@ -1141,7 +996,16 @@ export default function ControlPanelCanvas({
                     }
                   }}
                   style={{ left: pos.x, top: pos.y, width: size.w, height: size.h }}
-                  onPointerDown={(event) => handleNodePointerDown(event, node)}
+                  onPointerDown={(event) => {
+                    if (event.button !== 0) {
+                      return;
+                    }
+                    if ((event.target as HTMLElement).closest('[data-no-drag]')) {
+                      return;
+                    }
+                    event.stopPropagation();
+                    onSelectNode(node.key);
+                  }}
                   // 双击卡片 = 选中并展开属性面板（单击只选中，不自动弹面板）
                   onDoubleClick={(event) => {
                     event.stopPropagation();
@@ -1241,96 +1105,210 @@ export default function ControlPanelCanvas({
                 </div>
               );
             })}
-
-            <svg
-              className="dbz-graph-handles"
-              width={WORLD_WIDTH}
-              height={WORLD_HEIGHT}
-              aria-hidden
-            >
-              {geometries.map((geometry) =>
-                selectedEdgeId === geometry.edge.id ? renderEdgeHandles(geometry) : null,
-              )}
-            </svg>
           </div>
 
-          <div className="dbz-graph-controls">
-            <button type="button" onClick={() => setView((prev) => ({ ...prev, scale: clamp(prev.scale * 1.2, MIN_SCALE, MAX_SCALE) }))} title="放大">
-              <PlusOutlined />
-            </button>
-            <button type="button" onClick={() => setView((prev) => ({ ...prev, scale: clamp(prev.scale / 1.2, MIN_SCALE, MAX_SCALE) }))} title="缩小">
-              <MinusOutlined />
-            </button>
-            <button type="button" className="dbz-graph-fit" onClick={fitView} title="适应画布">
-              适应
-            </button>
-            <span className="dbz-graph-scale">{Math.round(view.scale * 100)}%</span>
+          {/* 列头：像表头一样固定在视口顶部，横向跟随泳道列平移缩放，纵向不动 */}
+          <div className="dbz-graph-lane-headers">
+            {layout.lanes.map((lane, index) => {
+              const parentKind = PARENT_KIND[lane.kind];
+              const parents = parentKind
+                ? nodes.filter((node) => node.kind === parentKind)
+                : [];
+              return (
+                <div
+                  key={lane.kind}
+                  className={`dbz-graph-lane-header dbz-graph-lane-header--${lane.kind}`}
+                  data-lane-header={lane.kind}
+                  style={{
+                    left: view.x + lane.x * view.scale,
+                    width: lane.w * view.scale,
+                  }}
+                >
+                  <span className="dbz-graph-lane-name">{NODE_KIND_LABEL[lane.kind]}</span>
+                  <span className="dbz-graph-lane-count">{lane.count}</span>
+                  {/* 列头「＋」：新建本列节点；子列先选出上一级，父级仍由用户挑 */}
+                  {lane.kind === 'broker' ? (
+                    <button
+                      type="button"
+                      className="dbz-graph-lane-add"
+                      data-lane-add="broker"
+                      title="新增 Kafka 集群"
+                      aria-label="新增 Kafka 集群"
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={() => onAddRoot()}
+                    >
+                      <PlusOutlined />
+                    </button>
+                  ) : parents.length ? (
+                    <Dropdown
+                      trigger={['click']}
+                      menu={{
+                        items: parents.map((node) => ({
+                          key: node.key,
+                          label: node.name,
+                          onClick: () => onAddChild(node),
+                        })),
+                      }}
+                    >
+                      <button
+                        type="button"
+                        className="dbz-graph-lane-add"
+                        data-lane-add={lane.kind}
+                        title={`新增${NODE_KIND_LABEL[lane.kind]}：先选所属${NODE_KIND_LABEL[parentKind!]}`}
+                        aria-label={`新增${NODE_KIND_LABEL[lane.kind]}`}
+                        onPointerDown={(event) => event.stopPropagation()}
+                      >
+                        <PlusOutlined />
+                      </button>
+                    </Dropdown>
+                  ) : (
+                    <button
+                      type="button"
+                      className="dbz-graph-lane-add"
+                      data-lane-add={lane.kind}
+                      disabled
+                      title={`先新增${NODE_KIND_LABEL[parentKind!]}，再从这里新增`}
+                      aria-label={`新增${NODE_KIND_LABEL[lane.kind]}`}
+                    >
+                      <PlusOutlined />
+                    </button>
+                  )}
+                  {/* 列宽拖手：落在两列之间的缝里，只改自己这一列；双击复位 */}
+                  <button
+                    type="button"
+                    className="dbz-graph-lane-grip"
+                    aria-label={`调整${NODE_KIND_LABEL[lane.kind]}列宽`}
+                    title="拖动调整列宽，双击恢复默认"
+                    onPointerDown={startColumnDrag(index)}
+                    onDoubleClick={(event) => {
+                      event.stopPropagation();
+                      resetColumnWidth(index);
+                    }}
+                  />
+                </div>
+              );
+            })}
           </div>
 
-          {!hideOverlays && !interacting && (
-            <div
-              className="dbz-graph-minimap"
-              title="缩略图：点击可移动视口"
-              style={inspectorOpen ? { right: inspectorWidth + 24 } : undefined}
-            >
-              <svg
-                viewBox={`${bounds.minX - 20} ${bounds.minY - 20} ${bounds.width + 40} ${bounds.height + 40}`}
-                preserveAspectRatio="xMidYMid meet"
-                onClick={(event) => {
-                  const rect = event.currentTarget.getBoundingClientRect();
-                  const worldX =
-                    bounds.minX + ((event.clientX - rect.left) / rect.width) * bounds.width;
-                  const worldY =
-                    bounds.minY + ((event.clientY - rect.top) / rect.height) * bounds.height;
+          {/* 右下角缩放坞：− / 百分比（点击回 100%）/ ＋ / 适应 / 定位选中；缩略图叠在它上面 */}
+          <div className="dbz-graph-dock">
+            {!hideOverlays && !interacting && (
+              <div className="dbz-graph-minimap" title="缩略图：点击可移动视口">
+                <svg
+                  viewBox={`${bounds.minX - 20} ${bounds.minY - 20} ${bounds.width + 40} ${bounds.height + 40}`}
+                  preserveAspectRatio="xMidYMid meet"
+                  onClick={(event) => {
+                    const rect = event.currentTarget.getBoundingClientRect();
+                    const worldX =
+                      bounds.minX + ((event.clientX - rect.left) / rect.width) * bounds.width;
+                    const worldY =
+                      bounds.minY + ((event.clientY - rect.top) / rect.height) * bounds.height;
+                    setView((prev) => ({
+                      ...prev,
+                      x: viewportSize.w / 2 - worldX * prev.scale,
+                      y: viewportSize.h / 2 - worldY * prev.scale,
+                    }));
+                  }}
+                >
+                  {layout.lanes.map((lane) => (
+                    <rect
+                      key={lane.kind}
+                      x={lane.x}
+                      y={bounds.minY}
+                      width={lane.w}
+                      height={bounds.height}
+                      rx={6}
+                      fill="rgba(22,119,255,0.05)"
+                    />
+                  ))}
+                  {nodes.map((node) => {
+                    const pos = positions[node.key];
+                    const size = sizes[node.key];
+                    if (!pos || !size) {
+                      return null;
+                    }
+                    return (
+                      <rect
+                        key={node.key}
+                        x={pos.x}
+                        y={pos.y}
+                        width={size.w}
+                        height={size.h}
+                        rx={8}
+                        fill={
+                          nodeTone(node) === 'success'
+                            ? '#b7eb8f'
+                            : nodeTone(node) === 'error'
+                              ? '#ffa39e'
+                              : nodeTone(node) === 'warning'
+                                ? '#ffe58f'
+                                : '#d9d9d9'
+                        }
+                      />
+                    );
+                  })}
+                  {minimapViewport && (
+                    <rect
+                      x={bounds.minX + minimapViewport.x * bounds.width}
+                      y={bounds.minY + minimapViewport.y * bounds.height}
+                      width={minimapViewport.w * bounds.width}
+                      height={minimapViewport.h * bounds.height}
+                      fill="rgba(22,119,255,0.12)"
+                      stroke="#1677ff"
+                      strokeWidth={2}
+                    />
+                  )}
+                </svg>
+              </div>
+            )}
+
+            <div className="dbz-graph-controls">
+              <button
+                type="button"
+                onClick={() =>
                   setView((prev) => ({
                     ...prev,
-                    x: viewportSize.w / 2 - worldX * prev.scale,
-                    y: viewportSize.h / 2 - worldY * prev.scale,
-                  }));
-                }}
+                    scale: clamp(prev.scale / 1.2, MIN_SCALE, MAX_SCALE),
+                  }))
+                }
+                title="缩小"
               >
-                {nodes.map((node) => {
-                  const pos = positions[node.key] ?? defaultPosition(node.kind, 0);
-                  const size = NODE_SIZE[node.kind];
-                  return (
-                    <rect
-                      key={node.key}
-                      x={pos.x}
-                      y={pos.y}
-                      width={size.w}
-                      height={size.h}
-                      rx={8}
-                      fill={
-                        nodeTone(node) === 'success'
-                          ? '#b7eb8f'
-                          : nodeTone(node) === 'error'
-                            ? '#ffa39e'
-                            : nodeTone(node) === 'warning'
-                              ? '#ffe58f'
-                              : '#d9d9d9'
-                      }
-                    />
-                  );
-                })}
-                {minimapViewport && (
-                  <rect
-                    x={bounds.minX + minimapViewport.x * bounds.width}
-                    y={bounds.minY + minimapViewport.y * bounds.height}
-                    width={minimapViewport.w * bounds.width}
-                    height={minimapViewport.h * bounds.height}
-                    fill="rgba(22,119,255,0.12)"
-                    stroke="#1677ff"
-                    strokeWidth={2}
-                  />
-                )}
-              </svg>
+                <MinusOutlined />
+              </button>
+              <button
+                type="button"
+                className="dbz-graph-scale"
+                title="回到 100%"
+                onClick={resetZoom}
+              >
+                {Math.round(view.scale * 100)}%
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setView((prev) => ({
+                    ...prev,
+                    scale: clamp(prev.scale * 1.2, MIN_SCALE, MAX_SCALE),
+                  }))
+                }
+                title="放大"
+              >
+                <PlusOutlined />
+              </button>
+              <span className="dbz-graph-sep" aria-hidden />
+              <button type="button" onClick={() => fitView()} title="适应画布">
+                <ExpandOutlined />
+              </button>
+              {selectedNodeKey && (
+                <button type="button" onClick={focusSelectedNode} title="定位选中">
+                  <AimOutlined />
+                </button>
+              )}
             </div>
-          )}
-
-          {/* 图例只有「归属线」一条，不如把这句话留在属性检查器的空态里，省一块盖住卡片的浮层 */}
+          </div>
         </div>
 
-        {/* 属性面板：悬浮在画布右上方，可调宽；点卡片不自动打开，由顶栏按钮/把手控制 */}
+        {/* 属性面板：画布右侧独立一列（不是悬浮层），不遮卡片；可拖左缘调宽 */}
         {inspectorOpen ? (
           <div className="dbz-graph-inspector" style={{ width: inspectorWidth }}>
             <div

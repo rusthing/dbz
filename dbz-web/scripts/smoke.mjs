@@ -543,7 +543,7 @@ async function selectNode(key) {
 }
 
 /**
- * # 打开悬浮属性面板
+ * # 打开右侧属性面板
  *
  * 面板不再随卡片选中自动弹开；没开就走顶栏「属性」开关。
  */
@@ -682,7 +682,7 @@ const posted = [];
 const connectorDetectResults = [];
 /** 只读接口单独记录：`posted` 只装写请求，GET 断言不能从它里翻 */
 const getRequests = [];
-/** 控制面板画布布局：PUT 落库、GET 读取，用来验证「刷新后位置保持」 */
+/** 控制面板布局接口 mock：泳道图不再读写布局，保留路由只为兼容旧请求不报 404 */
 const layoutStore = [];
 let nextBrokerId = 499;
 /** 导入会真的新增连接器：返回带 id 的记录，让下游按上游 id 重挂 */
@@ -1515,14 +1515,21 @@ try {
       (await page.locator('[data-edge-id^="flow:"]').count()) === 0,
   );
   check(
-    '归属线是浅色实线并带箭头',
+    '归属线是浅色实线、带箭头，走线是三次贝塞尔',
     await page
       .locator('.dbz-graph-edge-line')
       .first()
       .evaluate((element) => {
         const stroke = element.getAttribute('stroke');
         const marker = element.getAttribute('marker-end');
-        return stroke === '#b7c2d1' && !element.getAttribute('stroke-dasharray') && marker === 'url(#dbz-arrow-edge)';
+        const d = element.getAttribute('d') ?? '';
+        return (
+          stroke === '#b7c2d1' &&
+          !element.getAttribute('stroke-dasharray') &&
+          marker === 'url(#dbz-arrow-edge)' &&
+          d.startsWith('M') &&
+          d.includes(' C')
+        );
       }),
   );
   check(
@@ -1536,12 +1543,12 @@ try {
     await page.locator('.dbz-graph-controls').isVisible(),
   );
   // 整图已完全可见时隐藏缩略图（覆盖层会盖住被适应放大的卡片），放大后才出现；
-  // 拖拽进行中也临时隐藏。图例已下线，走线说明放在检查器（选中连线时展示）
+  // 平移进行中也临时隐藏。图例已下线，走线说明放在检查器（选中连线时展示）
   check(
     '整图可见时隐藏缩略图覆盖层',
     (await page.locator('.dbz-graph-minimap').count()) === 0,
   );
-  // 属性面板是悬浮层：默认收起，点卡片只选中不弹面板；顶栏开关/右缘把手控制开合
+  // 属性面板是画布右侧独立一列：默认收起，点卡片只选中不弹面板；顶栏开关/右缘把手控制开合
   await selectNode('1:401');
   check(
     '点卡片不再自动打开属性面板',
@@ -1549,10 +1556,22 @@ try {
       (await page.locator('.dbz-graph-inspector-rail').isVisible()),
   );
   await page.locator('[data-inspector-toggle]').click();
+  await page.waitForTimeout(400);
   check(
-    '顶栏「属性」按钮打开悬浮面板，归属线带流向动画',
+    '顶栏「属性」按钮打开右侧面板，归属线带流向动画',
     (await page.locator('.dbz-graph-inspector').isVisible()) &&
       (await page.locator('.dbz-graph-edge-flow').count()) >= 6,
+  );
+  // 面板是画布右侧独立一列：面板左缘不得压到画布视口里（卡片不能被盖住）
+  const inspectorColumn = await page.evaluate(() => {
+    const viewport = document.querySelector('.dbz-graph-viewport').getBoundingClientRect();
+    const inspector = document.querySelector('.dbz-graph-inspector').getBoundingClientRect();
+    return { viewportRight: viewport.right, inspectorLeft: inspector.left };
+  });
+  check(
+    '属性面板占画布右侧一列，不覆盖卡片',
+    inspectorColumn.inspectorLeft >= inspectorColumn.viewportRight - 3,
+    JSON.stringify(inspectorColumn),
   );
   await page.locator('.dbz-graph-inspector-collapse').click();
   check(
@@ -1594,6 +1613,15 @@ try {
     (await page.locator('.dbz-graph-minimap').isVisible()) &&
       (await page.locator('.dbz-graph-legend').count()) === 0,
   );
+  // 点百分比回到 100%：参考实现的缩放坞把百分比当「复位到 1:1」用
+  await page.locator('.dbz-graph-scale').click();
+  await page.waitForTimeout(300);
+  check(
+    '点缩放百分比回到 100%',
+    (await page.locator('.dbz-graph-scale').innerText()) === '100%',
+    await page.locator('.dbz-graph-scale').innerText(),
+  );
+  await page.screenshot({ path: `${SHOTS}/01a-control-panel-zoom100.png`, fullPage: false });
   await page.locator('.dbz-graph-controls button[title="适应画布"]').click();
   await page
     .waitForFunction(
@@ -1724,7 +1752,8 @@ try {
   const deleteBox = await sinkCard.locator('[data-node-action="delete"]').boundingBox();
   const dividerBox = await sinkCard.locator('.dbz-graph-actions-divider').boundingBox();
   // 画布整体缩放后屏幕坐标会等比缩小，间距断言要换算回设计值
-  const canvasScale = sinkCardBox.width / 360;
+  // 卡片宽度跟列宽走（默认 368），高度按类型固定，用高度反推缩放比更稳
+  const canvasScale = sinkCardBox.height / 176;
   check(
     '启用开关在卡片头部右侧',
     Boolean(switchBox && headBox) &&
@@ -1796,6 +1825,9 @@ try {
     (await page.locator('.dbz-graph-node.is-hit').count()) === 0 &&
       (await page.locator('.dbz-graph-node').count()) === nodeCountBeforeSearch,
   );
+  // 搜索定位会平移视口；清空后先「适应画布」复位，避免后续悬停的节点落在视口外
+  await page.locator('.dbz-graph-controls button[title="适应画布"]').click();
+  await page.waitForTimeout(300);
 
   // 只有 broker / connect / source 有「+」，sink 没有下级
   const addCounts = await page
@@ -2080,8 +2112,14 @@ try {
       (await diffModal.locator('.dbz-diff-row-changed').count()) >= 1,
     diffHead,
   );
-  // 用关闭按钮（force 绕过卡片上残留的工具提示浮层）；关完确认没有残留弹窗
-  await diffModal.locator('.ant-modal-close').click({ force: true });
+  // 等弹窗动画结束再关（force 绕过卡片上残留的工具提示浮层），关不掉就 Esc 兜底；
+  // 关完确认没有残留弹窗
+  await page.waitForTimeout(300);
+  await diffModal.locator('.ant-modal-close').click({ force: true }).catch(() => {});
+  await page.waitForTimeout(300);
+  if (await diffModal.isVisible().catch(() => false)) {
+    await page.keyboard.press('Escape');
+  }
   await diffModal.waitFor({ state: 'hidden' }).catch(() => {});
   await page
     .waitForFunction(
@@ -2470,25 +2508,27 @@ try {
   await page.waitForTimeout(500);
   // 用 pointerdown 选中连线：和真实点击走同一个 handler，且不受浮层遮挡影响
   await ownershipHit.dispatchEvent('pointerdown', { button: 0, bubbles: true });
-  await page.waitForSelector('.dbz-graph-edge-line.is-selected', { timeout: 5000 });
+  // 泳道里父子上下对齐时连线是纯竖线，SVG path 包围盒宽度为 0 会被判 hidden，
+  // 这里只验证选中态（class），不要求像素可见
+  await page.waitForSelector('.dbz-graph-edge-line.is-selected', {
+    state: 'attached',
+    timeout: 5000,
+  });
   await openInspector();
   const edgeInspectorText = await page.locator('.dbz-graph-inspector').innerText();
   check(
-    '选中归属连线后属性框说明连接点与折点可拖、连线不可删',
+    '选中归属连线后属性框说明走线自动路由、连线不可删',
     edgeInspectorText.includes('归属连线') &&
-      edgeInspectorText.includes('连接点可左右拖动') &&
-      edgeInspectorText.includes('折点可上下拖动') &&
+      edgeInspectorText.includes('走线自动路由') &&
       edgeInspectorText.includes('不能删除'),
     edgeInspectorText.slice(0, 160),
   );
   check(
-    '连线没有端点拖拽手柄或锁标',
+    '连线没有任何拖拽手柄或锁标',
     (await page.locator('.dbz-graph-edge-handle').count()) === 0 &&
-      (await page.locator('.dbz-graph-edge-lock').count()) === 0,
-  );
-  check(
-    '选中连线后才出现一个折点手柄',
-    (await page.locator('.dbz-graph-bend-handle').count()) === 1,
+      (await page.locator('.dbz-graph-edge-lock').count()) === 0 &&
+      (await page.locator('.dbz-graph-bend-handle').count()) === 0 &&
+      (await page.locator('.dbz-graph-anchor-handle').count()) === 0,
   );
   await page.keyboard.press('Delete');
   await page.waitForTimeout(300);
@@ -2498,64 +2538,189 @@ try {
       !posted.some((item) => item.method === 'DELETE'),
   );
 
-  // D. 拖动折点：改走线并落库；端点仍不可拖
-  const postedBeforeBend = posted.length;
-  await page.evaluate(() => {
-    document.activeElement?.blur?.();
-    document.querySelectorAll('.dbz-graph-node').forEach((node) => {
-      node.dispatchEvent(new MouseEvent('mouseout', { bubbles: true, relatedTarget: document.body }));
-    });
+  // D. 泳道布局：四列泳道从左到右，节点都落在所属泳道列内，列头固定顶部
+  const laneInfo = await page.evaluate(() => {
+    const lanes = [...document.querySelectorAll('.dbz-graph-lane')].map((element) => ({
+      kind: element.getAttribute('data-lane'),
+      left: parseFloat(element.style.left),
+      width: parseFloat(element.style.width),
+    }));
+    const nodes = [...document.querySelectorAll('.dbz-graph-node')].map((element) => ({
+      kind: element.getAttribute('data-node-type'),
+      left: parseFloat(element.style.left),
+      width: parseFloat(element.style.width),
+    }));
+    return { lanes, nodes };
   });
-  await page.mouse.move(24, 24);
-  await page.waitForTimeout(400);
-  const bendBox = await page.locator('.dbz-graph-bend-handle').boundingBox();
-  const bendCenter = {
-    x: bendBox.x + bendBox.width / 2,
-    y: bendBox.y + bendBox.height / 2,
-  };
-  const bendHitIsHandle = await page.evaluate((point) => {
-    const hit = document.elementFromPoint(point.x, point.y);
-    return Boolean(hit?.closest?.('.dbz-graph-bend-handle'));
-  }, bendCenter);
-  if (bendHitIsHandle) {
-    await page.mouse.move(bendCenter.x, bendCenter.y);
-    await page.mouse.down();
-    await page.mouse.move(bendCenter.x, bendCenter.y + 44, { steps: 10 });
-    await page.mouse.up();
-  } else {
-    // 浮层还挂着时退回合成 pointer 事件，走的是同一个拖折点 handler
-    await page
-      .locator('.dbz-graph-bend-handle')
-      .dispatchEvent('pointerdown', { button: 0, clientY: bendCenter.y, bubbles: true });
-    await page.evaluate((point) => {
-      window.dispatchEvent(
-        new PointerEvent('pointermove', { clientX: point.x, clientY: point.y + 44, bubbles: true }),
-      );
-      window.dispatchEvent(
-        new PointerEvent('pointerup', { clientX: point.x, clientY: point.y + 44, bubbles: true }),
-      );
-    }, bendCenter);
-  }
-  await page.waitForTimeout(400);
-  const bendPut = posted.findLast(
-    (item) => item.method === 'PUT' && item.path === '/dbz/control-plane/edges',
+  const laneOrder = ['broker', 'connect', 'source', 'sink'];
+  check(
+    '四列泳道按 集群→Connect→上游→下游 从左到右排列',
+    laneInfo.lanes.length === 4 &&
+      laneInfo.lanes.every((lane, index) => lane.kind === laneOrder[index]) &&
+      laneInfo.lanes.every(
+        (lane, index) => index === 0 || lane.left > laneInfo.lanes[index - 1].left,
+      ),
+    JSON.stringify(laneInfo.lanes),
   );
   check(
-    '拖动折点保存走线',
-    bendPut?.body?.edgeId === 'own:connect:101:source:201' &&
-      typeof bendPut?.body?.midY === 'number',
-    JSON.stringify(bendPut?.body),
+    '每个节点都落在所属泳道列内',
+    laneInfo.nodes.length > 0 &&
+      laneInfo.nodes.every((node) => {
+        const lane = laneInfo.lanes.find((item) => item.kind === node.kind);
+        return (
+          lane && node.left >= lane.left && node.left + node.width <= lane.left + lane.width
+        );
+      }),
+    JSON.stringify(laneInfo.nodes),
   );
-  check('拖动折点只产生折点写请求', posted.length - postedBeforeBend === 1, `${postedBeforeBend} -> ${posted.length}`);
 
+  // 列宽可拖（参考 syn-web 的列宽拖手）：只改本列、卡片撑满列宽、松手写本地记忆
+  const laneWidthOf = (kind) =>
+    page
+      .locator(`.dbz-graph-lane[data-lane="${kind}"]`)
+      .evaluate((element) => parseFloat(element.style.width));
+  const laneWidthBefore = await laneWidthOf('broker');
+  const neighborWidthBefore = await laneWidthOf('connect');
+  const gripBox = await page.locator('.dbz-graph-lane-grip').first().boundingBox();
+  await page.mouse.move(gripBox.x + gripBox.width / 2, gripBox.y + gripBox.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(gripBox.x + gripBox.width / 2 + 60, gripBox.y + gripBox.height / 2, {
+    steps: 10,
+  });
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+  const laneWidthAfter = await laneWidthOf('broker');
+  const neighborWidthAfter = await laneWidthOf('connect');
+  const brokerCardWidth = await page
+    .locator('.dbz-graph-node[data-node-type="broker"]')
+    .first()
+    .evaluate((element) => parseFloat(element.style.width));
+  check(
+    '拖列头右缘只改本列宽度，卡片跟着撑满列宽',
+    laneWidthAfter > laneWidthBefore + 20 &&
+      neighborWidthAfter === neighborWidthBefore &&
+      Math.abs(brokerCardWidth - (laneWidthAfter - 32)) < 1,
+    `列宽 ${laneWidthBefore}->${laneWidthAfter}，邻列 ${neighborWidthBefore}->${neighborWidthAfter}，卡宽 ${brokerCardWidth}`,
+  );
+  const storedColumns = await page.evaluate(() => localStorage.getItem('dbz-lane-columns'));
+  check(
+    '列宽松手后写入本地记忆',
+    Array.isArray(JSON.parse(storedColumns ?? 'null')) &&
+      JSON.parse(storedColumns)[0] === laneWidthAfter,
+    String(storedColumns),
+  );
+  await page.locator('.dbz-graph-lane-grip').first().dblclick();
+  await page.waitForTimeout(300);
+  check(
+    '双击列宽拖手恢复默认列宽',
+    Math.abs((await laneWidthOf('broker')) - 400) < 1,
+    `列宽 ${await laneWidthOf('broker')}`,
+  );
+  // 列宽改动过，先适应一次，后续用例按默认四列的坐标断言
+  await page.locator('.dbz-graph-controls button[title="适应画布"]').click();
+  await page.waitForTimeout(300);
+
+  // 列头像表头一样固定视口顶部：纵向平移画布，列头不动、泳道列跟着动
+  const headersBefore = await page.evaluate(() => {
+    const viewport = document.querySelector('.dbz-graph-viewport').getBoundingClientRect();
+    return [...document.querySelectorAll('.dbz-graph-lane-header')].map((element) => {
+      const rect = element.getBoundingClientRect();
+      return {
+        kind: element.getAttribute('data-lane-header'),
+        top: rect.top - viewport.top,
+        text: element.textContent,
+      };
+    });
+  });
+  check(
+    '四个列头固定在视口顶部且带类型名与计数',
+    headersBefore.length === 4 &&
+      headersBefore.every((header, index) => header.kind === laneOrder[index]) &&
+      headersBefore.every((header) => Math.abs(header.top) < 2) &&
+      headersBefore.every((header) => header.text.length > 0),
+    JSON.stringify(headersBefore),
+  );
+
+  // 列头是横贯视口的一条表头（不是每列一个卡片头），每列带「＋」新建入口
+  const headStyle = await page.evaluate(() => {
+    const strip = document.querySelector('.dbz-graph-lane-headers');
+    const lane = document.querySelector('.dbz-graph-lane');
+    const stripStyle = window.getComputedStyle(strip);
+    const laneStyle = window.getComputedStyle(lane);
+    return {
+      stripBg: stripStyle.backgroundColor,
+      stripBorder: stripStyle.borderBottomWidth,
+      laneBorder: laneStyle.borderTopWidth,
+      laneBg: laneStyle.backgroundColor,
+    };
+  });
+  check(
+    '列头是一条整表头，泳道不画卡片式边框',
+    headStyle.stripBg !== 'rgba(0, 0, 0, 0)' &&
+      headStyle.stripBorder === '1px' &&
+      headStyle.laneBorder === '0px' &&
+      headStyle.laneBg === 'rgba(0, 0, 0, 0)',
+    JSON.stringify(headStyle),
+  );
+  check(
+    '每个列头都有「＋」新增入口',
+    (await page.locator('.dbz-graph-lane-add').count()) === 4 &&
+      (await page.locator('.dbz-graph-lane-add:not(:disabled)').count()) === 4,
+  );
+  // 子列「＋」先列父级：点上游列头，下拉里应出现当前 Kafka Connect
+  await page.locator('.dbz-graph-lane-add[data-lane-add="source"]').click();
+  await page.waitForSelector('.ant-dropdown-menu', { timeout: 5000 });
+  await page.screenshot({ path: `${SHOTS}/01a-lane-add-menu.png`, fullPage: false });
+  check(
+    '子列「＋」下拉列出可选父级',
+    (await page.locator('.ant-dropdown-menu').innerText()).includes('生产集群-华东'),
+    await page.locator('.ant-dropdown-menu').innerText(),
+  );
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  const laneTopBefore = await page
+    .locator('.dbz-graph-lane[data-lane="broker"]')
+    .evaluate((element) => element.getBoundingClientRect().top);
+  const viewportBox = await page.locator('.dbz-graph-viewport').boundingBox();
+  const gapX = await page.evaluate(() => {
+    const lanes = [...document.querySelectorAll('.dbz-graph-lane')];
+    const first = lanes[0].getBoundingClientRect();
+    const second = lanes[1].getBoundingClientRect();
+    return (first.right + second.left) / 2;
+  });
+  await page.mouse.move(gapX, viewportBox.y + 320);
+  await page.mouse.down();
+  await page.mouse.move(gapX, viewportBox.y + 440, { steps: 10 });
+  await page.mouse.up();
+  await page.waitForTimeout(300);
+  const headersAfter = await page.evaluate(() => {
+    const viewport = document.querySelector('.dbz-graph-viewport').getBoundingClientRect();
+    return [...document.querySelectorAll('.dbz-graph-lane-header')].map(
+      (element) => element.getBoundingClientRect().top - viewport.top,
+    );
+  });
+  const laneTopAfter = await page
+    .locator('.dbz-graph-lane[data-lane="broker"]')
+    .evaluate((element) => element.getBoundingClientRect().top);
+  check(
+    '纵向平移时列头固定不动、泳道列跟随移动',
+    headersAfter.every((top, index) => Math.abs(top - headersBefore[index].top) < 2) &&
+      laneTopAfter - laneTopBefore > 60,
+    `列头 ${JSON.stringify(headersAfter)}，泳道 top ${laneTopBefore} -> ${laneTopAfter}`,
+  );
+  // 复位视口，后续用例按适应后的坐标断言
+  await page.locator('.dbz-graph-controls button[title="适应画布"]').click();
+  await page.waitForTimeout(300);
+
+  // 拖动连线端点不产生写请求，也不改上下游
   const postedBeforeEndpointDrag = posted.length;
   const ownershipStart = await ownershipHit.evaluate((element) => {
-    const bbox = element.getBBox();
-    const rect = element.getBoundingClientRect();
+    // 纯竖线的包围盒宽度为 0，不能按 bbox 比例换算；用屏幕 CTM 直接变换端点
     const point = element.getPointAtLength(0);
+    const ctm = element.getScreenCTM();
     return {
-      x: rect.left + (point.x - bbox.x) * (rect.width / bbox.width),
-      y: rect.top + (point.y - bbox.y) * (rect.height / bbox.height),
+      x: ctm.a * point.x + ctm.c * point.y + ctm.e,
+      y: ctm.b * point.x + ctm.d * point.y + ctm.f,
     };
   });
   await page.mouse.move(ownershipStart.x, ownershipStart.y + 2);
@@ -2571,12 +2736,13 @@ try {
     `${postedBeforeEndpointDrag} -> ${posted.length}`,
   );
 
-  // 拖动节点后自动保存布局；刷新后位置保持
+  // 拖动节点不改变泳道落位，也不写布局
   const brokerNode = page.locator('.dbz-graph-node[data-node-key="1:401"]');
+  const brokerLeftBefore = await brokerNode.evaluate((element) => element.style.left);
+  const postedBeforeNodeDrag = posted.length;
   const brokerBox = await brokerNode.boundingBox();
   await page.mouse.move(brokerBox.x + brokerBox.width / 2, brokerBox.y + brokerBox.height / 2);
   await page.mouse.down();
-  // 向左拖动：向右下拖动会与下方 Connect 卡片重叠，后续点击编辑按钮会被上层卡片拦截
   await page.mouse.move(
     brokerBox.x + brokerBox.width / 2 - 120,
     brokerBox.y + brokerBox.height / 2,
@@ -2584,42 +2750,37 @@ try {
   );
   await page.mouse.up();
   await page.waitForTimeout(400);
-  const layoutPut = posted.findLast(
-    (item) =>
-      item.method === 'PUT' &&
-      item.path === '/dbz/control-plane/layout' &&
-      item.body?.nodeType === 1 &&
-      item.body?.nodeId === '401',
+  const brokerLeftAfter = await brokerNode.evaluate((element) => element.style.left);
+  check(
+    '拖动节点不改变泳道落位',
+    brokerLeftBefore === brokerLeftAfter,
+    `${brokerLeftBefore} -> ${brokerLeftAfter}`,
   );
   check(
-    '拖动节点后自动保存布局',
-    typeof layoutPut?.body?.x === 'number' && typeof layoutPut?.body?.y === 'number',
-    JSON.stringify(layoutPut?.body),
+    '拖动节点不产生布局/走线写请求',
+    !posted
+      .slice(postedBeforeNodeDrag)
+      .some(
+        (item) =>
+          item.path === '/dbz/control-plane/layout' ||
+          item.path === '/dbz/control-plane/edges',
+      ),
+    `${postedBeforeNodeDrag} -> ${posted.length}`,
   );
 
+  // 刷新后泳道布局按数据重算，位置与刷新前一致
   await page.reload({ waitUntil: 'networkidle' });
   await page.waitForSelector('.dbz-graph-node[data-node-key="1:401"]');
-  const persistedLeft = await page
+  const reloadedLeft = await page
     .locator('.dbz-graph-node[data-node-key="1:401"]')
     .evaluate((element) => parseFloat(element.style.left));
   check(
-    '刷新后节点位置从库内布局恢复',
-    Math.abs(persistedLeft - layoutPut.body.x) < 1,
-    `节点 left=${persistedLeft}，保存值=${layoutPut.body.x}`,
+    '刷新后泳道布局按数据重算且位置一致',
+    Math.abs(reloadedLeft - parseFloat(brokerLeftBefore)) < 1,
+    `节点 left=${reloadedLeft}，刷新前=${brokerLeftBefore}`,
   );
 
-  // 刷新后折点走线仍按库内值
-  const persistedPath = await page
-    .locator('[data-edge-id="own:connect:101:source:201"].dbz-graph-edge-hit')
-    .evaluate((element) => element.previousElementSibling?.getAttribute('d') ?? '');
-  const persistedMidY = Number((persistedPath.match(/L[^,]+,([^ ]+)/) ?? [])[1]);
-  check(
-    '刷新后连线折点从库内走线恢复',
-    Math.abs(persistedMidY - bendPut.body.midY) < 1,
-    `走线 midY=${persistedMidY}，保存值=${bendPut.body.midY}`,
-  );
-
-  // B. 顶栏「新增 Kafka 集群」：建根节点 → 打开表单 → 保存布局
+  // B. 顶栏「新增 Kafka 集群」：建根节点 → 打开表单 → 泳道自动落位
   await page.locator('.dbz-canvas-topbar button:has-text("新增 Kafka 集群")').click();
   await page.waitForSelector('.ant-modal-wrap:visible');
   const createModal = visibleModal().last();
@@ -2639,17 +2800,14 @@ try {
       createdBrokerRequest?.body?.bootstrapServers === '10.0.9.9:9092',
     JSON.stringify(createdBrokerRequest?.body),
   );
-  const createLayout = posted.findLast(
-    (item) =>
-      item.method === 'PUT' &&
-      item.path === '/dbz/control-plane/layout' &&
-      item.body?.nodeType === 1 &&
-      item.body?.nodeId === '499',
-  );
   check(
-    '新增节点后保存落位布局',
-    typeof createLayout?.body?.x === 'number',
-    JSON.stringify(createLayout?.body),
+    '新增节点不写布局，泳道自动落位',
+    !posted.some(
+      (item) =>
+        item.method === 'PUT' &&
+        item.path === '/dbz/control-plane/layout' &&
+        item.body?.nodeId === '499',
+    ),
   );
   check(
     '新增节点出现在画布上',
@@ -2660,7 +2818,10 @@ try {
     (await page.locator('.dbz-canvas-topbar .ant-tag:has-text("4 个 Kafka 集群")').count()) === 1,
   );
 
-  // 新建根节点的布局刷新后仍在：刷新后默认回到第一个集群，先切到新集群
+  // 新建根节点刷新后仍在：泳道布局按数据重算，落位与刷新前一致
+  const createdLeftBefore = await page
+    .locator('.dbz-graph-node[data-node-key="1:499"]')
+    .evaluate((element) => parseFloat(element.style.left));
   await page.reload({ waitUntil: 'networkidle' });
   await page.locator('[data-cluster-tab="499"]').click();
   await page.waitForSelector('.dbz-graph-node[data-node-key="1:499"]');
@@ -2668,9 +2829,9 @@ try {
     .locator('.dbz-graph-node[data-node-key="1:499"]')
     .evaluate((element) => parseFloat(element.style.left));
   check(
-    '新建根节点刷新后仍在且位置从布局恢复',
-    Math.abs(createdNodeLeft - createLayout.body.x) < 1,
-    `left=${createdNodeLeft}，保存值=${createLayout.body.x}`,
+    '新建根节点刷新后仍在且泳道落位一致',
+    Math.abs(createdNodeLeft - createdLeftBefore) < 1,
+    `left=${createdNodeLeft}，刷新前=${createdLeftBefore}`,
   );
   // 回到原集群，后面的用例继续按 401 的节点断言
   await page.locator('[data-cluster-tab="401"]').click();
@@ -2685,10 +2846,6 @@ try {
     brokers.findIndex((broker) => broker.id === '499'),
     1,
   );
-  const createdLayoutIndex = layoutStore.findIndex((item) => item.nodeId === '499');
-  if (createdLayoutIndex >= 0) {
-    layoutStore.splice(createdLayoutIndex, 1);
-  }
 
   // 自动刷新：默认 15 秒、可调整、持久化、手动刷新、后台暂停
   const refreshInput = page.locator('.dbz-canvas-refresh input');
@@ -2728,7 +2885,8 @@ try {
   await page.locator('.dbz-graph-node[data-node-key="1:401"] [data-node-action="edit"]').click();
   await page.waitForSelector('.ant-modal-wrap:visible');
   const autoRefreshModal = visibleModal().last();
-  await page.waitForTimeout(400);
+  // 等弹窗动画与 afterOpenChange 里的 resetFields 跑完再填，否则填了会被随后的一次 reset 冲掉
+  await page.waitForTimeout(800);
   await autoRefreshModal.locator('#name').fill('自动刷新中-未保存');
   await page.waitForTimeout(1600);
   const visibleModalCount = await page.locator('.ant-modal-wrap:visible').count();

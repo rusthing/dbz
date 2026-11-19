@@ -4,17 +4,16 @@
  * 只选上游、其余自动推导：
  * - 新增下级只走节点底部的「+」，父级固定且表单里不出现；
  * - sink 表单只选上游连接器，所属 Connect / Kafka 集群由上游自动带出；
- * - 画布只画归属线（Kafka 集群 → Connect → 上游 → 下游），连线只作展示，
- *   没有拖拽改上游、也没有删除入口；
+ * - 泳道图只画归属线（Kafka 集群 → Connect → 上游 → 下游），连线只作展示，
+ *   没有改上游、也没有删除入口；
  * - 改 sink 上游统一在表单里选 source。
  *
- * 节点可自由摆放，空白平移、以指针为中心缩放、右下角缩略图；属性面板悬浮在画布
- * 右上方（可收起、可拖宽，点卡片不再自动打开），由顶栏「属性」按钮或画布右缘把手控制。
+ * 布局是泳道图：四类节点各占一列泳道（从左到右），列头像表头一样固定在视口顶部，
+ * 列内按父级分组自动排列，位置由数据推导、不持久化；空白平移、以指针为中心缩放、
+ * 右下角缩放坞与缩略图；属性面板是画布右侧独立一列（可收起、可拖宽，点卡片不再自动打开），
+ * 由顶栏「属性」按钮或画布右缘把手控制。
  * 启用/停用、重启、编辑、删除、集群检测、查看死信都放在节点卡片上；属性面板只负责
  * 展示库内配置、实时状态、任务与异常，不再另开详情抽屉。
- *
- * 节点位置按「节点类型 + 记录 ID」存 `dbz_control_plane_layout`，拖动松手即保存，
- * 多人打开同一套连接器看到一致布局。
  *
  * 顶层集群有三个入口：顶栏「新增 Kafka 集群」建一条空记录，「导出集群」把当前 tab
  * 的集群导出成备份 JSON，「导入集群」按备份 JSON 一次建出集群、Connect 与连接器。
@@ -116,18 +115,14 @@ import {
   type TransferFile,
 } from './connect-transfer';
 import {
-  NODE_SIZE,
-  NODE_TYPE_OF,
   affectedEdgesOf,
   buildEdges,
-  defaultPosition,
   flattenNodes,
   nodeKeyOf,
   nodeSearchText,
   type CanvasNode,
   type CanvasNodeAction,
   type CanvasNodeKind,
-  type EdgeAnchor,
 } from './canvas-model';
 import {
   authLabelOf,
@@ -173,12 +168,6 @@ interface ControlPanelData {
   health: Map<Id, ConnectHealth>;
   /** 连接器的待处理死信数量，键见 {@link deadLetterKey} */
   deadLetter: Map<string, number>;
-  /** 画布上已保存的节点位置 */
-  layout: { nodeType: number; nodeId: Id; x: number; y: number }[];
-  /** 已保存的连线折点：edgeId → 中间水平段 Y */
-  edgeBends: Record<string, number>;
-  /** 已保存的连接点横向偏移：edgeId → 两端偏移 */
-  edgeAnchors: Record<string, EdgeAnchor>;
   /** 本次实时采集时间 */
   loadedAt: number;
 }
@@ -191,9 +180,6 @@ const EMPTY_DATA: ControlPanelData = {
   live: new Map(),
   health: new Map(),
   deadLetter: new Map(),
-  layout: [],
-  edgeBends: {},
-  edgeAnchors: {},
   loadedAt: 0,
 };
 
@@ -332,11 +318,6 @@ function connectorStatusAbnormal(runStatus: number): boolean {
   return runStatus === 3 || runStatus === 5;
 }
 
-interface Point {
-  x: number;
-  y: number;
-}
-
 /** 死信计数的键：连接器 id 在不同表里会重复，必须带方向 */
 function deadLetterKey(connectorType: DeadLetterConnectorType, connectorId: Id): string {
   return `${connectorType}:${connectorId}`;
@@ -465,9 +446,9 @@ function withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
   });
 }
 
-/** 一次加载：四张表 + 每台 Connect 的实时连接器 + 死信计数 + 画布位置 */
+/** 一次加载：四张表 + 每台 Connect 的实时连接器 + 死信计数 */
 async function loadControlPanel(): Promise<ControlPanelData> {
-  const [brokers, connects, sources, sinks, deadLetterCounts, layout, edgeBends] =
+  const [brokers, connects, sources, sinks, deadLetterCounts] =
     await Promise.all([
       kafkaBrokerApi.list(),
       kafkaConnectApi.list(),
@@ -475,10 +456,6 @@ async function loadControlPanel(): Promise<ControlPanelData> {
       sinkConnectorApi.list(),
       // 死信计数只影响角标，接口失败时降级为空，不拖垮整页
       deadLetterApi.pendingCount().catch(() => [] as DbzDeadLetterCountVo[]),
-      // 布局接口失败时按默认网格摆放，不阻塞节点数据
-      controlPlaneApi.listLayout().catch(() => []),
-      // 折点接口失败时按默认居中走线，不影响节点
-      controlPlaneApi.listEdgeBends().catch(() => []),
     ]);
 
   const live = new Map<Id, LiveResult>();
@@ -531,14 +508,6 @@ async function loadControlPanel(): Promise<ControlPanelData> {
     live,
     health,
     deadLetter,
-    layout,
-    edgeBends: Object.fromEntries(edgeBends.map((item) => [item.edgeId, item.midY])),
-    edgeAnchors: Object.fromEntries(
-      edgeBends.map((item) => [
-        item.edgeId,
-        { startDx: item.startDx ?? 0, endDx: item.endDx ?? 0 },
-      ]),
-    ),
     loadedAt: Date.now(),
   };
 }
@@ -547,8 +516,8 @@ async function loadControlPanel(): Promise<ControlPanelData> {
  * # 轻量刷新
  *
  * 自动刷新与手动刷新只做两件事：让后端把统一状态回写 `run_status`，再重取四张表与
- * 死信计数。不重新探测 Connect 实时列表、不重取布局，因此不会重排画布、不会重置
- * 选中节点与属性框，也不会打断正在编辑的表单；失败时保留上一份数据。
+ * 死信计数。不重新探测 Connect 实时列表，因此不会重置选中节点与属性框，也不会打断
+ * 正在编辑的表单；失败时保留上一份数据。
  */
 async function loadLightStatus(): Promise<{
   brokers: DbzKafkaBrokerVo[];
@@ -622,68 +591,15 @@ function kindLabel(kind: CanvasNodeKind): string {
   }
 }
 
-/**
- * # 新增下级时的落位
- *
- * 从「+」新增没有指针落点：默认放在父节点正下方，和已有节点重叠时左右错开，
- * 保证新建的卡片不会盖住同排的其它卡片。
- */
-function childPositionOf(
-  kind: CanvasNodeKind,
-  parent: CanvasNode | null,
-  nodes: CanvasNode[],
-  positions: Record<string, Point>,
-): Point {
-  if (!parent) {
-    const index = nodes.filter((node) => node.kind === kind).length;
-    return defaultPosition(kind, index);
-  }
-  const parentPos = positions[parent.key] ?? defaultPosition(parent.kind, 0);
-  const parentSize = NODE_SIZE[parent.kind];
-  const size = NODE_SIZE[kind];
-  const baseX = parentPos.x + parentSize.w / 2 - size.w / 2;
-  const baseY = parentPos.y + parentSize.h + 28;
-
-  const overlaps = (point: Point) =>
-    nodes.some((node) => {
-      if (node.key === parent.key) {
-        return false;
-      }
-      const pos = positions[node.key] ?? defaultPosition(node.kind, 0);
-      const other = NODE_SIZE[node.kind];
-      return !(
-        point.x + size.w <= pos.x ||
-        point.x >= pos.x + other.w ||
-        point.y + size.h <= pos.y ||
-        point.y >= pos.y + other.h
-      );
-    });
-
-  for (const offset of [0, -1, 1, -2, 2, -3, 3]) {
-    const point = { x: baseX + offset * 400, y: baseY };
-    if (!overlaps(point)) {
-      return point;
-    }
-  }
-  return { x: baseX, y: baseY };
-}
-
 export default function ControlPanelPage() {
   const { message, modal } = AntdApp.useApp();
   const navigate = useNavigate();
   const state: AsyncState<ControlPanelData> = useAsync(loadControlPanel, [], EMPTY_DATA);
 
-  const [positions, setPositions] = useState<Record<string, Point>>({});
-  /** 连线折点：本地即时更新，松手才落库 */
-  const [edgeBends, setEdgeBends] = useState<Record<string, number>>({});
-  /** 连接点横向偏移：本地即时更新，松手才落库 */
-  const [edgeAnchors, setEdgeAnchors] = useState<Record<string, EdgeAnchor>>({});
-  // 拖动回调注册在 pointerdown 时，闭包里的 state 会停留在那一刻；用 ref 保证落库存到最新两端偏移
-  const edgeAnchorsRef = useRef<Record<string, EdgeAnchor>>({});
   const [selectedNodeKey, setSelectedNodeKey] = useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
   /**
-   * 属性面板开关：悬浮层，默认收起，选择记在 localStorage
+   * 属性面板开关：画布右侧的独立一列，默认收起，选择记在 localStorage
    *
    * 点卡片只做选中高亮，不再自动弹面板；打开走顶栏「属性」按钮或画布右缘把手。
    */
@@ -737,13 +653,11 @@ export default function ControlPanelPage() {
   const [resetRunning, setResetRunning] = useState(false);
   const [resetResult, setResetResult] = useState<DbzResetConnectorOffsetsVo | null>(null);
 
-  /** 新增：父级固定（顶层 Kafka 集群没有父级），成功后从新记录里找出 ID 再落位 */
+  /** 新增：父级固定（顶层 Kafka 集群没有父级），成功后从新记录里找出 ID 再选中 */
   const [createKind, setCreateKind] = useState<CanvasNodeKind | null>(null);
   const [createParent, setCreateParent] = useState<CanvasNode | null>(null);
   const [pendingDrop, setPendingDrop] = useState<{
     kind: CanvasNodeKind;
-    x: number;
-    y: number;
     existingIds: Set<Id>;
   } | null>(null);
   const [editTarget, setEditTarget] = useState<CanvasNode | null>(null);
@@ -794,7 +708,7 @@ export default function ControlPanelPage() {
   /** 导入成功后要切过去的集群名；等刷新到这条记录再切 tab */
   const [pendingImportedBroker, setPendingImportedBroker] = useState<string | null>(null);
 
-  /** 轻量刷新：只合并状态与死信计数，保留实时明细、布局与选中态 */
+  /** 轻量刷新：只合并状态与死信计数，保留实时明细与选中态 */
   const refreshLight = useCallback(async () => {
     const next = await loadLightStatus();
     state.setData((previous) => ({ ...previous, ...next, loadedAt: Date.now() }));
@@ -959,22 +873,6 @@ export default function ControlPanelPage() {
     return edges.filter((edge) => keys.has(edge.from) && keys.has(edge.to));
   }, [edges, scopeNodes]);
 
-  /** 服务端保存的位置；没有位置的节点按默认网格补 */
-  useEffect(() => {
-    const next: Record<string, Point> = {};
-    for (const item of state.data.layout) {
-      next[`${item.nodeType}:${item.nodeId}`] = { x: item.x, y: item.y };
-    }
-    setPositions(next);
-  }, [state.data.layout]);
-
-  /** 服务端保存的连线折点与连接点；拖动中的本地值以最新一次为准 */
-  useEffect(() => {
-    setEdgeBends(state.data.edgeBends);
-    edgeAnchorsRef.current = state.data.edgeAnchors;
-    setEdgeAnchors(state.data.edgeAnchors);
-  }, [state.data.edgeBends, state.data.edgeAnchors]);
-
   /** 搜索命中：只作用于当前集群 tab，按名称 / topic / connectorName 匹配 */
   const searchHits = useMemo(() => {
     const query = searchText.trim().toLowerCase();
@@ -989,23 +887,6 @@ export default function ControlPanelPage() {
   const activeHitKey = searchHits.length
     ? searchHits[Math.min(searchCursor, searchHits.length - 1)]
     : null;
-
-  /**
-   * 有持久化位置就用，没有就按当前 tab 内同类节点的序号摆。
-   * 序号只数当前集群，切 tab 时默认位置重新从 0 开始，不会沿用另一个集群的排布。
-   */
-  const resolvedPositions = useMemo(() => {
-    const result: Record<string, Point> = { ...positions };
-    const counters: Record<CanvasNodeKind, number> = { broker: 0, connect: 0, source: 0, sink: 0 };
-    for (const node of scopeNodes) {
-      const index = counters[node.kind];
-      counters[node.kind] += 1;
-      if (!result[node.key]) {
-        result[node.key] = defaultPosition(node.kind, index);
-      }
-    }
-    return result;
-  }, [scopeNodes, positions]);
 
   const selectedNode = useMemo(
     () => scopeNodes.find((node) => node.key === selectedNodeKey) ?? null,
@@ -1028,7 +909,7 @@ export default function ControlPanelPage() {
     }
   }, [scopeEdges, selectedEdgeId]);
 
-  /** 新增表单成功后，从数据里找出新记录，补上落位位置并落库 */
+  /** 新增表单成功后，从数据里找出新记录并选中；泳道位置由布局自动推导 */
   useEffect(() => {
     if (!pendingDrop) {
       return;
@@ -1040,8 +921,6 @@ export default function ControlPanelPage() {
       return;
     }
     const key = nodeKeyOf(pendingDrop.kind, created.id);
-    const point = { x: pendingDrop.x, y: pendingDrop.y };
-    setPositions((previous) => ({ ...previous, [key]: point }));
     // 新建 Kafka 集群会多出一个 tab，直接切过去，否则新节点落在看不见的 tab 里
     if (pendingDrop.kind === 'broker') {
       setActiveBrokerKey(created.id);
@@ -1049,17 +928,7 @@ export default function ControlPanelPage() {
     setSelectedNodeKey(key);
     setSelectedEdgeId(null);
     setPendingDrop(null);
-    void controlPlaneApi
-      .saveLayout({
-        nodeType: NODE_TYPE_OF[pendingDrop.kind],
-        nodeId: created.id,
-        x: point.x,
-        y: point.y,
-      })
-      .catch((reason: unknown) => {
-        message.warning(`节点已创建，但布局位置保存失败：${errorMessage(reason)}`);
-      });
-  }, [message, pendingDrop, state.data]);
+  }, [pendingDrop, state.data]);
 
   /**
    * 导入集群成功后切到新集群 tab
@@ -1136,95 +1005,6 @@ export default function ControlPanelPage() {
     [state.data.connects],
   );
 
-  /** 拖动结束后保存位置 */
-  const handleNodeMove = (key: string, x: number, y: number, commit: boolean) => {
-    setPositions((previous) => ({ ...previous, [key]: { x, y } }));
-    if (!commit) {
-      return;
-    }
-    const node = scopeNodes.find((item) => item.key === key);
-    if (!node) {
-      return;
-    }
-    void controlPlaneApi
-      .saveLayout({ nodeType: node.nodeType, nodeId: node.id, x, y })
-      .catch((reason: unknown) => {
-        message.error(`布局保存失败：${errorMessage(reason)}`);
-      });
-  };
-
-  /** 拖动连线折点：过程只改本地，松手才落库，刷新后仍保持 */
-  const handleEdgeBend = (edgeId: string, midY: number, commit: boolean) => {
-    setEdgeBends((previous) => ({ ...previous, [edgeId]: midY }));
-    if (!commit) {
-      return;
-    }
-    void controlPlaneApi.saveEdgeBend({ edgeId, midY }).catch((reason: unknown) => {
-      message.error(`折点保存失败：${errorMessage(reason)}`);
-    });
-  };
-
-  /** 连线的默认中间水平段 Y：两端上下居中，落库时补齐折点字段 */
-  const defaultEdgeMidY = (edgeId: string): number => {
-    const edge = scopeEdges.find((item) => item.id === edgeId);
-    if (!edge) {
-      return 0;
-    }
-    const fromNode = scopeNodes.find((node) => node.key === edge.from);
-    const toNode = scopeNodes.find((node) => node.key === edge.to);
-    if (!fromNode || !toNode) {
-      return 0;
-    }
-    const fromPos = resolvedPositions[fromNode.key] ?? defaultPosition(fromNode.kind, 0);
-    const toPos = resolvedPositions[toNode.key] ?? defaultPosition(toNode.kind, 0);
-    return (fromPos.y + NODE_SIZE[fromNode.kind].h + toPos.y) / 2;
-  };
-
-  /** 左右拖动连接点：过程只改本地，松手落库；垂直折点一并带上，避免覆盖已保存值 */
-  const handleEdgeAnchor = (
-    edgeId: string,
-    anchor: 'start' | 'end',
-    dx: number,
-    commit: boolean,
-  ) => {
-    const current = edgeAnchorsRef.current[edgeId] ?? { startDx: 0, endDx: 0 };
-    const updated = {
-      ...current,
-      [anchor === 'start' ? 'startDx' : 'endDx']: dx,
-    };
-    edgeAnchorsRef.current = { ...edgeAnchorsRef.current, [edgeId]: updated };
-    setEdgeAnchors(edgeAnchorsRef.current);
-    if (!commit) {
-      return;
-    }
-    void controlPlaneApi
-      .saveEdgeBend({
-        edgeId,
-        midY: edgeBends[edgeId] ?? defaultEdgeMidY(edgeId),
-        startDx: updated.startDx,
-        endDx: updated.endDx,
-      })
-      .catch((reason: unknown) => {
-        message.error(`连接点保存失败：${errorMessage(reason)}`);
-      });
-  };
-
-  /** 恢复默认走线与连接点：只删布局记录，连线本身保留 */
-  const resetEdgeBend = (edgeId: string) => {
-    setEdgeBends((previous) => {
-      const next = { ...previous };
-      delete next[edgeId];
-      return next;
-    });
-    const nextAnchors = { ...edgeAnchorsRef.current };
-    delete nextAnchors[edgeId];
-    edgeAnchorsRef.current = nextAnchors;
-    setEdgeAnchors(nextAnchors);
-    void controlPlaneApi.resetEdgeBend(edgeId).catch((reason: unknown) => {
-      message.error(`恢复默认走线失败：${errorMessage(reason)}`);
-    });
-  };
-
   /** 搜索输入：立即定位第一个命中，清空时回到无命中状态 */
   const handleSearchChange = (value: string) => {
     setSearchText(value);
@@ -1264,8 +1044,7 @@ export default function ControlPanelPage() {
    */
   const startCreate = (kind: CanvasNodeKind, parent: CanvasNode | null) => {
     const existingIds = new Set(recordsOfKind(state.data, kind).map((record) => record.id));
-    const point = childPositionOf(kind, parent, scopeNodes, resolvedPositions);
-    setPendingDrop({ kind, x: point.x, y: point.y, existingIds });
+    setPendingDrop({ kind, existingIds });
     setEditTarget(null);
     setCreateParent(parent);
     setCreateKind(kind);
@@ -2621,14 +2400,10 @@ export default function ControlPanelPage() {
           <Alert
             type="info"
             showIcon
-            message="上下游关系固定，走线可调整"
-            description="连线由下游记录的上游字段决定：下游连接器的上游在 sink 表单里选择；其它节点由「+」新增时的父节点固定。两端连接点可左右拖动、中间折点可上下拖动，松手即保存；不能删除连线。"
+            message="上下游关系固定，走线自动路由"
+            description="连线由下游记录的上游字段决定：下游连接器的上游在 sink 表单里选择；其它节点由「+」新增时的父节点固定。泳道图按归属自动排列节点与走线，不能拖动改接，也不能删除连线。"
           />
           <div className="dbz-inspector-actions">
-            {(edgeBends[selectedEdge.id] !== undefined ||
-              edgeAnchors[selectedEdge.id] !== undefined) && (
-              <Button onClick={() => resetEdgeBend(selectedEdge.id)}>恢复默认走线</Button>
-            )}
             <Button onClick={() => setSelectedEdgeId(null)}>取消选中</Button>
           </div>
           {toNode && (
@@ -2650,7 +2425,7 @@ export default function ControlPanelPage() {
           />
           <div className="dbz-inspector-tip">
             <p>新增下级走节点底部的「+」按钮；下游连接器的上游在 sink 表单里选择。</p>
-            <p>归属线不能删除；选中后可左右拖连接点、上下拖折点。</p>
+            <p>归属线不能删除；泳道图按归属自动排列节点与走线。</p>
           </div>
         </div>
       );
@@ -3042,7 +2817,7 @@ export default function ControlPanelPage() {
 
         <div className="dbz-inspector-tip">
           <p>属性面板只读展示；配置与操作都在卡片上，不跳转到其它页面。</p>
-          <p>归属线端点固定，选中后可拖中间折点；连线不能删除。</p>
+          <p>归属线端点固定，走线在泳道之间自动路由；连线不能删除。</p>
         </div>
       </div>
     );
@@ -3277,14 +3052,8 @@ export default function ControlPanelPage() {
             key={resolvedBrokerId ?? 'all'}
             nodes={scopeNodes}
             edges={scopeEdges}
-            positions={resolvedPositions}
-            edgeBends={edgeBends}
-            edgeAnchors={edgeAnchors}
             selectedNodeKey={selectedNodeKey}
             selectedEdgeId={selectedEdgeId}
-            onNodeMove={handleNodeMove}
-            onEdgeBend={handleEdgeBend}
-            onEdgeAnchor={handleEdgeAnchor}
             onSelectNode={(key) => {
               setSelectedNodeKey(key);
               setSelectedEdgeId(null);
@@ -3294,6 +3063,7 @@ export default function ControlPanelPage() {
               setSelectedNodeKey(null);
             }}
             onAddChild={handleAddChild}
+            onAddRoot={() => startCreate('broker', null)}
             onNodeAction={handleNodeAction}
             onToggleNode={(node, enabled) => void applyToggle(node, enabled)}
             busyNodeKey={busyNodeKey}

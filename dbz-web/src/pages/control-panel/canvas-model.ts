@@ -1,5 +1,5 @@
 /**
- * # 控制面板画布的数据整理
+ * # 控制面板泳道图的数据整理
  *
  * 把 `buildControlPanel` 组装出的 broker → connect → connector 树压平成图节点，
  * 只按归属关系生成连线：
@@ -9,13 +9,14 @@
  * - source → sink（`source_connector_id`）。
  *
  * sink 只保留通向它上游 source 的一条归属线，不再单独连到 Connect；这样
- * broker → connect → source → sink 始终是一条完整的链路。数据流本身不在画布上
+ * broker → connect → source → sink 始终是一条完整的链路。数据流本身不在图上
  * 另画，归属线已经表达了上下游关系。
  *
+ * 布局是泳道图：四类节点各占一列泳道，从左到右按归属链排列（Kafka 集群 →
+ * Connect → 上游 → 下游），列头像表头一样固定在视口顶部；列内节点按父级分组
+ * 自动排列，位置完全由数据推导，不提供拖拽、也不持久化。
  * 连线只作展示：上游一律由下游表单（sink 表单选 source）或「+」新增时的父节点
- * 决定，画布上不提供拖拽改接、也不提供删除。
- *
- * 位置不在这里算：有持久化位置就用持久化的，没有才按默认网格摆放。
+ * 决定，图上不提供改接、也不提供删除。
  */
 
 import type {
@@ -101,10 +102,10 @@ export interface CanvasNode {
   broker?: DbzKafkaBrokerVo;
 }
 
-/** 连线两端的连接点相对所在卡片中心的横向偏移；拖动后随卡片一起移动 */
-export interface EdgeAnchor {
-  startDx: number;
-  endDx: number;
+/** 泳道内节点坐标（世界坐标系，左上角） */
+export interface LanePoint {
+  x: number;
+  y: number;
 }
 
 /** 连线的真实业务关系，仅用于属性框说明；画布上不提供编辑入口 */
@@ -160,21 +161,135 @@ export function nodeSearchText(node: CanvasNode): string {
   return name;
 }
 
-/** 默认网格：集群/Connect 居上，连接器在下排；纵向间距与 {@link NODE_SIZE} 同步收紧 */
-export function defaultPosition(
-  kind: CanvasNodeKind,
-  index: number,
-): { x: number; y: number } {
-  switch (kind) {
-    case 'broker':
-      return { x: 420 + index * 390, y: 24 };
-    case 'connect':
-      return { x: 420 + index * 390, y: 206 };
-    case 'source':
-      return { x: 40 + index * 390, y: 388 };
-    case 'sink':
-      return { x: 40 + (index % 2) * 400, y: 570 + Math.floor(index / 2) * 200 };
+/**
+ * # 泳道布局
+ *
+ * 四类节点各占一列泳道，从左到右按归属链排列；列内节点按父级在上一列泳道里的
+ * 次序分组排开，同一父级的子节点彼此相邻，连线尽量短、少交叉。
+ * 位置完全由数据推导：新增/删除记录后重算即可，不需要持久化。
+ */
+export const LANE_ORDER: CanvasNodeKind[] = ['broker', 'connect', 'source', 'sink'];
+
+/** 列头高度：固定在视口顶部，不随平移缩放移动 */
+export const LANE_HEADER_H = 40;
+/** 泳道列内左右留白：卡片撑满列宽减去这份留白 */
+export const LANE_PAD_X = 16;
+/** 泳道列内上下留白 */
+const LANE_PAD_Y = 24;
+/** 列内相邻卡片间距 */
+const NODE_GAP_Y = 16;
+/** 相邻泳道列之间的间距（列宽拖手就落在缝里） */
+export const LANE_GAP = 40;
+/** 世界四周留白 */
+const WORLD_MARGIN = 24;
+/** 空泳道列的最小内容高度：保留一条可见的带，提示该层级还没有记录 */
+const EMPTY_LANE_H = 120;
+
+/** 列宽：默认值、可拖范围；四列各自记忆，双击列宽拖手回到默认 */
+export const LANE_DEFAULT_W = 400;
+export const LANE_COL_MIN = 320;
+export const LANE_COL_MAX = 560;
+export const DEFAULT_LANE_COLUMNS: number[] = LANE_ORDER.map(() => LANE_DEFAULT_W);
+
+export function clampLaneColumn(width: number): number {
+  if (!Number.isFinite(width)) {
+    return LANE_DEFAULT_W;
   }
+  return Math.round(Math.min(LANE_COL_MAX, Math.max(LANE_COL_MIN, width)));
+}
+
+/** 把 localStorage / 旧版本残留的任意值收敛成四列的合法宽度 */
+export function normalizeLaneColumns(input: unknown): number[] {
+  const list = Array.isArray(input) ? input : [];
+  return LANE_ORDER.map((_, index) => clampLaneColumn(Number(list[index])));
+}
+
+export interface Swimlane {
+  kind: CanvasNodeKind;
+  /** 泳道列左上角 X（世界坐标） */
+  x: number;
+  /** 泳道列宽度 */
+  w: number;
+  /** 泳道内节点数 */
+  count: number;
+}
+
+export interface LaneSize {
+  w: number;
+  h: number;
+}
+
+export interface SwimlaneLayout {
+  positions: Record<string, LanePoint>;
+  /** 每个节点的实际尺寸：宽度跟着列宽走，高度按类型收紧 */
+  sizes: Record<string, LaneSize>;
+  lanes: Swimlane[];
+  /** 世界尺寸：随节点数量增长，画布不再固定 */
+  width: number;
+  height: number;
+}
+
+export function buildSwimlaneLayout(
+  nodes: CanvasNode[],
+  edges: CanvasEdge[],
+  columns: number[] = DEFAULT_LANE_COLUMNS,
+): SwimlaneLayout {
+  const colWidths = normalizeLaneColumns(columns);
+  // 子节点 → 父节点 key；归属链上每个节点只有一个父级
+  const parentOf = new Map<string, string>();
+  for (const edge of edges) {
+    parentOf.set(edge.to, edge.from);
+  }
+
+  const byKind = new Map<CanvasNodeKind, CanvasNode[]>(
+    LANE_ORDER.map((kind) => [kind, nodes.filter((node) => node.kind === kind)]),
+  );
+
+  // 逐列定序：broker 按树序；其余按父级在上一列里的下标稳定排序，
+  // 没有归属线的孤儿节点排在末尾，保持原有相对顺序
+  const orderIndex = new Map<string, number>();
+  for (const kind of LANE_ORDER) {
+    const list = byKind.get(kind) ?? [];
+    if (kind !== 'broker') {
+      list.sort((a, b) => {
+        const pa = orderIndex.get(parentOf.get(a.key) ?? '') ?? Number.MAX_SAFE_INTEGER;
+        const pb = orderIndex.get(parentOf.get(b.key) ?? '') ?? Number.MAX_SAFE_INTEGER;
+        return pa - pb;
+      });
+    }
+    list.forEach((node, index) => orderIndex.set(node.key, index));
+  }
+
+  // 列宽可拖：卡片撑满列宽减去左右留白，列宽变化直接反映到卡片宽度上
+  const lanes: Swimlane[] = [];
+  const positions: Record<string, LanePoint> = {};
+  const sizes: Record<string, LaneSize> = {};
+  let maxColH = 0;
+  let cursorX = WORLD_MARGIN;
+
+  LANE_ORDER.forEach((kind, colIndex) => {
+    const list = byKind.get(kind) ?? [];
+    const colW = colWidths[colIndex];
+    const nodeW = colW - LANE_PAD_X * 2;
+    const x = cursorX;
+    lanes.push({ kind, x, w: colW, count: list.length });
+    cursorX += colW + LANE_GAP;
+
+    let y = WORLD_MARGIN + LANE_PAD_Y;
+    for (const node of list) {
+      sizes[node.key] = { w: nodeW, h: NODE_SIZE[node.kind].h };
+      positions[node.key] = { x, y };
+      y += NODE_SIZE[node.kind].h + NODE_GAP_Y;
+    }
+    const colH = list.length
+      ? y - NODE_GAP_Y + LANE_PAD_Y
+      : WORLD_MARGIN + EMPTY_LANE_H;
+    maxColH = Math.max(maxColH, colH);
+  });
+
+  const width = cursorX - LANE_GAP + WORLD_MARGIN;
+  const height = Math.max(maxColH, 480);
+  return { positions, sizes, lanes, width, height };
 }
 
 /** 节点颜色：优先实时状态，其次库内状态 */

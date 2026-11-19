@@ -24,7 +24,7 @@ const NAV_ITEMS = [
     path: '/control-panel',
     label: '控制面板',
     title: '控制面板',
-    desc: 'Kafka 集群 → Connect → 连接器的拓扑图，实时状态、搜索定位与常用操作',
+    desc: 'Kafka 集群 → Connect → 连接器的泳道图，实时状态、搜索定位与常用操作',
     icon: <ApartmentOutlined />,
   },
   {
