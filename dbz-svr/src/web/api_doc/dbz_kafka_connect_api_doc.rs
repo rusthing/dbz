@@ -11,6 +11,7 @@ use robotech::macros::api_doc;
     get_by_id,
     get_ex_by_id,
     get_by_query_dto,
+    count_by_query_dto,
     get_ex_by_query_dto,
     list_by_query_dto,
     list_ex_by_query_dto,
