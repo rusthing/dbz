@@ -11,3 +11,5 @@
 -- 部分 / 表达式 / 性能索引（PowerDesigner 不能自动生成）
 
 CREATE INDEX ix_dbz_dead_letter_connector_status_seen ON dbz_dead_letter USING btree (connector_id, status, last_seen_ms);
+
+CREATE INDEX ix_dbz_dead_letter_tombstone_purged_ms ON dbz_dead_letter_tombstone USING btree (purged_ms);
