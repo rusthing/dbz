@@ -1902,3 +1902,13 @@ input[type='color']:not(:disabled) {
     opacity: 0;
   }
 }
+
+/* uiam 嵌入态：窗口标题栏已经是品牌，子应用不再重复一遍 */
+html[data-embed='1'] .dbz-brand,
+html[data-embed='1'] .dbz-header-note {
+  display: none;
+}
+
+html[data-embed='1'] .dbz-header {
+  padding-inline: 16px;
+}

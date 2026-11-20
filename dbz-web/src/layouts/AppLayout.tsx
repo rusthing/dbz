@@ -13,8 +13,10 @@ import {
   UserOutlined,
 } from '@ant-design/icons';
 import { Avatar, Dropdown, Layout, Menu, Typography } from 'antd';
+import { useEffect } from 'react';
 import { Link, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../auth/AuthContext';
+import { reportView } from '../lib/embed-bridge';
 
 const { Sider, Header, Content } = Layout;
 
@@ -57,6 +59,10 @@ export default function AppLayout() {
   const navItem = NAV_ITEMS.find((item) => location.pathname.startsWith(item.path));
   const hiddenPage = HIDDEN_PAGES.find((item) => location.pathname.startsWith(item.path));
   const current = navItem ?? hiddenPage ?? NAV_ITEMS[0];
+
+  useEffect(() => {
+    reportView(current.title, location.pathname);
+  }, [current.title, location.pathname]);
 
   const handleLogout = async () => {
     await logout();

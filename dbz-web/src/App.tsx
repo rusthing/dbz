@@ -6,6 +6,7 @@
 
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { RequireAuth } from './auth/AuthContext';
+import { EmbedNavigation } from './lib/embed-bridge';
 import AppLayout from './layouts/AppLayout';
 import ControlPanelPage from './pages/control-panel';
 import DeadLetterPage from './pages/dead-letter';
@@ -14,7 +15,9 @@ import LoginPage from './pages/login';
 
 export default function App() {
   return (
-    <Routes>
+    <>
+      <EmbedNavigation />
+      <Routes>
       <Route path="login" element={<LoginPage />} />
 
       <Route
@@ -37,6 +40,7 @@ export default function App() {
         <Route path="dead-letter" element={<DeadLetterPage />} />
         <Route path="*" element={<Navigate to="/control-panel" replace />} />
       </Route>
-    </Routes>
+      </Routes>
+    </>
   );
 }
