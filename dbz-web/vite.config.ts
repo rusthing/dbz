@@ -1,5 +1,6 @@
 import { defineConfig, loadEnv } from 'vite';
 import react from '@vitejs/plugin-react';
+import { federation } from '@module-federation/vite';
 
 /**
  * # 规范化 base
@@ -29,14 +30,32 @@ export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), '');
   const proxyTarget = env.VITE_PROXY_TARGET || 'http://127.0.0.1:9006';
   const admProxyTarget = env.VITE_ADM_PROXY_TARGET || 'http://127.0.0.1:9007';
-  // 统一保证是「/xxx/」形式：Vite 要求 base 以 / 开头、以 / 结尾
   const base = normalizeBase(env.VITE_PUBLIC_BASE);
+
+  // React 必须与 uiam / syn 单例共享；不能再手动拆 react chunk，否则 singleton 失效。
+  const sharedReact = { singleton: true, allowNodeModulesSuffixMatch: true } as const;
 
   return {
     base,
-    plugins: [react()],
+    plugins: [
+      federation({
+        name: 'dbz-web',
+        filename: 'remoteEntry.js',
+        exposes: { './dbz-app': './src/federation/DbzFederatedApp.tsx' },
+        shared: {
+          react: sharedReact,
+          'react/jsx-runtime': sharedReact,
+          'react-dom': sharedReact,
+          'react-dom/client': sharedReact,
+        },
+        bundleAllCSS: true,
+        manifest: true,
+      }),
+      react(),
+    ],
     server: {
       port: 5174,
+      origin: env.VITE_DEV_ORIGIN?.trim() || 'http://localhost:5174',
       proxy: {
         '/dbz': {
           target: proxyTarget,
@@ -53,17 +72,7 @@ export default defineConfig(({ mode }) => {
     build: {
       outDir: 'dist',
       sourcemap: false,
-      // antd 本身接近 1MB（gzip 后约 330KB），拆包后仍会超过默认 500KB 阈值
       chunkSizeWarningLimit: 1100,
-      rollupOptions: {
-        output: {
-          manualChunks: {
-            react: ['react', 'react-dom', 'react-router-dom'],
-            antd: ['antd'],
-            icons: ['@ant-design/icons'],
-          },
-        },
-      },
     },
   };
 });

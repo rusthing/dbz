@@ -13,11 +13,12 @@ import DeadLetterPage from './pages/dead-letter';
 import KafkaConnectorPage from './pages/kafka-connector';
 import LoginPage from './pages/login';
 
-export default function App() {
+/**
+ * 页面路由表：独立访问与联邦入口（MemoryRouter）共用这一份，避免两套路由定义漂移。
+ */
+export function AppRoutes() {
   return (
-    <>
-      <EmbedNavigation />
-      <Routes>
+    <Routes>
       <Route path="login" element={<LoginPage />} />
 
       <Route
@@ -40,7 +41,15 @@ export default function App() {
         <Route path="dead-letter" element={<DeadLetterPage />} />
         <Route path="*" element={<Navigate to="/control-panel" replace />} />
       </Route>
-      </Routes>
+    </Routes>
+  );
+}
+
+export default function App() {
+  return (
+    <>
+      <EmbedNavigation />
+      <AppRoutes />
     </>
   );
 }

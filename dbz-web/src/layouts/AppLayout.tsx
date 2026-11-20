@@ -20,8 +20,8 @@ import { reportView } from '../lib/embed-bridge';
 
 const { Sider, Header, Content } = Layout;
 
-/** 导航项：控制面板负责管理，死信独立成页 */
-const NAV_ITEMS = [
+/** 导航项：控制面板负责管理，死信独立成页（联邦入口复用它做窗口标题回报） */
+export const NAV_ITEMS = [
   {
     path: '/control-panel',
     label: '控制面板',
@@ -44,7 +44,7 @@ const NAV_ITEMS = [
  * 集群连接器页已从左侧导航移除，但页面与接口保留、直接 URL 仍可访问；
  * 单独维护标题，避免顶部回退成「控制面板」。
  */
-const HIDDEN_PAGES = [
+export const HIDDEN_PAGES = [
   {
     path: '/kafka-connector',
     title: '集群连接器',

@@ -53,7 +53,7 @@ export default function StatusTag({ dic, value, detail }: StatusTagProps) {
       trigger={['hover', 'focus']}
       mouseEnterDelay={0.25}
       // 原因可能很长：限制宽度后让它在内部滚动，不把整页撑开
-      styles={{ body: { maxWidth: 380, padding: '10px 12px' } }}
+      styles={{ content: { maxWidth: 380, padding: '10px 12px' } }}
       title={detail.summary}
       content={
         <div className="dbz-status-detail">

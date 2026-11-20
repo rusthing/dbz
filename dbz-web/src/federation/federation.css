@@ -1,0 +1,17 @@
+/*
+ * 联邦窗口的布局兜底：令牌由 ConfigProvider 生成，这里只管画布底色与填满窗口。
+ */
+.dbz-federated {
+  min-height: 100%;
+  height: 100%;
+  background: #f4f6fa;
+}
+
+.dbz-federated[data-theme='dark'] {
+  background: #141414;
+  color-scheme: dark;
+}
+
+.dbz-federated .ant-layout {
+  min-height: 100%;
+}
