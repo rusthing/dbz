@@ -15,3 +15,6 @@
 .dbz-federated .ant-layout {
   min-height: 100%;
 }
+
+/* 联邦窗口下用户信息与登出统一由 uiam 宿主顶栏承载，隐藏子应用自己的账号入口 */
+.dbz-federated [data-header-user] { display: none !important; }
