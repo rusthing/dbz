@@ -38,6 +38,7 @@ import {
   DeleteOutlined,
   EditOutlined,
   ExportOutlined,
+  FilterOutlined,
   InfoCircleOutlined,
   RedoOutlined,
   ReloadOutlined,
@@ -60,12 +61,12 @@ import type {
   DeadLetterStatus,
   Id,
 } from '../../api/types';
-import OptionButtons from '../../components/OptionButtons';
 import StatusTag from '../../components/StatusTag';
 import {
   deadLetterFailureCategoryDic,
   deadLetterFailureSubtypeDic,
   deadLetterStatusDic,
+  dicOptions,
 } from '../../dic';
 import { useAsync } from '../../hooks/useAsync';
 import { usePagedQuery } from '../../hooks/usePagedQuery';
@@ -193,6 +194,7 @@ export default function DeadLetterPage() {
   const { message, modal } = AntdApp.useApp();
   const [searchParams] = useSearchParams();
   const [draft, setDraft] = useState<FilterDraft>(() => initialDraft(searchParams));
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [detail, setDetail] = useState<DbzDeadLetterVo | null>(null);
   const [payloadDraft, setPayloadDraft] = useState('');
   const [payloadError, setPayloadError] = useState<string | undefined>(undefined);
@@ -247,6 +249,13 @@ export default function DeadLetterPage() {
     },
     [search],
   );
+
+  /** 所有筛选控件共用：先落草稿再立即查询，避免下拉与高级条件各自维护一份状态 */
+  const changeFilter = (patch: Partial<FilterDraft>) => {
+    const next = { ...draft, ...patch };
+    setDraft(next);
+    applyFilters(next);
+  };
 
   const connectorOptions = useMemo(
     () => connectors.data.map((item) => ({ value: item.value, label: item.label })),
@@ -785,16 +794,24 @@ export default function DeadLetterPage() {
   const retryTargets = selectedRecords.filter(canRetry);
   const pendingTargets = selectedRecords.filter((item) => item.status === STATUS_PENDING);
   const manualTargets = selectedRecords.filter(isManualHandled);
+  /** 高级条件收起后仍要看得见「有几条在生效」，否则筛选会变成暗状态 */
+  const advancedCount = [
+    draft.failureCategory !== undefined,
+    draft.failureSubtype !== undefined,
+    Boolean(draft.topic?.trim()),
+    Boolean(draft.range?.[0] && draft.range?.[1]),
+  ].filter(Boolean).length;
 
   return (
     <Card variant="borderless">
-      <div className="dbz-toolbar">
+      {/* 常用条件一行放下；低频条件收进「更多筛选」，七个条件不再把工具栏挤成多行 */}
+      <div className="dbz-toolbar dbz-dead-filter-bar">
         <Select
           allowClear
           showSearch
           optionFilterProp="label"
           placeholder="连接器"
-          style={{ width: 200 }}
+          style={{ width: 180 }}
           options={connectorOptions}
           loading={connectors.loading}
           notFoundContent={
@@ -805,80 +822,33 @@ export default function DeadLetterPage() {
                 : '暂无连接器'
           }
           value={draft.connectorId}
-          onChange={(value: Id | undefined) => {
-            const next: FilterDraft = { ...draft, connectorId: value };
-            setDraft(next);
-            applyFilters(next);
-          }}
+          onChange={(value: Id | undefined) => changeFilter({ connectorId: value })}
         />
-        <div className="dbz-filter-group">
-          <span className="dbz-filter-label">状态</span>
-          <OptionButtons
-            allowClear
-            ariaLabel="死信状态"
-            options={deadLetterStatusDic}
-            value={draft.status}
-            onChange={(value) => {
-              const next = { ...draft, status: value };
-              setDraft(next);
-              applyFilters(next);
-            }}
-          />
-        </div>
-        <div className="dbz-filter-group">
-          <span className="dbz-filter-label">失败分类</span>
-          <OptionButtons
-            allowClear
-            ariaLabel="失败分类"
-            options={deadLetterFailureCategoryDic}
-            value={draft.failureCategory}
-            onChange={(value) => {
-              const next = { ...draft, failureCategory: value };
-              setDraft(next);
-              applyFilters(next);
-            }}
-          />
-        </div>
-        <div className="dbz-filter-group">
-          <span className="dbz-filter-label">失败子类</span>
-          <OptionButtons
-            allowClear
-            ariaLabel="失败子类"
-            options={deadLetterFailureSubtypeDic}
-            value={draft.failureSubtype}
-            onChange={(value) => {
-              const next = { ...draft, failureSubtype: value };
-              setDraft(next);
-              applyFilters(next);
-            }}
-          />
-        </div>
+        <Select
+          allowClear
+          aria-label="死信状态"
+          placeholder="状态"
+          style={{ width: 120 }}
+          options={dicOptions(deadLetterStatusDic)}
+          value={draft.status}
+          onChange={(value: DeadLetterStatus | undefined) => changeFilter({ status: value })}
+        />
         <Input.Search
           allowClear
           placeholder="失败原因关键字"
-          style={{ width: 170 }}
+          style={{ width: 200 }}
           value={draft.reason ?? ''}
           onChange={(event) => setDraft((prev) => ({ ...prev, reason: event.target.value }))}
           onSearch={() => applyFilters(draft)}
         />
-        <Input.Search
-          allowClear
-          placeholder="topic 精确匹配"
-          style={{ width: 180 }}
-          value={draft.topic ?? ''}
-          onChange={(event) => setDraft((prev) => ({ ...prev, topic: event.target.value }))}
-          onSearch={() => applyFilters(draft)}
-        />
-        <DatePicker.RangePicker
-          showTime
-          style={{ width: 330 }}
-          value={draft.range ?? null}
-          onChange={(value) => {
-            const next = { ...draft, range: value as [Dayjs, Dayjs] | null };
-            setDraft(next);
-            applyFilters(next);
-          }}
-        />
+        <Button
+          type={advancedCount > 0 ? 'primary' : 'default'}
+          icon={<FilterOutlined />}
+          aria-expanded={advancedOpen}
+          onClick={() => setAdvancedOpen((open) => !open)}
+        >
+          更多筛选{advancedCount > 0 ? ` (${advancedCount})` : ''}
+        </Button>
         <Button
           onClick={() => {
             const next: FilterDraft = {};
@@ -888,9 +858,64 @@ export default function DeadLetterPage() {
         >
           重置
         </Button>
+      </div>
 
-        <span className="dbz-toolbar-spacer" />
+      {/* 内联展开而不是浮层：展开后不会盖住下面的批量操作按钮 */}
+      {advancedOpen && (
+        <div className="dbz-advanced-filters">
+          <div className="dbz-advanced-filter-row">
+            <span>失败分类</span>
+            <Select
+              allowClear
+              aria-label="失败分类"
+              placeholder="失败分类"
+              style={{ width: 170 }}
+              options={dicOptions(deadLetterFailureCategoryDic)}
+              value={draft.failureCategory}
+              onChange={(value: DeadLetterFailureCategory | undefined) =>
+                changeFilter({ failureCategory: value })
+              }
+            />
+          </div>
+          <div className="dbz-advanced-filter-row">
+            <span>失败子类</span>
+            <Select
+              allowClear
+              aria-label="失败子类"
+              placeholder="失败子类"
+              style={{ width: 170 }}
+              options={dicOptions(deadLetterFailureSubtypeDic)}
+              value={draft.failureSubtype}
+              onChange={(value: DeadLetterFailureSubtype | undefined) =>
+                changeFilter({ failureSubtype: value })
+              }
+            />
+          </div>
+          <div className="dbz-advanced-filter-row">
+            <span>topic</span>
+            <Input.Search
+              allowClear
+              placeholder="topic 精确匹配"
+              style={{ width: 180 }}
+              value={draft.topic ?? ''}
+              onChange={(event) => setDraft((prev) => ({ ...prev, topic: event.target.value }))}
+              onSearch={() => applyFilters(draft)}
+            />
+          </div>
+          <div className="dbz-advanced-filter-row">
+            <span>失败时间</span>
+            <DatePicker.RangePicker
+              showTime
+              style={{ width: 240 }}
+              value={draft.range ?? null}
+              onChange={(value) => changeFilter({ range: value as [Dayjs, Dayjs] | null })}
+            />
+          </div>
+        </div>
+      )}
 
+      {/* 操作按「对选中记录」与「整页工具」分两组，筛选与操作各占一行 */}
+      <div className="dbz-toolbar dbz-dead-action-bar">
         <Button
           icon={<CheckOutlined />}
           disabled={pendingTargets.length === 0}
@@ -917,20 +942,23 @@ export default function DeadLetterPage() {
           废弃选中
         </Button>
         <Button
-          onClick={() => {
-            setPurgeClearTopic(false);
-            setPurgeOpen(true);
-          }}
-        >
-          清理
-        </Button>
-        <Button
           icon={<UndoOutlined />}
           disabled={manualTargets.length === 0}
           loading={acting}
           onClick={() => undoHandled(manualTargets)}
         >
           撤销处理
+        </Button>
+
+        <span className="dbz-toolbar-spacer" />
+
+        <Button
+          onClick={() => {
+            setPurgeClearTopic(false);
+            setPurgeOpen(true);
+          }}
+        >
+          清理
         </Button>
         <Button icon={<ExportOutlined />} loading={exporting} onClick={exportCsv}>
           导出 CSV

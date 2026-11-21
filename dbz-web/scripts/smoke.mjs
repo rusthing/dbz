@@ -1343,7 +1343,7 @@ await page.route('**/dbz/**', async (route) => {
 });
 
 try {
-  /* 1. 菜单与旧地址：左侧只剩控制面板与死信（集群连接器入口已移除），旧 CRUD 地址重定向到控制面板 */
+  /* 1. 菜单与旧地址：控制面板 + 四类维护页 + 死信；集群连接器仍是不进菜单的只读页 */
   await page.goto(`${base}/`, { waitUntil: 'networkidle' });
   await page.waitForSelector('.dbz-graph-node');
   check('根地址重定向到控制面板', page.url().includes('/control-panel'), page.url());
@@ -1351,30 +1351,43 @@ try {
     text.replace(/\s+/g, ''),
   );
   check(
-    '左侧菜单只剩控制面板与死信',
-    menuTexts.length === 2 &&
-      menuTexts.some((text) => text.includes('控制面板')) &&
-      menuTexts.some((text) => text.includes('死信')) &&
+    '左侧菜单含控制面板、四类维护页与死信',
+    menuTexts.length === 6 &&
+      ['控制面板', 'Kafka集群', 'KafkaConnect', '上游连接器', '下游连接器', '死信'].every((label) =>
+        menuTexts.some((text) => text.includes(label)),
+      ) &&
       !menuTexts.some((text) => text.includes('集群连接器')),
     menuTexts.join(','),
   );
-  for (const oldPath of [
-    'connector-topology',
-    'control-plane',
-    'kafka-broker',
-    'kafka-connect',
-    'source-connector',
-    'sink-connector',
-    'remote-connector',
-    'dashboard',
+  for (const [path, addButton] of [
+    ['kafka-broker', '新增集群'],
+    ['kafka-connect', '新增集群'],
+    ['source-connector', '新增上游连接器'],
+    ['sink-connector', '新增下游连接器'],
+  ]) {
+    await page.goto(`${base}/${path}`, { waitUntil: 'networkidle' });
+    await page.waitForSelector('.ant-table-tbody tr.ant-table-row', { timeout: 5000 }).catch(() => {});
+    check(
+      `/${path} 维护页可打开并有新增入口`,
+      page.url().includes(`/${path}`) &&
+        (await page.locator('.ant-table-tbody tr.ant-table-row').count()) > 0 &&
+        (await page.locator(`.dbz-toolbar button:has-text("${addButton}")`).count()) === 1,
+      page.url(),
+    );
+  }
+  for (const [oldPath, target] of [
+    ['connector-topology', 'control-panel'],
+    ['control-plane', 'control-panel'],
+    ['dashboard', 'control-panel'],
+    ['remote-connector', 'kafka-connector'],
   ]) {
     await page.goto(`${base}/${oldPath}`, { waitUntil: 'networkidle' });
     // `<Navigate>` 是 React 渲染后才执行的：networkidle 只说明资源加载完，
     // 这里要等路由真的换掉，否则会把「还没重定向」误判成失败
-    await page.waitForURL('**/control-panel', { timeout: 5000 }).catch(() => {});
+    await page.waitForURL(`**/${target}`, { timeout: 5000 }).catch(() => {});
     check(
-      `旧地址 /${oldPath} 重定向到控制面板`,
-      page.url().includes('/control-panel'),
+      `旧地址 /${oldPath} 重定向到 /${target}`,
+      page.url().includes(`/${target}`),
       page.url(),
     );
   }
@@ -3104,7 +3117,7 @@ try {
   check(
     '重新同步成功后提示信号已写入、后续以 Connect 日志为准',
     (await page
-      .locator('.ant-message-notice-content:has-text("信号已写入")')
+      .locator('.ant-message:has-text("信号已写入")')
       .count()) >= 1,
   );
   await waitNoVisibleModal();
@@ -3581,12 +3594,13 @@ try {
     (await page.locator('.ant-table-tbody tr.ant-table-row').count()) === 3,
     `实际 ${await page.locator('.ant-table-tbody tr.ant-table-row').count()}`,
   );
+  // antd6 单选的值节点不再是 ant-select-selection-item，按工具栏里可见文案判定回填
   await page
-    .waitForSelector('.ant-select-selection-item:has-text("订单同步到数仓")', { timeout: 5000 })
+    .waitForSelector('.dbz-toolbar .ant-select:has-text("订单同步到数仓")', { timeout: 5000 })
     .catch(() => {});
   check(
     '死信筛选器回填连接器名称',
-    (await page.locator('.ant-select-selection-item:has-text("订单同步到数仓")').count()) >= 1,
+    (await page.locator('.dbz-toolbar .ant-select:has-text("订单同步到数仓")').count()) >= 1,
   );
   check(
     '死信状态与异常分类标签渲染',
@@ -3604,10 +3618,19 @@ try {
       .filter((item) => item.path === '/dbz/dead-letter/page')
       .every((item) => !item.query.includes('connectorType=1')),
   );
+  const deadToolbarText = (await page.locator('.dbz-toolbar').allInnerTexts()).join(' ');
   check(
     '死信界面没有上游类型选项',
-    !(await page.locator('.dbz-toolbar').innerText()).includes('上游') &&
+    !deadToolbarText.includes('上游') &&
       (await page.locator('.ant-select-dropdown .ant-select-item-option:has-text("上游连接器")').count()) === 0,
+    deadToolbarText.replace(/\s+/g, ' '),
+  );
+  check(
+    '死信固定枚举改下拉、低频条件默认收起',
+    (await page.locator('.dbz-toolbar [role="radiogroup"]').count()) === 0 &&
+      (await page.locator('.dbz-toolbar input[placeholder="topic 精确匹配"]').count()) === 0 &&
+      (await page.locator('.dbz-toolbar button:has-text("更多筛选")').count()) === 1 &&
+      (await page.locator('.dbz-toolbar .ant-select').count()) >= 2,
   );
   const deadLetterHeader = await page.locator('.ant-table-thead').innerText();
   check(
@@ -3641,14 +3664,16 @@ try {
     !posted.some((item) => item.path === '/dbz/dead-letter/report'),
   );
 
-  // 失败分类筛选：固定枚举走按钮组，点选后请求带上 failureCategory
-  const categoryGroup = page.locator('.dbz-toolbar [role="radiogroup"][aria-label="失败分类"]');
+  // 失败分类筛选：固定枚举改下拉，收在「更多筛选」里，点选后请求带上 failureCategory
+  await page.locator('.dbz-toolbar button:has-text("更多筛选")').click();
+  await page.waitForSelector('.dbz-advanced-filters');
+  await page.locator('.dbz-advanced-filters .ant-select:has-text("失败分类")').click();
   const categoryResponse = page.waitForResponse(
     (response) =>
       response.url().includes('/dbz/dead-letter/page') &&
       response.url().includes('failureCategory=1'),
   );
-  await categoryGroup.locator('button:has-text("数据/格式类")').click();
+  await page.locator('.ant-select-dropdown .ant-select-item-option:has-text("数据/格式类")').click();
   await categoryResponse.catch(() => {});
   const categoryRequest = getRequests
     .filter((item) => item.path === '/dbz/dead-letter/page')
@@ -3770,7 +3795,7 @@ try {
   );
   check(
     '待投报文保存成功并回显编辑人/时间',
-    (await page.locator('.ant-message-notice-content:has-text("待投报文已保存")').count()) >= 1,
+    (await page.locator('.ant-message:has-text("待投报文已保存")').count()) >= 1,
   );
   const afterSaveDetail = await page.locator('.ant-drawer-body').innerText();
   check(
@@ -3798,7 +3823,7 @@ try {
   );
   check(
     '改后重投成功给出提示',
-    (await page.locator('.ant-message-notice-content:has-text("1 条重投成功")').count()) >= 1,
+    (await page.locator('.ant-message:has-text("1 条重投成功")').count()) >= 1,
   );
   const afterRetryDetail = await page.locator('.ant-drawer-body').innerText();
   check(

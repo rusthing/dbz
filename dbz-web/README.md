@@ -203,14 +203,13 @@ src/
 ├── hooks/               # usePagedQuery / useAsync / useOptions / useCancelConfirm（脏表单确认）
 ├── layouts/AppLayout.tsx
 ├── pages/
-│   ├── Dashboard.tsx            # 总览 + 异常清单
-│   ├── control-panel/      # 控制面板：broker → Connect → 连接器的实时卡片树
+│   ├── control-panel/           # 控制面板：broker → Connect → 连接器的实时卡片树
 │   ├── dead-letter/             # 死信列表 + 报文详情 + 重投/废弃
-│   ├── kafka-broker/            # 消息集群 CRUD + 连通性检测
-│   ├── kafka-connect/           # 集群 CRUD
-│   ├── source-connector/        # 上游 CRUD + 重新同步
-│   ├── sink-connector/          # 下游 CRUD
-│   └── kafka-connector/         # 集群连接器与插件查询（只读）
+│   ├── kafka-broker/            # 消息集群维护（列表 + CRUD + 连通性检测）
+│   ├── kafka-connect/           # 集群维护（列表 + CRUD）
+│   ├── source-connector/        # 上游连接器维护（列表 + CRUD + 重新同步）
+│   ├── sink-connector/          # 下游连接器维护（列表 + CRUD）
+│   └── kafka-connector/         # 集群连接器与插件查询（只读，不进菜单）
 └── utils/format.ts
 scripts/smoke.mjs        # 冒烟测试
 ```
@@ -346,16 +345,22 @@ scripts/smoke.mjs        # 冒烟测试
 
 ## 页面与接口对照
 
+左侧菜单是「控制面板 + 四类对象维护页 + 死信」：控制面板看全局，维护页按对象分页筛选与 CRUD；
+`/kafka-connector` 是只读的集群现状页，不进菜单，可从 Kafka Connect 维护行的「连接器」进入。
+旧地址 `/connector-topology`、`/control-plane`、`/dashboard` 仍重定向到控制面板，`/remote-connector`
+重定向到 `/kafka-connector`，收藏夹不会 404。
+死信页把连接器/状态/失败原因放在常用筛选行，失败分类/子类/topic/失败时间收进「更多筛选」；
+有高级条件生效时按钮上会标出数量，筛选与批量操作分两行，展开高级条件也不会盖住操作按钮。
+
 | 页面 | 用到的接口 |
 | --- | --- |
-| 总览 | 四张表的 `/list`（含 Kafka 集群），在浏览器里算统计与异常；异常清单里消息集群排在集群之前一起列 |
 | 控制面板 | 四张表的 `/list` + 每台 Connect 的 `GET /dbz/kafka-connector/list`（实时连接器）、`GET /dbz/kafka-connector/plugins`（插件）、`GET /dbz/kafka-connect/health`（Connect 自身健康）；`POST /restart`；上游/下游 `PUT`（启用/停用）；`POST /kafka-broker/check`（Kafka 卡片检测）、`POST /kafka-connect/detect`（Connect 卡片检测）、`POST /control-plane/connector-config/detect`（上/下游卡片一致性检测）、`POST /control-plane/connector-config/sync`（不一致双向同步） |
 | Kafka 集群 | `/dbz/kafka-broker` 的 `/page`、`POST`、`PUT`、`DELETE /{id}` + `POST /check` |
 | Kafka Connect | `/dbz/kafka-connect` 的 `/page`、`POST`、`PUT`、`DELETE /{id}` |
 | 上游连接器 | `/dbz/source-connector` 同上 + `GET /snapshot/preview`、`POST /snapshot` |
 | 下游连接器 | `/dbz/sink-connector` 同上 |
 | 集群连接器 | `GET /dbz/kafka-connector/list`（集群上全部连接器）、`GET /dbz/kafka-connector/plugins`（已安装插件） |
-| 死信 | `POST /dbz/dead-letter/sync`（立即从 DLQ 同步）、`GET /page`（连接器/状态/topic/时间筛选）、`GET /pending-count`（卡片角标）、`POST /retry`、`POST /edit-payload`、`POST /discard`、`POST /mark-handled`、`POST /unmark-handled`；没有上报接口 |
+| 死信 | `POST /dbz/dead-letter/sync`（立即从 DLQ 同步）、`GET /page`（连接器/状态/失败分类/子类/原因/topic/时间筛选）、`GET /pending-count`（卡片角标）、`POST /retry`、`POST /edit-payload`、`POST /discard`、`POST /mark-handled`、`POST /unmark-handled`；没有上报接口 |
 
 ## 控制面板
 
@@ -377,7 +382,8 @@ scripts/smoke.mjs        # 冒烟测试
   `inconsistent` / `inconsistent_detail` 后前端刷新列表；「启停状态」只是弹窗里的补充
   诊断，不参与一致性判定。
 - **图上动作**：详情抽屉（集群实时配置、实时任务、异常原因）、启用/停用、重启；未纳管的
-  连接器不进入画布，统一到 `/kafka-connector` 页查看全量列表（该页入口已从左侧菜单移除，直接访问 URL 仍可用）。
+  连接器不进入画布，统一到 `/kafka-connector` 页查看全量列表（该页不进左侧菜单，可从 Kafka
+  Connect 维护页的「连接器」进入）。
 - **配置来源**：详情抽屉展示库内 `connectorConfig`；Connect 上的实际配置由后端在
   `POST /control-plane/connector-config/detect` / `sync` 里直接读取并比对，前端不再单独拉
   `GET /dbz/kafka-connector/config`（该接口仍保留给运维排查，控制面板不依赖它）。

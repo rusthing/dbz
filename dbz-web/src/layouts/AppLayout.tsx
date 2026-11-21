@@ -8,7 +8,11 @@
 import {
   AlertOutlined,
   ApartmentOutlined,
+  ClusterOutlined,
+  DatabaseOutlined,
   DownOutlined,
+  ExportOutlined,
+  ImportOutlined,
   LogoutOutlined,
   UserOutlined,
 } from '@ant-design/icons';
@@ -20,7 +24,7 @@ import { reportView } from '../lib/embed-bridge';
 
 const { Sider, Header, Content } = Layout;
 
-/** 导航项：控制面板负责管理，死信独立成页（联邦入口复用它做窗口标题回报） */
+/** 导航项：控制面板看全局，四类对象各有独立维护页，死信独立成页（联邦入口复用它做窗口标题回报） */
 export const NAV_ITEMS = [
   {
     path: '/control-panel',
@@ -28,6 +32,34 @@ export const NAV_ITEMS = [
     title: '控制面板',
     desc: 'Kafka 集群 → Connect → 连接器的泳道图，实时状态、搜索定位与常用操作',
     icon: <ApartmentOutlined />,
+  },
+  {
+    path: '/kafka-broker',
+    label: 'Kafka 集群',
+    title: 'Kafka 集群（broker）',
+    desc: '消息投到哪个集群：地址、认证与连通状态',
+    icon: <DatabaseOutlined />,
+  },
+  {
+    path: '/kafka-connect',
+    label: 'Kafka Connect',
+    title: 'Kafka Connect 集群',
+    desc: '连接器实际运行的集群，地址与启停都收敛在这里',
+    icon: <ClusterOutlined />,
+  },
+  {
+    path: '/source-connector',
+    label: '上游连接器',
+    title: '上游连接器',
+    desc: 'Debezium 从源库读取变更并写入 Kafka',
+    icon: <ImportOutlined />,
+  },
+  {
+    path: '/sink-connector',
+    label: '下游连接器',
+    title: '下游连接器',
+    desc: '把 Kafka 中的变更写入目标存储',
+    icon: <ExportOutlined />,
   },
   {
     path: '/dead-letter',
