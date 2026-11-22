@@ -5,7 +5,13 @@
  * 不是集群上的实时状态；要看实时状态请到「集群连接器」页。
  */
 
-import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import {
+  HistoryOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  SyncOutlined,
+  ThunderboltOutlined,
+} from '@ant-design/icons';
 import {
   App as AntdApp,
   Alert,
@@ -23,6 +29,19 @@ import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useState } from 'react';
 import { sourceConnectorApi } from '../../api/source-connector';
 import type { ConnectorRunStatus, DbzSourceConnectorVo, Id } from '../../api/types';
+import DetectResultModal, {
+  type DetectOutcome,
+} from '../control-panel/DetectResultModal';
+import ResetOffsetsModal, {
+  type ResetOffsetsTarget,
+} from '../../components/connector-ops/ResetOffsetsModal';
+import {
+  DETECT_KIND_LABEL,
+  detectConnector,
+  detectFailure,
+  detectKeyOf,
+} from '../../components/connector-ops/detect';
+import { restartManagedConnector } from '../../components/connector-ops/restart';
 import EnabledSwitch from '../../components/EnabledSwitch';
 import StatusTag from '../../components/StatusTag';
 import { connectorRunStatusDic, dicOptions } from '../../dic';
@@ -50,6 +69,12 @@ export default function SourceConnectorPage() {
   // 不为空表示「重新同步」弹窗的目标记录
   const [snapshotTarget, setSnapshotTarget] = useState<DbzSourceConnectorVo | null>(null);
   const [snapshotOpen, setSnapshotOpen] = useState(false);
+  // 与控制面板同口径的检测结果（一次只看一条）
+  const [detectOutcome, setDetectOutcome] = useState<DetectOutcome | null>(null);
+  const [checkingId, setCheckingId] = useState<Id | null>(null);
+  const [restartingId, setRestartingId] = useState<Id | null>(null);
+  // 不为空表示「重置位点」弹窗的目标记录
+  const [resetTarget, setResetTarget] = useState<ResetOffsetsTarget | null>(null);
 
   const { data, loading, error, pageNum, pageSize, search, reload, setPageNum, setPageSize } =
     usePagedQuery<DbzSourceConnectorVo>((params) => sourceConnectorApi.page(params));
@@ -81,6 +106,49 @@ export default function SourceConnectorPage() {
           reload();
         } catch (reason) {
           message.error(errorMessage(reason));
+        }
+      },
+    });
+  };
+
+  /** 一致性检测：与控制面板同一套口径，检测完刷新让「配置不一致」标记立即生效 */
+  const handleCheck = async (record: DbzSourceConnectorVo) => {
+    const key = detectKeyOf('source', record.id);
+    setCheckingId(record.id);
+    try {
+      const outcome = await detectConnector(
+        'source',
+        record,
+        key,
+        DETECT_KIND_LABEL.source,
+      );
+      setDetectOutcome(outcome);
+      reload();
+    } catch (reason) {
+      setDetectOutcome(detectFailure(record.name, key, DETECT_KIND_LABEL.source, reason));
+    } finally {
+      setCheckingId(null);
+    }
+  };
+
+  /** 重启集群上的连接器（含任务），不写库，状态由下一轮检查回写 */
+  const handleRestart = (record: DbzSourceConnectorVo) => {
+    modal.confirm({
+      title: `重启连接器「${record.name}」？`,
+      content:
+        '会重启集群上运行的连接器及其任务，不修改库内配置；状态由下一轮检查回写。',
+      okText: '重启',
+      cancelText: '取消',
+      onOk: async () => {
+        setRestartingId(record.id);
+        try {
+          await restartManagedConnector(record);
+          message.success('已提交重启，状态稍后刷新');
+          reload();
+        } catch (reason) {
+          message.error(errorMessage(reason));
+        } finally {
+          setRestartingId(null);
         }
       },
     });
@@ -191,10 +259,43 @@ export default function SourceConnectorPage() {
     {
       title: '操作',
       key: 'actions',
-      width: 230,
+      width: 470,
       fixed: 'right',
       render: (_, record) => (
-        <Space size={4}>
+        <Space size={4} wrap>
+          <Button
+            type="link"
+            size="small"
+            icon={<ThunderboltOutlined />}
+            loading={checkingId === record.id}
+            onClick={() => void handleCheck(record)}
+          >
+            检测
+          </Button>
+          <Button
+            type="link"
+            size="small"
+            icon={<SyncOutlined />}
+            loading={restartingId === record.id}
+            onClick={() => handleRestart(record)}
+          >
+            重启
+          </Button>
+          <Button
+            type="link"
+            size="small"
+            icon={<HistoryOutlined />}
+            onClick={() =>
+              setResetTarget({
+                kind: 'source',
+                id: record.id,
+                name: record.name,
+                record,
+              })
+            }
+          >
+            重置位点
+          </Button>
           <Button
             type="link"
             size="small"
@@ -337,7 +438,7 @@ export default function SourceConnectorPage() {
         columns={columns}
         dataSource={data.list}
         locale={{ emptyText: loading ? '加载中…' : '暂无上游连接器' }}
-        scroll={{ x: 1160 }}
+        scroll={{ x: 1340 }}
         pagination={{
           current: pageNum,
           pageSize,
@@ -369,6 +470,18 @@ export default function SourceConnectorPage() {
         open={snapshotOpen}
         record={snapshotTarget}
         onClose={() => setSnapshotOpen(false)}
+      />
+
+      <DetectResultModal
+        open={detectOutcome !== null}
+        outcome={detectOutcome}
+        onClose={() => setDetectOutcome(null)}
+      />
+
+      <ResetOffsetsModal
+        target={resetTarget}
+        onClose={() => setResetTarget(null)}
+        onDone={reload}
       />
 
       <Drawer

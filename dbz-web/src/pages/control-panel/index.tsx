@@ -36,15 +36,11 @@ import {
   Alert,
   App as AntdApp,
   Button,
-  Checkbox,
   Descriptions,
   Empty,
   Input,
   InputNumber,
   Modal,
-  Radio,
-  Select,
-  Space,
   Spin,
   Switch,
   Table,
@@ -60,16 +56,20 @@ import {
   useRef,
   useState,
   type ChangeEvent,
-  type HTMLAttributes,
 } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { sm3 } from '../../lib/sm3';
 import { ApiError } from '../../api/client';
 import { backupApi } from '../../api/backup';
+import { controlPlaneApi } from '../../api/control-plane';
+import ResetOffsetsModal from '../../components/connector-ops/ResetOffsetsModal';
 import {
-  controlPlaneApi,
-  type DbzResetConnectorOffsetsVo,
-} from '../../api/control-plane';
+  detectBroker as detectBrokerOutcome,
+  detectConnect as detectConnectOutcome,
+  detectConnector as detectConnectorOutcome,
+  detectFailure as detectFailureOutcome,
+} from '../../components/connector-ops/detect';
+import { restartManagedConnector } from '../../components/connector-ops/restart';
 import { deadLetterApi } from '../../api/dead-letter';
 import { kafkaBrokerApi } from '../../api/kafka-broker';
 import { kafkaConnectApi } from '../../api/kafka-connect';
@@ -77,9 +77,6 @@ import { kafkaConnectorApi } from '../../api/kafka-connector';
 import { sinkConnectorApi } from '../../api/sink-connector';
 import { sourceConnectorApi } from '../../api/source-connector';
 import type {
-  BackupRestoreStrategy,
-  DbzBackupRestoreItemVo,
-  DbzBackupRestoreVo,
   DbzDeadLetterCountVo,
   DbzKafkaBrokerVo,
   DbzKafkaConnectVo,
@@ -93,27 +90,19 @@ import { connectorRunStatusDic, kafkaConnectorStatusDic } from '../../dic';
 import { useAsync, type AsyncState } from '../../hooks/useAsync';
 import { errorMessage, formatMs, orDash, prettyJson, truncate } from '../../utils/format';
 import ControlPanelCanvas from './ControlPanelCanvas';
+import ExportConnectorsModal from '../../components/connector-ops/ExportConnectorsModal';
+import RestoreClusterModal, {
+  type RestoreClusterRequest,
+} from '../../components/connector-ops/RestoreClusterModal';
+import ImportConnectorsModal, {
+  type ConnectorImportRequest,
+} from '../../components/connector-ops/ImportConnectorsModal';
 import DetectResultModal, {
   DetectResultBrief,
-  type DetectItemStatus,
   type DetectOutcome,
 } from './DetectResultModal';
 import InconsistentDiffModal from './InconsistentDiffModal';
-import {
-  backupFileName,
-  buildImportRows,
-  buildTransferFile,
-  canOverwriteImport,
-  downloadJson,
-  exportFileName,
-  nextImportedName,
-  parseTransferFile,
-  type ImportDecision,
-  type ImportOutcome,
-  type ImportPreviewRow,
-  type TransferConnector,
-  type TransferFile,
-} from './connect-transfer';
+import { backupFileName, downloadJson } from './connect-transfer';
 import {
   affectedEdgesOf,
   buildEdges,
@@ -127,7 +116,6 @@ import {
 import {
   authLabelOf,
   brokerDetailOf,
-  connectorConfigValueOf,
   topicInfoOf,
 } from './details';
 import {
@@ -183,136 +171,6 @@ const EMPTY_DATA: ControlPanelData = {
   loadedAt: 0,
 };
 
-/** 一次导入会话：文件、预览行与执行结果都放在同一份状态里 */
-interface ImportSession {
-  target: CanvasNode;
-  file: TransferFile;
-  fileName: string;
-  phase: 'preview' | 'running' | 'result';
-  /** 预览阶段正在读取目标 Connect 的实时连接器 */
-  loadingPreview: boolean;
-  rows: ImportPreviewRow[];
-  liveNames: Set<string> | null;
-  liveWarning?: string;
-  outcomes: ImportOutcome[];
-}
-
-/** 导入结果分类文案：汇总里必须把「覆盖并纳管」与「覆盖已有纳管记录」分开 */
-const IMPORT_ACTION_LABEL: Record<ImportOutcome['action'], string> = {
-  created: '新增',
-  'overwritten-managed': '覆盖已有纳管记录',
-  'overwritten-adopted': '覆盖并纳管',
-  skipped: '跳过',
-  'kept-both': '改名保留',
-  failed: '失败',
-};
-
-const IMPORT_DECISION_LABEL: Record<ImportDecision, string> = {
-  overwrite: '覆盖',
-  skip: '跳过',
-  keep: '两者都保留',
-};
-
-const IMPORT_ACTION_COLOR: Record<ImportOutcome['action'], string> = {
-  created: 'success',
-  'overwritten-managed': 'geekblue',
-  'overwritten-adopted': 'blue',
-  skipped: 'default',
-  'kept-both': 'purple',
-  failed: 'error',
-};
-
-/**
- * 一次恢复 / 导入会话
- *
- * 预览与执行都走同一个后端入口：文件内容原样回传，`dryRun` 决定是否写库。
- * 切换策略时重新取一次预览，保证界面上的计数与真正执行时的判定一致。
- *
- * 两个入口共用这套状态，只有措辞不同：
- * - `restore`：Kafka 集群卡片上的「恢复」（往已有集群补记录，也常用于同环境回滚）；
- * - `import`：顶栏「导入集群」（目标环境还没有这个集群，整颗集群连 Connect 与连接器一起建）。
- */
-interface RestoreSession {
-  mode: RestoreMode;
-  fileName: string;
-  /** 原始 JSON（已通过格式校验，原样回传后端） */
-  file: unknown;
-  strategy: BackupRestoreStrategy;
-  phase: 'preview' | 'running' | 'result';
-  /** 切换策略后正在重新计算预览 */
-  loadingPreview: boolean;
-  preview: DbzBackupRestoreVo;
-  result: DbzBackupRestoreVo | null;
-}
-
-/** 备份文件的两种用法：卡片上「恢复」与顶栏「导入集群」 */
-type RestoreMode = 'restore' | 'import';
-
-/** 集群恢复 / 导入弹窗的标题与说明，按入口分开措辞 */
-const RESTORE_TEXT: Record<
-  RestoreMode,
-  {
-    /** 弹窗标题 */
-    title: string;
-    /** 动作名，用在「恢复后 / 导入失败」这类句子与提示里 */
-    noun: string;
-    okText: string;
-    runningText: string;
-    /** 弹窗里说明这次写库的范围 */
-    scope: string;
-    /** 执行成功提示的前缀 */
-    submit: string;
-  }
-> = {
-  restore: {
-    title: '从 JSON 恢复 Kafka 集群',
-    noun: '恢复',
-    okText: '执行恢复',
-    runningText: '正在恢复…',
-    scope:
-      '恢复只写库内纳管记录，不会在远端注册或删除连接器；需要后续启用/检测才会下发到集群。',
-    submit: '恢复完成',
-  },
-  import: {
-    title: '从 JSON 导入 Kafka 集群',
-    noun: '导入',
-    okText: '执行导入',
-    runningText: '正在导入…',
-    scope:
-      '导入按文件内容建库内记录：集群、Connect 与连接器都会新建或按策略覆盖，不向远端注册或删除任何连接器；导入后在卡片上启用/检测才会下发到集群。',
-    submit: '导入完成',
-  },
-};
-
-/** 恢复明细的层级文案 */
-const RESTORE_LEVEL_LABEL: Record<DbzBackupRestoreItemVo['level'], string> = {
-  broker: 'Kafka 集群',
-  connect: 'Connect',
-  source: '上游连接器',
-  sink: '下游连接器',
-};
-
-const RESTORE_LEVEL_COLOR: Record<DbzBackupRestoreItemVo['level'], string> = {
-  broker: 'blue',
-  connect: 'purple',
-  source: 'cyan',
-  sink: 'magenta',
-};
-
-const RESTORE_ACTION_LABEL: Record<DbzBackupRestoreItemVo['action'], string> = {
-  create: '新增',
-  overwrite: '覆盖',
-  skip: '跳过',
-  failed: '失败',
-};
-
-const RESTORE_ACTION_COLOR: Record<DbzBackupRestoreItemVo['action'], string> = {
-  create: 'success',
-  overwrite: 'geekblue',
-  skip: 'default',
-  failed: 'error',
-};
-
 /** 异常口径与卡片红色状态一致：失败与不可达，已停止/仅纳管不算异常 */
 function connectorStatusAbnormal(runStatus: number): boolean {
   return runStatus === 3 || runStatus === 5;
@@ -351,44 +209,6 @@ function connectorStatusOf(node: CanvasNode): number {
     return 2;
   }
   return record.runStatus;
-}
-
-/**
- * 下游清空位点后的起点由连接器自己的 `auto.offset.reset` 决定：
- * earliest 才会从头重放，latest 直接跳到末尾。提示必须按实际配置给出，
- * 不能统一按 earliest 吓人或按 latest 隐瞒。
- */
-function sinkOffsetHint(record: DbzSinkConnectorVo): string {
-  const value = connectorConfigValueOf(record, 'auto.offset.reset').toLowerCase();
-  if (value === 'earliest') {
-    return '该连接器的 auto.offset.reset=earliest：清空位点后会从 topic 最早位置重新消费，历史消息会全部重投下游，可能造成重复写入与死信。';
-  }
-  if (value === 'latest') {
-    return '该连接器的 auto.offset.reset=latest：清空位点后会直接跳到 topic 当前末尾，历史消息不会补投，等于放弃这段区间的数据。';
-  }
-  return `该连接器未显式配置 auto.offset.reset（值为「${value || '未配置'}」），按 Kafka 默认 latest 处理：清空位点后会跳到 topic 当前末尾，历史消息不会补投，等于放弃这段区间的数据。`;
-}
-
-/** 上游清空位点会触发的快照行为 */
-function sourceSnapshotHint(record: DbzSourceConnectorVo): string {
-  const mode = connectorConfigValueOf(record, 'snapshot.mode') || '未配置';
-  return `当前 snapshot.mode=${mode}：清空位点后会重新做一次全量快照，整库整表重读，下游会被重灌一遍。耗时与源库压力取决于数据量，请在低峰期执行。`;
-}
-
-/** 重置位点的步骤文案 */
-function resetStepLabel(step?: string | null): string {
-  switch (step) {
-    case 'stop':
-      return '停止连接器';
-    case 'clear':
-      return '清空位点';
-    case 'resume':
-      return '恢复运行';
-    case 'confirm':
-      return '执行前确认';
-    default:
-      return step || '未知步骤';
-  }
 }
 
 /** 自动刷新配置：默认 15 秒，0 或关闭开关表示停用 */
@@ -646,12 +466,8 @@ export default function ControlPanelPage() {
   );
   const entryRefreshed = useRef(false);
 
-  /** 重置位点弹窗 */
+  /** 重置位点弹窗（内容组件与维护页共用） */
   const [resetTarget, setResetTarget] = useState<CanvasNode | null>(null);
-  const [resetResume, setResetResume] = useState(true);
-  const [resetConfirmed, setResetConfirmed] = useState(false);
-  const [resetRunning, setResetRunning] = useState(false);
-  const [resetResult, setResetResult] = useState<DbzResetConnectorOffsetsVo | null>(null);
 
   /** 新增：父级固定（顶层 Kafka 集群没有父级），成功后从新记录里找出 ID 再选中 */
   const [createKind, setCreateKind] = useState<CanvasNodeKind | null>(null);
@@ -683,11 +499,10 @@ export default function ControlPanelPage() {
   const [activeBrokerKey, setActiveBrokerKey] = useState<Id | null>(null);
 
   /** 导出弹窗：默认带凭据，脱敏由用户显式勾选 */
-  const [exportTarget, setExportTarget] = useState<CanvasNode | null>(null);
-  const [exportRedacted, setExportRedacted] = useState(false);
+  const [exportTarget, setExportTarget] = useState<DbzKafkaConnectVo | null>(null);
 
   /** 导入：文件选择与预览/执行结果 */
-  const [importSession, setImportSession] = useState<ImportSession | null>(null);
+  const [importRequest, setImportRequest] = useState<ConnectorImportRequest | null>(null);
   const importFileRef = useRef<HTMLInputElement>(null);
   const pendingImportTarget = useRef<CanvasNode | null>(null);
 
@@ -701,7 +516,7 @@ export default function ControlPanelPage() {
   const [backupRunning, setBackupRunning] = useState(false);
 
   /** 集群恢复 / 导入：文件、策略与预览/执行结果 */
-  const [restoreSession, setRestoreSession] = useState<RestoreSession | null>(null);
+  const [restoreRequest, setRestoreRequest] = useState<RestoreClusterRequest | null>(null);
   const restoreFileRef = useRef<HTMLInputElement>(null);
   /** 顶栏「导入集群」的文件选择框 */
   const clusterImportFileRef = useRef<HTMLInputElement>(null);
@@ -982,23 +797,6 @@ export default function ControlPanelPage() {
     brokerTabs.find((tab) => tab.id === resolvedBrokerId)?.name ?? '--';
 
   /** 导入结果按分类汇总：覆盖两种口径必须分开统计 */
-  const importStats = useMemo(() => {
-    const counts: Record<ImportOutcome['action'], number> = {
-      created: 0,
-      'overwritten-managed': 0,
-      'overwritten-adopted': 0,
-      skipped: 0,
-      'kept-both': 0,
-      failed: 0,
-    };
-    for (const outcome of importSession?.outcomes ?? []) {
-      counts[outcome.action] += 1;
-    }
-    return counts;
-  }, [importSession?.outcomes]);
-
-  const importConflictCount =
-    importSession?.rows.filter((item) => item.conflict).length ?? 0;
 
   const clusterOptions = useMemo(
     () => state.data.connects.map((cluster) => ({ value: cluster.id, label: cluster.name })),
@@ -1087,39 +885,14 @@ export default function ControlPanelPage() {
   };
 
   /**
-   * 集群检测：Kafka 连通性 + topic 清单
-   *
-   * 只看 Kafka 侧（可达性、topic）。连接器插件是 Connect worker 的能力，归属在
-   * Connect 卡片的检测里，这里不遍历名下的 Connect，也不把插件汇总到集群。
+   * 集群检测：Kafka 连通性 + topic 清单（口径在共享模块，维护页也用同一份）
    */
   const checkBroker = async (node: CanvasNode): Promise<DetectOutcome> => {
-    const broker = node.record as DbzKafkaBrokerVo;
-    const result = await kafkaBrokerApi.check(broker.id);
-    const reachable = result.reachable;
-    const outcome: DetectOutcome = {
-      nodeKey: node.key,
-      kindLabel: kindLabel(node.kind),
-      name: broker.name,
-      elapsedMs: result.elapsedMs,
-      items: [
-        {
-          key: 'reachable',
-          label: 'Kafka 连通性',
-          status: reachable ? 'ok' : 'error',
-          detail: reachable
-            ? `已连上 ${broker.bootstrapServers}`
-            : result.message || '无法连接，请检查地址、认证与网络',
-        },
-        {
-          key: 'topics',
-          label: 'Topic 清单',
-          status: reachable ? 'ok' : 'error',
-          detail: reachable ? `${result.topicCount} 个 topic` : '未获取到 topic 列表',
-        },
-      ],
-      reason: reachable ? undefined : result.message || '无法连接到 Kafka 集群',
-      topics: reachable ? (result.topics ?? []) : [],
-    };
+    const outcome = await detectBrokerOutcome(
+      node.record as DbzKafkaBrokerVo,
+      node.key,
+      kindLabel(node.kind),
+    );
     recordDetect(outcome);
     state.reload();
     return outcome;
@@ -1132,95 +905,11 @@ export default function ControlPanelPage() {
    * Connect 各自插件不同，不做跨 Connect 汇总。
    */
   const checkConnect = async (node: CanvasNode): Promise<DetectOutcome> => {
-    const cluster = node.record as DbzKafkaConnectVo;
-    const [healthResult, pluginResult] = await Promise.allSettled([
-      kafkaConnectApi.health(cluster.id),
-      kafkaConnectorApi.plugins(cluster.id),
-    ]);
-    if (healthResult.status === 'rejected') {
-      throw healthResult.reason;
-    }
-    const health = healthResult.value;
-    const plugins = pluginResult.status === 'fulfilled' ? pluginResult.value : [];
-    const pluginIssue =
-      pluginResult.status === 'rejected'
-        ? `插件查询失败：${errorMessage(pluginResult.reason)}`
-        : null;
-
-    if (!health.reachable) {
-      const outcome: DetectOutcome = {
-        nodeKey: node.key,
-        kindLabel: kindLabel(node.kind),
-        name: cluster.name,
-        elapsedMs: health.elapsedMs,
-        items: [
-          {
-            key: 'reachable',
-            label: 'Connect 可达性',
-            status: 'error',
-            detail: health.message || 'Connect 不可达，请检查地址、网络与服务状态',
-          },
-          {
-            key: 'sync',
-            label: '纳管记录同步',
-            status: 'warning',
-            detail: 'Connect 不可达，未执行同步',
-          },
-        ],
-        reason: health.message || 'Connect 不可达',
-      };
-      recordDetect(outcome);
-      return outcome;
-    }
-
-    // 可达才同步：以远端为准补录缺失、标记配置不一致、把已消失的置为禁用。
-    const detect = await kafkaConnectApi.detect(cluster.id);
-    const outcome: DetectOutcome = {
-      nodeKey: node.key,
-      kindLabel: kindLabel(node.kind),
-      name: cluster.name,
-      elapsedMs: health.elapsedMs,
-      items: [
-        {
-          key: 'reachable',
-          label: 'Connect 可达性',
-          status: 'ok',
-          detail: `已连上 ${cluster.url}`,
-        },
-        {
-          key: 'version',
-          label: 'Connect 版本',
-          status: health.version ? 'ok' : 'warning',
-          detail: health.version ? `v${health.version}` : '版本未知（根路径未返回）',
-        },
-        {
-          key: 'worker',
-          label: 'Worker',
-          status: health.workerCount > 0 ? 'ok' : 'warning',
-          detail: `${health.workerCount} 个 worker`,
-        },
-        {
-          key: 'connectors',
-          label: '连接器',
-          status: 'ok',
-          detail: `${health.connectorCount} 个连接器`,
-        },
-        {
-          key: 'plugins',
-          label: '连接器插件',
-          status: pluginIssue ? 'warning' : 'ok',
-          detail: pluginIssue ?? `已安装 ${plugins.length} 个插件`,
-        },
-        {
-          key: 'sync',
-          label: '纳管记录同步',
-          status: detect.skipped > 0 ? 'warning' : 'ok',
-          detail: `补录 ${detect.added}，标记不一致 ${detect.marked}，置禁用 ${detect.disabled}，恢复一致 ${detect.cleared}，无变化 ${detect.unchanged}，跳过 ${detect.skipped}`,
-        },
-      ],
-      plugins,
-      sync: detect,
-    };
+    const outcome = await detectConnectOutcome(
+      node.record as DbzKafkaConnectVo,
+      node.key,
+      kindLabel(node.kind),
+    );
     recordDetect(outcome);
     state.reload();
     return outcome;
@@ -1229,112 +918,17 @@ export default function ControlPanelPage() {
   /**
    * 连接器一致性检测：库内配置 vs Connect 实际配置 + 启停状态
    *
-   * 判定交给后端 `POST /dbz/control-plane/connector-config/detect`：与整台 Connect
-   * 的「检测」同源（同一套差异口径、同一份脱敏快照），但只作用于这一条记录，
-   * 并回写 `inconsistent` / `inconsistent_detail`。检测完刷新数据，卡片的「不一致」
-   * 标签和对比弹窗立即能拿到本次结论；启停状态只是补充诊断，不参与不一致判定。
+   * 判定交给后端 `POST /dbz/control-plane/connector-config/detect`，与整台 Connect
+   * 的「检测」同源，但只作用于这一条记录；检测完刷新数据，卡片的「不一致」标签
+   * 和对比弹窗立即能拿到本次结论。
    */
   const checkConnectorConsistency = async (node: CanvasNode): Promise<DetectOutcome> => {
-    const record = node.record as ManagedConnectorRecord;
-    const startedAt = performance.now();
-    const result = await controlPlaneApi.detectConnectorConfig({
-      nodeType: node.kind as ConnectorKind,
-      nodeId: node.id,
-    });
-
-    // 启停核对是补充诊断：实时列表取不到也不该把一致性结论带偏
-    let runDetail = '未取到 Connect 实时状态，跳过启停核对';
-    let runStatus: DetectItemStatus = 'warning';
-    if (!result.remoteExists) {
-      runDetail = '远端已不存在该连接器，未比对启停';
-    } else {
-      try {
-        const liveList = await kafkaConnectorApi.list(record.kafkaConnectId);
-        const live = liveList.find((item) => item.name === record.connectorName);
-        if (!live) {
-          runDetail = '实时列表里没有该连接器，未比对启停';
-        } else if (record.enabled && live.state !== 0) {
-          const stateLabel =
-            kafkaConnectorStatusDic.find((dic) => dic.value === live.state)?.label ??
-            `状态 ${live.state}`;
-          runDetail = `库内为启用，Connect 实际为「${stateLabel}」`;
-        } else if (!record.enabled && live.state === 0) {
-          runDetail = '库内为停用，但 Connect 上连接器仍在运行';
-        } else {
-          runDetail = '库内启停与 Connect 实际一致';
-          runStatus = 'ok';
-        }
-      } catch (reason) {
-        runDetail = `实时状态查询失败：${errorMessage(reason)}`;
-      }
-    }
-
-    const changedKeys = result.changedKeys ?? [];
-    const configDetail = !result.configValid
-      ? result.reason ?? '库内 connectorConfig 不是合法的 JSON 对象，无法逐项比对'
-      : !result.remoteExists
-        ? result.reason ?? '远端已不存在，无法逐项比对'
-        : result.changed > 0
-          ? `${result.changed} 处不一致：${changedKeys.join('；')}`
-          : result.inconsistent
-            ? result.reason ?? '配置无法逐项比对，已标记不一致'
-            : '库内配置与 Connect 实际一致（连接信息、topic 范围等全部关键项）';
-
-    const outcome: DetectOutcome = {
-      nodeKey: node.key,
-      kindLabel: kindLabel(node.kind),
-      name: record.name,
-      elapsedMs: performance.now() - startedAt,
-      items: [
-        {
-          key: 'stored',
-          label: '库内配置格式',
-          status: result.configValid ? 'ok' : 'error',
-          detail: result.configValid
-            ? '库内 connectorConfig 可正常解析'
-            : '库内 connectorConfig 不是合法的 JSON 对象；请先在编辑表单里修正配置',
-        },
-        {
-          key: 'exists',
-          label: '远端连接器',
-          status: result.remoteExists ? 'ok' : 'error',
-          detail: result.remoteExists
-            ? `Connect 上存在连接器 ${result.connectorName}`
-            : 'Connect 上不存在该连接器，库内记录已置为禁用并标记不一致',
-        },
-        {
-          key: 'config',
-          label: '关键配置比对',
-          status: result.inconsistent ? 'error' : 'ok',
-          detail: configDetail,
-        },
-        {
-          key: 'run',
-          label: '启停状态',
-          status: runStatus,
-          detail: runDetail,
-        },
-        {
-          key: 'flag',
-          label: '检测标记',
-          status: 'ok',
-          detail: result.inconsistent
-            ? result.updated
-              ? '已刷新「不一致」标记与对比快照，点卡片标签可逐项对比并双向同步'
-              : '「不一致」标记与快照已是本次结论'
-            : result.updated
-              ? '库内与远端一致，已清除不一致标记与快照'
-              : '标记原本就是一致，无需改动',
-        },
-      ],
-      reason: !result.configValid
-        ? '库内配置不是合法 JSON 对象'
-        : !result.remoteExists
-          ? 'Connect 上已不存在该连接器'
-          : result.changed > 0
-            ? `库内记录与 Connect 实际有 ${result.changed} 处配置不一致`
-            : undefined,
-    };
+    const outcome = await detectConnectorOutcome(
+      node.kind as ConnectorKind,
+      node.record as ManagedConnectorRecord,
+      node.key,
+      kindLabel(node.kind),
+    );
     recordDetect(outcome);
     // 后端已落库标记与快照：刷新四张表让卡片标签、对比弹窗都用最新数据
     state.reload();
@@ -1352,21 +946,12 @@ export default function ControlPanelPage() {
       }
       return await checkConnectorConsistency(node);
     } catch (reason) {
-      const outcome: DetectOutcome = {
-        nodeKey: node.key,
-        kindLabel: kindLabel(node.kind),
-        name: node.name,
-        elapsedMs: 0,
-        items: [
-          {
-            key: 'request',
-            label: '检测请求',
-            status: 'error',
-            detail: errorMessage(reason),
-          },
-        ],
-        reason: errorMessage(reason),
-      };
+      const outcome = detectFailureOutcome(
+        node.name,
+        node.key,
+        kindLabel(node.kind),
+        reason,
+      );
       recordDetect(outcome);
       return outcome;
     }
@@ -1387,12 +972,7 @@ export default function ControlPanelPage() {
     const key = connectorKey(record);
     setRestartingKey(key);
     try {
-      await kafkaConnectorApi.restart({
-        kafkaConnectId: record.kafkaConnectId,
-        connectorName: record.connectorName,
-        includeTasks: true,
-        onlyFailed: false,
-      });
+      await restartManagedConnector(record);
       message.success(`已提交重启「${record.connectorName}」，状态稍后刷新`);
       state.reload();
     } catch (reason) {
@@ -1530,58 +1110,14 @@ export default function ControlPanelPage() {
     });
   };
 
-  /** 打开重置位点弹窗：默认勾选「清空后立即恢复运行」 */
+  /** 打开重置位点弹窗：内容组件与维护页共用，执行与刷新都在组件里 */
   const openResetOffsets = (node: CanvasNode) => {
     setResetTarget(node);
-    setResetResume(true);
-    setResetConfirmed(false);
-    setResetResult(null);
   };
 
+  /** 弹窗关闭：执行中由组件自己拦，这里只清目标 */
   const closeResetOffsets = () => {
-    if (resetRunning) {
-      return;
-    }
     setResetTarget(null);
-    setResetResult(null);
-  };
-
-  /**
-   * # 执行重置位点
-   *
-   * 三步由后端串行完成（stop → delete offsets → 可选 resume），前端只提交意图。
-   * 失败时展示停在哪一步、连接器当时处于什么状态，并刷新一次状态让卡片与实际一致。
-   */
-  const executeResetOffsets = async () => {
-    if (!resetTarget) {
-      return;
-    }
-    setResetRunning(true);
-    try {
-      const result = await controlPlaneApi.resetOffsets({
-        // 后端 ControlPlaneNodeType 是整数枚举：3=source、4=sink
-        connectorType: resetTarget.kind === 'source' ? 3 : 4,
-        connectorId: resetTarget.id,
-        resume: resetResume,
-        confirmReplay: resetTarget.kind === 'sink' ? resetConfirmed : true,
-      });
-      setResetResult(result);
-      if (result.ok) {
-        message.success(
-          resetResume ? '已清空位点并恢复运行，状态稍后回写' : '已清空位点，连接器保持停止',
-        );
-      }
-      await refreshLight().catch(() => undefined);
-    } catch (reason) {
-      setResetResult({
-        ok: false,
-        message: errorMessage(reason),
-        connectorState: '未知',
-        steps: [],
-      });
-    } finally {
-      setResetRunning(false);
-    }
   };
 
   /** 卡片操作统一入口：卡片只负责点击，确认与写库都在页面里 */
@@ -1598,8 +1134,7 @@ export default function ControlPanelPage() {
         setResyncTarget(node.record as DbzSourceConnectorVo);
         break;
       case 'export-connectors':
-        setExportTarget(node);
-        setExportRedacted(false);
+        setExportTarget(node.record as DbzKafkaConnectVo);
         break;
       case 'import-connectors':
         // 文件选择框是隐藏的，记下目标 Connect 再触发，避免用户选文件期间切换节点
@@ -1656,50 +1191,8 @@ export default function ControlPanelPage() {
     setSearchCursor(0);
   };
 
-  /** 导出弹窗里的连接器数量：当前 Connect 下已纳管的上游 + 下游 */
-  const exportConnectorCount = exportTarget
-    ? state.data.sources.filter((item) => item.kafkaConnectId === exportTarget.id).length +
-      state.data.sinks.filter((item) => item.kafkaConnectId === exportTarget.id).length
-    : 0;
-
-  /** 导出为 JSON：默认带凭据，脱敏由弹窗里的选项决定 */
-  const executeExportConnectors = () => {
-    if (!exportTarget) {
-      return;
-    }
-    try {
-      const connect = exportTarget.record as DbzKafkaConnectVo;
-      const now = new Date();
-      const file = buildTransferFile(
-        state.data.brokers,
-        state.data.sources,
-        state.data.sinks,
-        connect,
-        exportRedacted,
-        now,
-      );
-      downloadJson(exportFileName(connect.name, now), file);
-      if (exportRedacted) {
-        const masked = file.connectors.reduce(
-          (sum, item) => sum + item.sensitiveConfigKeys.length,
-          0,
-        );
-        message.success(
-          `已脱敏导出 ${file.connectors.length} 个连接器，屏蔽 ${masked} 处凭据（值为 ******）`,
-        );
-      } else {
-        message.success(
-          `已导出 ${file.connectors.length} 个连接器（含凭据，敏感字段已在 sensitiveConfigKeys 中标注）`,
-        );
-      }
-      setExportTarget(null);
-    } catch (reason) {
-      message.error(`导出失败：${errorMessage(reason)}`);
-    }
-  };
-
-  /** 读文件 → 解析 → 打开预览，并异步补上目标 Connect 的实时连接器名称 */
-  const handleImportFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+  /** 选好文件后交给共享导入弹窗：解析、冲突预览与执行都在组件里 */
+  const handleImportFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const selected = event.target.files?.[0];
     const target = pendingImportTarget.current;
     event.target.value = '';
@@ -1707,313 +1200,11 @@ export default function ControlPanelPage() {
     if (!selected || !target) {
       return;
     }
-
-    let raw = '';
-    try {
-      raw = await selected.text();
-    } catch (reason) {
-      modal.error({
-        title: '读取导入文件失败',
-        content: errorMessage(reason),
-      });
-      return;
-    }
-
-    const parsed = parseTransferFile(raw);
-    if (!parsed.file) {
-      modal.error({
-        title: '导入文件不合法',
-        width: 640,
-        content: (
-          <ul className="dbz-transfer-errors">
-            {parsed.errors.map((item) => (
-              <li key={item}>{item}</li>
-            ))}
-          </ul>
-        ),
-      });
-      return;
-    }
-
-    const sessionBase: ImportSession = {
-      target,
-      file: parsed.file,
+    setImportRequest({
+      target: target.record as DbzKafkaConnectVo,
+      file: selected,
       fileName: selected.name,
-      phase: 'preview',
-      loadingPreview: true,
-      rows: buildImportRows(
-        parsed.file,
-        target.id,
-        state.data.sources,
-        state.data.sinks,
-        null,
-      ),
-      liveNames: null,
-      outcomes: [],
-    };
-    setImportSession(sessionBase);
-
-    try {
-      const live = await kafkaConnectorApi.list(target.id);
-      const liveNames = new Set(live.map((item) => item.name));
-      setImportSession((previous) =>
-        previous && previous.target.key === target.key && previous.fileName === selected.name
-          ? {
-              ...previous,
-              loadingPreview: false,
-              liveNames,
-              rows: buildImportRows(
-                previous.file,
-                target.id,
-                state.data.sources,
-                state.data.sinks,
-                liveNames,
-              ),
-            }
-          : previous,
-      );
-    } catch (reason) {
-      setImportSession((previous) =>
-        previous && previous.target.key === target.key && previous.fileName === selected.name
-          ? {
-              ...previous,
-              loadingPreview: false,
-              liveWarning: `无法读取目标 Connect 上的实时连接器，同名冲突只能按库内记录判断：${errorMessage(reason)}`,
-            }
-          : previous,
-      );
-    }
-  };
-
-  /** 单条冲突处理方式 */
-  const setImportDecision = (
-    direction: TransferConnector['direction'],
-    connectorName: string,
-    decision: ImportDecision,
-  ) => {
-    setImportSession((previous) =>
-      previous
-        ? {
-            ...previous,
-            rows: previous.rows.map((item) =>
-              item.row.direction === direction && item.row.connectorName === connectorName
-                ? { ...item, decision }
-                : item,
-            ),
-          }
-        : previous,
-    );
-  };
-
-  /** 顶部批量选择：只影响有冲突的行；「覆盖」跳过名字被别的 Connect 占用的行 */
-  const setAllImportDecisions = (decision: ImportDecision) => {
-    setImportSession((previous) =>
-      previous
-        ? {
-            ...previous,
-            rows: previous.rows.map((item) => {
-              if (!item.conflict) {
-                return item;
-              }
-              // 另一个 Connect 已占用 connectorName 时不允许批量改成覆盖
-              if (decision === 'overwrite' && !canOverwriteImport(item.conflict)) {
-                return item;
-              }
-              return { ...item, decision };
-            }),
-          }
-        : previous,
-    );
-  };
-
-  /**
-   * # 执行导入
-   *
-   * 顺序固定为先上游后下游：下游按文件里的 `upstream.connectorName` 在目标环境
-   * 中查找已纳管的上游 id；找不到就把这条下游记为失败并说明缺的是哪个上游，
-   * 不静默丢弃，也不拿另一个同名记录凑合。
-   */
-  const executeImport = async () => {
-    if (!importSession) {
-      return;
-    }
-    const session = importSession;
-    const target = session.target;
-    setImportSession((previous) => (previous ? { ...previous, phase: 'running' } : previous));
-
-    const outcomes: ImportOutcome[] = [];
-    const managedSources = state.data.sources.filter(
-      (item) => item.kafkaConnectId === target.id,
-    );
-    /** 目标 Connect 上已纳管的上游：connectorName → 记录 ID */
-    const sourceLookup = new Map<string, Id>(
-      managedSources.map((item) => [item.connectorName, item.id]),
-    );
-    /** 已占用名称：库内 + 集群实时 + 文件，保证 `-imported-N` 不撞名 */
-    const taken = new Set<string>([
-      ...state.data.sources.map((item) => item.connectorName),
-      ...state.data.sinks.map((item) => item.connectorName),
-      ...(session.liveNames ? [...session.liveNames] : []),
-      ...session.file.connectors.map((item) => item.connectorName),
-    ]);
-
-    const upstreamIdOf = (row: TransferConnector): Id => {
-      const connectorName = row.upstream?.connectorName?.trim() ?? '';
-      if (!connectorName) {
-        throw new Error('缺少上游 connectorName，无法重新挂载下游连接器');
-      }
-      const id = sourceLookup.get(connectorName);
-      if (!id) {
-        throw new Error(
-          `缺少上游连接器「${row.upstream?.name || connectorName}」（connectorName=${connectorName}），目标 Connect 上没有对应的纳管记录`,
-        );
-      }
-      return id;
-    };
-
-    const addConnector = async (
-      row: TransferConnector,
-      connectorName: string,
-    ): Promise<Id> => {
-      if (row.direction === 'source') {
-        const created = await sourceConnectorApi.add({
-          kafkaConnectId: target.id,
-          name: row.name,
-          connectorName,
-          connectorConfig: row.connectorConfig,
-          remark: row.remark,
-          enabled: row.enabled,
-        });
-        return created.id;
-      }
-      const created = await sinkConnectorApi.add({
-        sourceConnectorId: upstreamIdOf(row),
-        kafkaConnectId: target.id,
-        name: row.name,
-        connectorName,
-        connectorConfig: row.connectorConfig,
-        remark: row.remark,
-        enabled: row.enabled,
-      });
-      return created.id;
-    };
-
-    const modifyConnector = async (
-      row: TransferConnector,
-      id: Id,
-      connectorName: string,
-    ): Promise<void> => {
-      if (row.direction === 'source') {
-        await sourceConnectorApi.modify({
-          id,
-          name: row.name,
-          connectorName,
-          connectorConfig: row.connectorConfig,
-          remark: row.remark,
-          enabled: row.enabled,
-        });
-        return;
-      }
-      await sinkConnectorApi.modify({
-        id,
-        name: row.name,
-        connectorName,
-        connectorConfig: row.connectorConfig,
-        remark: row.remark,
-        enabled: row.enabled,
-        sourceConnectorId: upstreamIdOf(row),
-      });
-    };
-
-    const runRow = async (preview: ImportPreviewRow): Promise<void> => {
-      const row = preview.row;
-      if (preview.conflict && preview.decision === 'skip') {
-        outcomes.push({ row, action: 'skipped' });
-        return;
-      }
-      try {
-        if (preview.conflict && preview.decision === 'keep') {
-          const renamed = nextImportedName(row.connectorName, taken);
-          const createdId = await addConnector(row, renamed);
-          taken.add(renamed);
-          const hints = [`导入件已改名为 ${renamed}`];
-          if (preview.conflict.unmanaged) {
-            hints.push(
-              `该 Connect 上另有一条未纳管的同名连接器「${row.connectorName}」，跳过或覆盖时需要单独处理`,
-            );
-          }
-          outcomes.push({
-            row,
-            action: 'kept-both',
-            renamedConnectorName: renamed,
-            message: hints.join('；'),
-          });
-          // 「两者都保留」里被改名的上游不占用原名称：文件中的下游仍按原名称挂载
-          if (row.direction === 'source' && preview.conflict.managed) {
-            sourceLookup.set(row.connectorName, preview.conflict.managed.id);
-          }
-          if (row.direction === 'source') {
-            sourceLookup.set(renamed, createdId);
-          }
-          return;
-        }
-
-        if (preview.conflict && preview.decision === 'overwrite') {
-          if (!canOverwriteImport(preview.conflict)) {
-            outcomes.push({
-              row,
-              action: 'failed',
-              message:
-                `connectorName「${row.connectorName}」在另一台 Connect 已有纳管记录` +
-                `（id=${preview.conflict.elsewhere?.id ?? '--'}），库内唯一，只能改名保留或跳过`,
-            });
-            return;
-          }
-          if (preview.conflict.managed) {
-            await modifyConnector(
-              row,
-              preview.conflict.managed.id,
-              row.connectorName,
-            );
-            if (row.direction === 'source') {
-              sourceLookup.set(row.connectorName, preview.conflict.managed.id);
-            }
-            outcomes.push({ row, action: 'overwritten-managed' });
-            return;
-          }
-          const adoptedId = await addConnector(row, row.connectorName);
-          taken.add(row.connectorName);
-          if (row.direction === 'source') {
-            sourceLookup.set(row.connectorName, adoptedId);
-          }
-          outcomes.push({ row, action: 'overwritten-adopted' });
-          return;
-        }
-
-        // 无冲突：新增并纳管
-        const createdId = await addConnector(row, row.connectorName);
-        taken.add(row.connectorName);
-        if (row.direction === 'source') {
-          sourceLookup.set(row.connectorName, createdId);
-        }
-        outcomes.push({ row, action: 'created' });
-      } catch (reason) {
-        outcomes.push({ row, action: 'failed', message: errorMessage(reason) });
-      }
-    };
-
-    // 先上游后下游：下游要用导入后的上游 id
-    for (const preview of session.rows.filter((item) => item.row.direction === 'source')) {
-      await runRow(preview);
-    }
-    for (const preview of session.rows.filter((item) => item.row.direction === 'sink')) {
-      await runRow(preview);
-    }
-
-    setImportSession((previous) =>
-      previous ? { ...previous, phase: 'result', outcomes } : previous,
-    );
-    state.reload();
+    });
   };
 
   /** 备份弹窗里的 Connect 数量：当前集群下已纳管的 Kafka Connect */
@@ -2063,320 +1254,24 @@ export default function ControlPanelPage() {
     }
   };
 
-  /**
-   * # 读文件 → 预览
-   *
-   * 文件校验与冲突判定都交给后端的预览接口：`dryRun=true` 不写库。校验不通过时按
-   * Connect 导入的方式逐条列出原因，不再本地维护一套格式校验。
-   *
-   * 「恢复」与「导入集群」共用这一套流程，只有入口与会话里的 `mode` 不同。
-   */
-  const startRestoreSession = async (selected: File, mode: RestoreMode) => {
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(await selected.text());
-    } catch (reason) {
-      modal.error({
-        title: '读取备份文件失败',
-        width: 640,
-        content:
-          reason instanceof SyntaxError
-            ? '文件不是合法的 JSON'
-            : errorMessage(reason),
-      });
-      return;
-    }
-
-    try {
-      const preview = await backupApi.restore(parsed, 'skip', true);
-      if (!preview.valid) {
-        modal.error({
-          title: '备份文件不合法',
-          width: 640,
-          content: (
-            <ul className="dbz-transfer-errors">
-              {preview.errors.map((item) => (
-                <li key={item}>{item}</li>
-              ))}
-            </ul>
-          ),
-        });
-        return;
-      }
-      setRestoreSession({
-        mode,
-        fileName: selected.name,
-        file: parsed,
-        strategy: 'skip',
-        phase: 'preview',
-        loadingPreview: false,
-        preview,
-        result: null,
-      });
-    } catch (reason) {
-      modal.error({
-        title: '读取备份文件失败',
-        content: errorMessage(reason),
-      });
-    }
-  };
-
-  /** Kafka 集群卡片上的「恢复」：集群以文件内容为准 */
-  const handleRestoreFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+  /** 选好备份文件后交给共享弹窗：预览、策略与执行都在组件里 */
+  const handleRestoreFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const selected = event.target.files?.[0];
     event.target.value = '';
     if (!selected) {
       return;
     }
-    await startRestoreSession(selected, 'restore');
+    setRestoreRequest({ file: selected, fileName: selected.name, mode: 'restore' });
   };
 
   /** 顶栏「导入集群」：目标环境还没有这个集群时，整颗集群一起导入 */
-  const handleClusterImportFileChange = async (event: ChangeEvent<HTMLInputElement>) => {
+  const handleClusterImportFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const selected = event.target.files?.[0];
     event.target.value = '';
     if (!selected) {
       return;
     }
-    await startRestoreSession(selected, 'import');
-  };
-
-  /** 切换恢复 / 导入策略：重新取一次预览，保证计数与实际执行一致 */
-  const changeRestoreStrategy = async (next: BackupRestoreStrategy) => {
-    const session = restoreSession;
-    if (
-      !session ||
-      session.loadingPreview ||
-      session.phase === 'running' ||
-      session.strategy === next
-    ) {
-      return;
-    }
-    const noun = RESTORE_TEXT[session.mode].noun;
-    setRestoreSession({ ...session, strategy: next, loadingPreview: true });
-    try {
-      const preview = await backupApi.restore(session.file, next, true);
-      if (!preview.valid) {
-        message.error(preview.errors.join('；') || `${noun}预览失败`);
-        setRestoreSession((previous) =>
-          previous && previous.mode === session.mode && previous.fileName === session.fileName
-            ? { ...previous, strategy: session.strategy, loadingPreview: false }
-            : previous,
-        );
-        return;
-      }
-      setRestoreSession((previous) =>
-        previous && previous.mode === session.mode && previous.fileName === session.fileName
-          ? { ...previous, preview, loadingPreview: false }
-          : previous,
-      );
-    } catch (reason) {
-      setRestoreSession((previous) =>
-        previous && previous.mode === session.mode && previous.fileName === session.fileName
-          ? { ...previous, strategy: session.strategy, loadingPreview: false }
-          : previous,
-      );
-      message.error(`${noun}预览失败：${errorMessage(reason)}`);
-    }
-  };
-
-  /**
-   * # 执行恢复 / 导入
-   *
-   * 保留二次确认、不做审核口令校验。两种入口都只写库内纳管记录，不向远端注册或
-   * 删除连接器；执行成功与否都以后端返回的同一套判定为准。
-   *
-   * 导入成功后记下文件里的集群名，等刷新到这条记录再切到它的 tab：新集群如果建在
-   * 看不见的 tab 里，用户会以为导入没成功。
-   */
-  const executeRestore = () => {
-    const session = restoreSession;
-    if (!session) {
-      return;
-    }
-    const text = RESTORE_TEXT[session.mode];
-    const preview = session.preview;
-    const overwrite = session.strategy === 'overwrite';
-    const brokerName = preview.items.find((item) => item.level === 'broker')?.name ?? '';
-    modal.confirm({
-      title: overwrite ? '覆盖已存在的纳管记录？' : '仅补齐缺失的纳管记录？',
-      width: 560,
-      content: [
-        `将写库 ${preview.created + preview.overwritten} 条：新增 ${preview.created}，覆盖 ${preview.overwritten}，跳过 ${preview.skipped}。`,
-        text.scope,
-      ].join('\n'),
-      okText: text.okText,
-      cancelText: '取消',
-      onOk: async () => {
-        setRestoreSession((previous) =>
-          previous ? { ...previous, phase: 'running' } : previous,
-        );
-        try {
-          const result = await backupApi.restore(session.file, session.strategy, false);
-          setRestoreSession((previous) =>
-            previous && previous.mode === session.mode && previous.fileName === session.fileName
-              ? { ...previous, phase: 'result', result }
-              : previous,
-          );
-          const summary = `新增 ${result.created}，覆盖 ${result.overwritten}，跳过 ${result.skipped}，失败 ${result.failed}`;
-          if (session.mode === 'import' && brokerName && result.created > 0) {
-            setPendingImportedBroker(brokerName);
-          }
-          if (result.failed > 0) {
-            message.warning(`${text.submit}：${summary}`);
-          } else {
-            message.success(`${text.submit}：${summary}`);
-          }
-          await state.reload();
-        } catch (reason) {
-          setRestoreSession((previous) =>
-            previous ? { ...previous, phase: 'preview' } : previous,
-          );
-          message.error(`${text.noun}失败：${errorMessage(reason)}`);
-        }
-      },
-    });
-  };
-
-  /** 关闭恢复弹窗：执行中不允许关闭 */
-  const closeRestore = () => {
-    if (restoreSession?.phase === 'running') {
-      return;
-    }
-    setRestoreSession(null);
-  };
-
-  /** 恢复 / 导入弹窗内容：预览阶段展示计划与策略，结果阶段展示同一套明细 */
-  const renderRestoreBody = () => {
-    const session = restoreSession;
-    if (!session) {
-      return null;
-    }
-    const text = RESTORE_TEXT[session.mode];
-    const view =
-      session.phase === 'result' && session.result ? session.result : session.preview;
-    const brokerItem = view.items.find((item) => item.level === 'broker');
-    const connectCount = view.items.filter((item) => item.level === 'connect').length;
-    const connectorCount = view.items.filter(
-      (item) => item.level === 'source' || item.level === 'sink',
-    ).length;
-    const isResult = session.phase === 'result' && session.result !== null;
-
-    return (
-      <div className="dbz-transfer-import" data-restore-dialog data-restore-mode={session.mode}>
-        <div className="dbz-transfer-file">
-          文件：<span className="dbz-mono">{session.fileName}</span>
-          {brokerItem && (
-            <>
-              {' '}· 集群 <span className="dbz-mono">{brokerItem.name}</span>
-            </>
-          )}
-          {' '}· Connect {connectCount} 台 · 连接器 {connectorCount} 条
-        </div>
-
-        <Alert
-          type="warning"
-          showIcon
-          message={`备份文件含 sasl_password 等敏感凭据，${text.noun}后能直接连上原集群；请只在可信环境之间传递并妥善保管。`}
-        />
-        <Alert type="info" showIcon message={text.scope} />
-
-        {!isResult && (
-          <div className="dbz-transfer-bulk" data-restore-strategy>
-            <span>{text.noun}策略：</span>
-            <Radio.Group
-              value={session.strategy}
-              disabled={session.loadingPreview}
-              onChange={(event) =>
-                void changeRestoreStrategy(event.target.value as BackupRestoreStrategy)
-              }
-            >
-              <Radio.Button value="skip">仅补齐缺失（默认）</Radio.Button>
-              <Radio.Button value="overwrite">覆盖已存在</Radio.Button>
-            </Radio.Group>
-          </div>
-        )}
-
-        <div className="dbz-transfer-summary">
-          {isResult ? (
-            <>
-              <Tag color="success">新增 {view.created}</Tag>
-              <Tag color="geekblue">覆盖 {view.overwritten}</Tag>
-              <Tag>跳过 {view.skipped}</Tag>
-              <Tag color="error">失败 {view.failed}</Tag>
-            </>
-          ) : (
-            <>
-              <Tag color="success">将新增 {view.created}</Tag>
-              <Tag color="geekblue">将覆盖 {view.overwritten}</Tag>
-              <Tag>将跳过 {view.skipped}</Tag>
-              <Tag color="error">失败 {view.failed}</Tag>
-            </>
-          )}
-        </div>
-
-        <Table<DbzBackupRestoreItemVo>
-          size="small"
-          rowKey={(item) => `${item.level}:${item.connectorName ?? item.name}`}
-          loading={session.loadingPreview}
-          pagination={false}
-          dataSource={view.items}
-          scroll={{ y: 360 }}
-          columns={[
-            {
-              title: '层级',
-              key: 'level',
-              width: 110,
-              render: (_value: unknown, item: DbzBackupRestoreItemVo) => (
-                <Tag color={RESTORE_LEVEL_COLOR[item.level]}>
-                  {RESTORE_LEVEL_LABEL[item.level]}
-                </Tag>
-              ),
-            },
-            {
-              title: '名称 / connectorName',
-              key: 'name',
-              render: (_value: unknown, item: DbzBackupRestoreItemVo) => (
-                <div>
-                  <div>{item.name}</div>
-                  {item.connectorName && (
-                    <div className="dbz-mono">{item.connectorName}</div>
-                  )}
-                </div>
-              ),
-            },
-            {
-              title: '所属',
-              key: 'parent',
-              width: 160,
-              render: (_value: unknown, item: DbzBackupRestoreItemVo) => item.parent || '--',
-            },
-            {
-              title: '动作',
-              key: 'action',
-              width: 90,
-              render: (_value: unknown, item: DbzBackupRestoreItemVo) => (
-                <Tag color={RESTORE_ACTION_COLOR[item.action]}>
-                  {RESTORE_ACTION_LABEL[item.action]}
-                </Tag>
-              ),
-            },
-            {
-              title: '说明',
-              key: 'message',
-              render: (_value: unknown, item: DbzBackupRestoreItemVo) =>
-                item.message ? (
-                  <Typography.Text type={item.action === 'failed' ? 'danger' : 'secondary'}>
-                    {item.message}
-                  </Typography.Text>
-                ) : (
-                  '--'
-                ),
-            },
-          ]}
-        />
-      </div>
-    );
+    setRestoreRequest({ file: selected, fileName: selected.name, mode: 'import' });
   };
 
   const renderInspector = () => {
@@ -3111,319 +2006,16 @@ export default function ControlPanelPage() {
         onChange={(event) => void handleClusterImportFileChange(event)}
       />
 
-      {/* Connect 导出：默认带凭据，也可显式选择脱敏 */}
-      <Modal
-        open={exportTarget !== null}
-        title={
-          exportTarget
-            ? `导出「${(exportTarget.record as DbzKafkaConnectVo).name}」的连接器`
-            : '导出连接器'
-        }
-        onCancel={() => setExportTarget(null)}
-        okText={exportRedacted ? '导出（脱敏）' : '导出（含凭据）'}
-        onOk={executeExportConnectors}
-        okButtonProps={{ disabled: exportConnectorCount === 0 }}
-        destroyOnHidden
-      >
-        <div className="dbz-transfer-export" data-export-dialog>
-          <p>
-            将导出该 Connect 下 <strong>{exportConnectorCount}</strong> 个已纳管连接器，文件名含
-            Connect 名称与导出时间。
-          </p>
-          <Radio.Group
-            value={exportRedacted}
-            onChange={(event) => setExportRedacted(event.target.value as boolean)}
-          >
-            <Space direction="vertical">
-              <Radio value={false} data-export-mode="credential">
-                含凭据（默认）：完整配置原样导出
-              </Radio>
-              <Radio value={true} data-export-mode="redacted">
-                脱敏：口令/密钥类字段替换为 ******
-              </Radio>
-            </Space>
-          </Radio.Group>
-          {exportConnectorCount === 0 ? (
-            <Alert
-              type="info"
-              showIcon
-              message="该 Connect 下还没有已纳管连接器，没有可导出的内容。"
-            />
-          ) : exportRedacted ? (
-            <Alert
-              type="warning"
-              showIcon
-              message="脱敏导出的凭据字段不可用，导入后需要手动补齐才能正常运行。"
-            />
-          ) : (
-            <Alert
-              type="warning"
-              showIcon
-              message="含凭据导出会把口令/密钥原样写进 JSON 文件，请只在可信环境之间传递；每个连接器的 sensitiveConfigKeys 会标注敏感字段。"
-            />
-          )}
-        </div>
-      </Modal>
+      <ExportConnectorsModal
+        target={exportTarget}
+        onClose={() => setExportTarget(null)}
+      />
 
-      {/* Connect 导入：先预览冲突，再逐条选择处理方式 */}
-      <Modal
-        open={importSession !== null}
-        width={900}
-        title={
-          importSession
-            ? `从 JSON 导入到「${(importSession.target.record as DbzKafkaConnectVo).name}」`
-            : '导入连接器'
-        }
-        onCancel={() => {
-          if (importSession?.phase !== 'running') {
-            setImportSession(null);
-          }
-        }}
-        maskClosable={importSession?.phase !== 'running'}
-        destroyOnHidden
-        footer={
-          !importSession
-            ? null
-            : importSession.phase === 'result'
-              ? [
-                  <Button key="close" onClick={() => setImportSession(null)}>
-                    关闭
-                  </Button>,
-                ]
-              : importSession.phase === 'running'
-                ? [
-                    <Button key="running" type="primary" loading disabled>
-                      正在导入…
-                    </Button>,
-                  ]
-                : [
-                    <Button key="cancel" onClick={() => setImportSession(null)}>
-                      取消
-                    </Button>,
-                    <Button
-                      key="ok"
-                      type="primary"
-                      loading={importSession.loadingPreview}
-                      disabled={
-                        importSession.loadingPreview || importSession.rows.length === 0
-                      }
-                      onClick={() => void executeImport()}
-                      data-import-execute
-                    >
-                      执行导入
-                    </Button>,
-                  ]
-        }
-      >
-        {importSession && (
-          <div className="dbz-transfer-import">
-            <div className="dbz-transfer-file">
-              文件：<span className="dbz-mono">{importSession.fileName}</span> · 连接器{' '}
-              {importSession.rows.length} 条 · 冲突 {importConflictCount} 条
-            </div>
-
-            {importSession.liveWarning && (
-              <Alert type="warning" showIcon message={importSession.liveWarning} />
-            )}
-            {importSession.file.credentialMode === 'redacted' && (
-              <Alert
-                type="warning"
-                showIcon
-                message="该文件是脱敏导出，配置中的凭据为 ******；导入后需要手动补齐口令/密钥。"
-              />
-            )}
-            {importSession.target.record &&
-              !(importSession.target.record as DbzKafkaConnectVo).enabled && (
-                <Alert
-                  type="info"
-                  showIcon
-                  message="目标 Connect 已停用：导入只写库内记录，启用 Connect 后才会真正下发到集群。"
-                />
-              )}
-
-            {importSession.phase === 'result' ? (
-              <div data-import-result>
-                <div className="dbz-transfer-summary">
-                  <Tag color="success">新增 {importStats.created}</Tag>
-                  <Tag color="blue">覆盖并纳管 {importStats['overwritten-adopted']}</Tag>
-                  <Tag color="geekblue">
-                    覆盖已有纳管记录 {importStats['overwritten-managed']}
-                  </Tag>
-                  <Tag>跳过 {importStats.skipped}</Tag>
-                  <Tag color="purple">改名保留 {importStats['kept-both']}</Tag>
-                  <Tag color="error">失败 {importStats.failed}</Tag>
-                </div>
-                <div className="dbz-transfer-outcomes">
-                  {importSession.outcomes.map((outcome, index) => (
-                    <div
-                      className="dbz-transfer-outcome"
-                      key={`${outcome.row.direction}:${outcome.row.connectorName}:${index}`}
-                    >
-                      <Tag color={IMPORT_ACTION_COLOR[outcome.action]}>
-                        {IMPORT_ACTION_LABEL[outcome.action]}
-                      </Tag>
-                      <span className="dbz-transfer-outcome-name">
-                        {outcome.row.name}
-                      </span>
-                      <span className="dbz-mono">
-                        {outcome.renamedConnectorName ?? outcome.row.connectorName}
-                      </span>
-                      {outcome.message && (
-                        <span className="dbz-transfer-outcome-message">{outcome.message}</span>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : (
-              <>
-                {importConflictCount > 0 && (
-                  <div className="dbz-transfer-bulk" data-import-bulk>
-                    <span>冲突处理批量设置（无冲突行始终新增）：</span>
-                    <Button
-                      size="small"
-                      onClick={() => setAllImportDecisions('overwrite')}
-                      data-import-bulk-overwrite
-                    >
-                      全部覆盖
-                    </Button>
-                    <Button
-                      size="small"
-                      onClick={() => setAllImportDecisions('skip')}
-                      data-import-bulk-skip
-                    >
-                      全部跳过
-                    </Button>
-                    <Button
-                      size="small"
-                      onClick={() => setAllImportDecisions('keep')}
-                      data-import-bulk-keep
-                    >
-                      全部保留
-                    </Button>
-                  </div>
-                )}
-                <Table<ImportPreviewRow>
-                  size="small"
-                  rowKey={(item) => `${item.row.direction}:${item.row.connectorName}`}
-                  loading={importSession.loadingPreview}
-                  pagination={false}
-                  dataSource={importSession.rows}
-                  scroll={{ y: 360 }}
-                  onRow={(item) => ({
-                    'data-import-row': `${item.row.direction}:${item.row.connectorName}`,
-                  } as HTMLAttributes<HTMLElement>)}
-                  columns={[
-                    {
-                      title: '方向',
-                      key: 'direction',
-                      width: 70,
-                      render: (_value: unknown, item: ImportPreviewRow) => (
-                        <Tag color={item.row.direction === 'source' ? 'cyan' : 'magenta'}>
-                          {item.row.direction === 'source' ? '上游' : '下游'}
-                        </Tag>
-                      ),
-                    },
-                    {
-                      title: '名称 / connectorName',
-                      key: 'name',
-                      render: (_value: unknown, item: ImportPreviewRow) => (
-                        <div>
-                          <div>{item.row.name}</div>
-                          <div className="dbz-mono">{item.row.connectorName}</div>
-                        </div>
-                      ),
-                    },
-                    {
-                      title: '上游',
-                      key: 'upstream',
-                      render: (_value: unknown, item: ImportPreviewRow) =>
-                        item.row.direction === 'sink' ? (
-                          item.row.upstream ? (
-                            <div>
-                              <div>{item.row.upstream.name || '--'}</div>
-                              <div className="dbz-mono">
-                                {item.row.upstream.connectorName}
-                              </div>
-                            </div>
-                          ) : (
-                            <Tag color="error">缺少上游信息</Tag>
-                          )
-                        ) : (
-                          '--'
-                        ),
-                    },
-                    {
-                      title: '同名冲突',
-                      key: 'conflict',
-                      width: 220,
-                      render: (_value: unknown, item: ImportPreviewRow) =>
-                        item.conflict ? (
-                          <div className="dbz-transfer-conflict">
-                            <Tag color="warning">同名冲突</Tag>
-                            <span>
-                              {item.conflict.elsewhere
-                                ? `另一台 Connect 已有记录「${item.conflict.elsewhere.name}」，需改名或跳过`
-                                : item.conflict.managed
-                                  ? `已有纳管记录「${item.conflict.managed.name}」`
-                                  : '集群上未纳管'}
-                            </span>
-                          </div>
-                        ) : (
-                          <Tag color="success">无冲突，将新增</Tag>
-                        ),
-                    },
-                    {
-                      title: '处理方式',
-                      key: 'decision',
-                      width: 220,
-                      render: (_value: unknown, item: ImportPreviewRow) =>
-                        item.conflict ? (
-                          <span
-                            data-import-decision={`${item.row.direction}:${item.row.connectorName}`}
-                          >
-                            <Select<ImportDecision>
-                              size="small"
-                              value={item.decision}
-                              style={{ width: 200 }}
-                              onChange={(value) =>
-                                setImportDecision(
-                                  item.row.direction,
-                                  item.row.connectorName,
-                                  value,
-                                )
-                              }
-                              options={[
-                                // 名字被别的 Connect 占用时不能覆盖（会改到别的集群的记录）
-                                ...(canOverwriteImport(item.conflict)
-                                  ? [
-                                      {
-                                        value: 'overwrite' as const,
-                                        label: item.conflict.managed
-                                          ? IMPORT_ACTION_LABEL['overwritten-managed']
-                                          : IMPORT_ACTION_LABEL['overwritten-adopted'],
-                                      },
-                                    ]
-                                  : []),
-                                { value: 'skip', label: IMPORT_DECISION_LABEL.skip },
-                                {
-                                  value: 'keep',
-                                  label: `${IMPORT_DECISION_LABEL.keep}（改名 -imported-N）`,
-                                },
-                              ]}
-                            />
-                          </span>
-                        ) : (
-                          <Typography.Text type="secondary">新增</Typography.Text>
-                        ),
-                    },
-                  ]}
-                />
-              </>
-            )}
-          </div>
-        )}
-      </Modal>
+      <ImportConnectorsModal
+        request={importRequest}
+        onClose={() => setImportRequest(null)}
+        onDone={() => state.reload()}
+      />
 
       {/* Kafka 集群导出：确认后由后端生成备份，前端只负责下载 */}
       <Modal
@@ -3461,47 +2053,12 @@ export default function ControlPanelPage() {
         </div>
       </Modal>
 
-      {/* Kafka 集群恢复 / 导入：预览计划 → 选择策略 → 二次确认 → 结果 */}
-      <Modal
-        open={restoreSession !== null}
-        width={900}
-        title={restoreSession ? RESTORE_TEXT[restoreSession.mode].title : '从 JSON 恢复 Kafka 集群'}
-        onCancel={closeRestore}
-        maskClosable={restoreSession?.phase !== 'running'}
-        destroyOnHidden
-        footer={
-          !restoreSession
-            ? null
-            : restoreSession.phase === 'result'
-              ? [
-                  <Button key="close" onClick={() => setRestoreSession(null)}>
-                    关闭
-                  </Button>,
-                ]
-              : restoreSession.phase === 'running'
-                ? [
-                    <Button key="running" type="primary" loading disabled>
-                      {RESTORE_TEXT[restoreSession.mode].runningText}
-                    </Button>,
-                  ]
-                : [
-                    <Button key="cancel" onClick={() => setRestoreSession(null)}>
-                      取消
-                    </Button>,
-                    <Button
-                      key="ok"
-                      type="primary"
-                      disabled={restoreSession.loadingPreview}
-                      onClick={executeRestore}
-                      data-restore-execute
-                    >
-                      {RESTORE_TEXT[restoreSession.mode].okText}
-                    </Button>,
-                  ]
-        }
-      >
-        {renderRestoreBody()}
-      </Modal>
+      <RestoreClusterModal
+        request={restoreRequest}
+        onClose={() => setRestoreRequest(null)}
+        onDone={() => state.reload()}
+        onImported={setPendingImportedBroker}
+      />
 
       <KafkaBrokerForm
         open={createKind === 'broker' || editTarget?.kind === 'broker'}
@@ -3545,100 +2102,20 @@ export default function ControlPanelPage() {
         onSuccess={formSuccess}
       />
 
-      <Modal
-        open={resetTarget !== null}
-        title={resetTarget ? `重置位点「${resetTarget.name}」` : '重置位点'}
-        onCancel={closeResetOffsets}
-        maskClosable={!resetRunning}
-        destroyOnHidden
-        footer={
-          resetResult
-            ? [
-                <Button key="close" onClick={closeResetOffsets}>
-                  关闭
-                </Button>,
-              ]
-            : [
-                <Button key="cancel" onClick={closeResetOffsets} disabled={resetRunning}>
-                  取消
-                </Button>,
-                <Button
-                  key="ok"
-                  type="primary"
-                  danger
-                  loading={resetRunning}
-                  disabled={resetTarget?.kind === 'sink' && !resetConfirmed}
-                  onClick={() => void executeResetOffsets()}
-                >
-                  {resetResume ? '清空并恢复运行' : '清空位点'}
-                </Button>,
-              ]
+      <ResetOffsetsModal
+        target={
+          resetTarget
+            ? {
+                kind: resetTarget.kind as 'source' | 'sink',
+                id: resetTarget.id,
+                name: resetTarget.name,
+                record: resetTarget.record as ManagedConnectorRecord,
+              }
+            : null
         }
-      >
-        {resetTarget && (
-          <div className="dbz-reset-offsets">
-            <Alert
-              type="warning"
-              showIcon
-              message={
-                resetTarget.kind === 'sink'
-                  ? '清空后按 auto.offset.reset 决定起点，可能造成历史消息重放'
-                  : '重置后会重新做全量快照，下游会被重灌一遍'
-              }
-              description={
-                resetTarget.kind === 'sink'
-                  ? sinkOffsetHint(resetTarget.record as DbzSinkConnectorVo)
-                  : sourceSnapshotHint(resetTarget.record as DbzSourceConnectorVo)
-              }
-            />
-            <p className="dbz-reset-order">
-              执行顺序：停止连接器 → 删除位点 → （按勾选）恢复运行。任一步失败会停下并说明停在哪一步。
-            </p>
-            <Checkbox
-              checked={resetResume}
-              disabled={resetRunning}
-              onChange={(event) => setResetResume(event.target.checked)}
-            >
-              清空后立即恢复运行
-            </Checkbox>
-            {resetTarget.kind === 'sink' && (
-              <Checkbox
-                checked={resetConfirmed}
-                disabled={resetRunning}
-                onChange={(event) => setResetConfirmed(event.target.checked)}
-              >
-                我知道会重放历史消息、可能产生重复写入与死信
-              </Checkbox>
-            )}
-
-            {resetResult && (
-              <Alert
-                className="dbz-reset-result"
-                type={resetResult.ok ? 'success' : 'error'}
-                showIcon
-                message={
-                  resetResult.ok
-                    ? `执行完成，当前状态：${resetResult.connectorState}`
-                    : `第「${resetStepLabel(resetResult.failedStep)}」步失败：${resetResult.message}`
-                }
-                description={`当前连接器状态：${resetResult.connectorState}`}
-              />
-            )}
-            {resetResult && resetResult.steps.length > 0 && (
-              <div className="dbz-reset-steps">
-                {resetResult.steps.map((step) => (
-                  <div key={step.step} className="dbz-reset-step">
-                    <Tag color={step.ok ? 'success' : 'error'}>
-                      {resetStepLabel(step.step)}
-                    </Tag>
-                    <span>{step.message || (step.ok ? '完成' : '失败')}</span>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        )}
-      </Modal>
+        onClose={closeResetOffsets}
+        onDone={() => void refreshLight().catch(() => undefined)}
+      />
 
       {/* 上游「重新同步」：固定源库信号表 + 增量快照，可多选要重读的表 */}
       <SnapshotModal

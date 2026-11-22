@@ -9,12 +9,23 @@
  * 改认证、重新启用都会把状态置回「无状态」，等下一轮检查给结论。
  */
 
-import { PlusOutlined, ReloadOutlined, ThunderboltOutlined } from '@ant-design/icons';
+import {
+  DownloadOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  ThunderboltOutlined,
+  UploadOutlined,
+} from '@ant-design/icons';
 import { App as AntdApp, Alert, Button, Card, Input, Select, Space, Table, Tooltip } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState, type ChangeEvent } from 'react';
+import { backupApi } from '../../api/backup';
 import { kafkaBrokerApi } from '../../api/kafka-broker';
 import type { DbzKafkaBrokerVo, KafkaBrokerStatus } from '../../api/types';
+import RestoreClusterModal, {
+  type RestoreClusterRequest,
+} from '../../components/connector-ops/RestoreClusterModal';
+import { backupFileName, downloadJson } from '../control-panel/connect-transfer';
 import EnabledSwitch from '../../components/EnabledSwitch';
 import StatusTag from '../../components/StatusTag';
 import type { StatusDetail } from '../../components/StatusTag';
@@ -70,6 +81,9 @@ export default function KafkaBrokerPage() {
   const [editing, setEditing] = useState<DbzKafkaBrokerVo | null>(null);
   /** 正在检测的记录ID，用来给按钮转圈 */
   const [checking, setChecking] = useState<string | null>(null);
+  /** 恢复入口：选好备份文件后交给共享弹窗预览与执行 */
+  const [restoreRequest, setRestoreRequest] = useState<RestoreClusterRequest | null>(null);
+  const restoreFileRef = useRef<HTMLInputElement>(null);
 
   const { data, loading, error, pageNum, pageSize, search, reload, setPageNum, setPageSize } =
     usePagedQuery<DbzKafkaBrokerVo>((params) => kafkaBrokerApi.page(params));
@@ -132,6 +146,42 @@ export default function KafkaBrokerPage() {
         }
       },
     });
+  };
+
+  /** 备份当前集群：后端按库内记录生成备份，前端只负责下载 */
+  const handleBackup = (record: DbzKafkaBrokerVo) => {
+    modal.confirm({
+      title: `导出 Kafka 集群「${record.name}」？`,
+      content:
+        '备份包含集群连接与认证配置、名下 Connect 及其连接器；文件含 sasl_password 等敏感凭据，请只在可信环境之间传递并妥善保管。',
+      okText: '下载备份文件',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          const file = await backupApi.exportCluster(record.id);
+          downloadJson(backupFileName(file.broker.name), file);
+          const connectors = file.connects.reduce(
+            (sum, item) => sum + item.connectors.length,
+            0,
+          );
+          message.success(
+            `已导出 Kafka 集群「${file.broker.name}」：${file.connects.length} 台 Connect，${connectors} 个连接器（含凭据）`,
+          );
+        } catch (reason) {
+          message.error(`导出失败：${errorMessage(reason)}`);
+        }
+      },
+    });
+  };
+
+  /** 选好备份文件后交给共享弹窗：预览、策略与执行都在组件里 */
+  const handleRestoreFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const selected = event.target.files?.[0];
+    event.target.value = '';
+    if (!selected) {
+      return;
+    }
+    setRestoreRequest({ file: selected, fileName: selected.name, mode: 'restore' });
   };
 
   const columns: ColumnsType<DbzKafkaBrokerVo> = [
@@ -213,10 +263,10 @@ export default function KafkaBrokerPage() {
     {
       title: '操作',
       key: 'actions',
-      width: 180,
+      width: 260,
       fixed: 'right',
       render: (_, record) => (
-        <Space size={4}>
+        <Space size={4} wrap>
           <Button
             type="link"
             size="small"
@@ -225,6 +275,14 @@ export default function KafkaBrokerPage() {
             onClick={() => handleCheck(record)}
           >
             检测
+          </Button>
+          <Button
+            type="link"
+            size="small"
+            icon={<DownloadOutlined />}
+            onClick={() => handleBackup(record)}
+          >
+            备份
           </Button>
           <Button
             type="link"
@@ -294,6 +352,17 @@ export default function KafkaBrokerPage() {
 
         <span className="dbz-toolbar-spacer" />
 
+        <Button
+          icon={<UploadOutlined />}
+          onClick={() => {
+            if (restoreFileRef.current) {
+              restoreFileRef.current.value = '';
+              restoreFileRef.current.click();
+            }
+          }}
+        >
+          恢复集群
+        </Button>
         <Button icon={<ReloadOutlined />} onClick={reload}>
           刷新
         </Button>
@@ -331,7 +400,7 @@ export default function KafkaBrokerPage() {
         columns={columns}
         dataSource={data.list}
         locale={{ emptyText: loading ? '加载中…' : '暂无 Kafka 集群' }}
-        scroll={{ x: 1120 }}
+        scroll={{ x: 1160 }}
         pagination={{
           current: pageNum,
           pageSize,
@@ -356,6 +425,21 @@ export default function KafkaBrokerPage() {
           setFormOpen(false);
           reload();
         }}
+      />
+
+      <input
+        ref={restoreFileRef}
+        type="file"
+        accept=".json,application/json"
+        style={{ display: 'none' }}
+        data-restore-file
+        onChange={handleRestoreFileChange}
+      />
+
+      <RestoreClusterModal
+        request={restoreRequest}
+        onClose={() => setRestoreRequest(null)}
+        onDone={reload}
       />
     </Card>
   );

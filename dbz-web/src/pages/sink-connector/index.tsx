@@ -5,7 +5,14 @@
  * 集群上的实时状态与已安装插件请到「集群连接器」页。
  */
 
-import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import {
+  HistoryOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  SyncOutlined,
+  ThunderboltOutlined,
+  WarningOutlined,
+} from '@ant-design/icons';
 import {
   App as AntdApp,
   Alert,
@@ -21,8 +28,27 @@ import {
 } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { sinkConnectorApi } from '../../api/sink-connector';
-import type { ConnectorRunStatus, DbzSinkConnectorVo, Id } from '../../api/types';
+import type {
+  ConnectorRunStatus,
+  DbzSinkConnectorVo,
+  DeadLetterConnectorType,
+  Id,
+} from '../../api/types';
+import DetectResultModal, {
+  type DetectOutcome,
+} from '../control-panel/DetectResultModal';
+import ResetOffsetsModal, {
+  type ResetOffsetsTarget,
+} from '../../components/connector-ops/ResetOffsetsModal';
+import {
+  DETECT_KIND_LABEL,
+  detectConnector,
+  detectFailure,
+  detectKeyOf,
+} from '../../components/connector-ops/detect';
+import { restartManagedConnector } from '../../components/connector-ops/restart';
 import EnabledSwitch from '../../components/EnabledSwitch';
 import StatusTag from '../../components/StatusTag';
 import { connectorRunStatusDic, dicOptions } from '../../dic';
@@ -42,12 +68,19 @@ interface FilterDraft {
 
 export default function SinkConnectorPage() {
   const { message, modal } = AntdApp.useApp();
+  const navigate = useNavigate();
   const cluster = useClusterOptions();
   const source = useSourceOptions();
   const [draft, setDraft] = useState<FilterDraft>({});
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<DbzSinkConnectorVo | null>(null);
   const [preview, setPreview] = useState<DbzSinkConnectorVo | null>(null);
+  // 与控制面板同口径的检测结果（一次只看一条）
+  const [detectOutcome, setDetectOutcome] = useState<DetectOutcome | null>(null);
+  const [checkingId, setCheckingId] = useState<Id | null>(null);
+  const [restartingId, setRestartingId] = useState<Id | null>(null);
+  // 不为空表示「重置位点」弹窗的目标记录
+  const [resetTarget, setResetTarget] = useState<ResetOffsetsTarget | null>(null);
 
   const { data, loading, error, pageNum, pageSize, search, reload, setPageNum, setPageSize } =
     usePagedQuery<DbzSinkConnectorVo>((params) => sinkConnectorApi.page(params));
@@ -79,6 +112,44 @@ export default function SinkConnectorPage() {
           reload();
         } catch (reason) {
           message.error(errorMessage(reason));
+        }
+      },
+    });
+  };
+
+  /** 一致性检测：与控制面板同一套口径，检测完刷新让「配置不一致」标记立即生效 */
+  const handleCheck = async (record: DbzSinkConnectorVo) => {
+    const key = detectKeyOf('sink', record.id);
+    setCheckingId(record.id);
+    try {
+      const outcome = await detectConnector('sink', record, key, DETECT_KIND_LABEL.sink);
+      setDetectOutcome(outcome);
+      reload();
+    } catch (reason) {
+      setDetectOutcome(detectFailure(record.name, key, DETECT_KIND_LABEL.sink, reason));
+    } finally {
+      setCheckingId(null);
+    }
+  };
+
+  /** 重启集群上的连接器（含任务），不写库，状态由下一轮检查回写 */
+  const handleRestart = (record: DbzSinkConnectorVo) => {
+    modal.confirm({
+      title: `重启连接器「${record.name}」？`,
+      content:
+        '会重启集群上运行的连接器及其任务，不修改库内配置；状态由下一轮检查回写。',
+      okText: '重启',
+      cancelText: '取消',
+      onOk: async () => {
+        setRestartingId(record.id);
+        try {
+          await restartManagedConnector(record);
+          message.success('已提交重启，状态稍后刷新');
+          reload();
+        } catch (reason) {
+          message.error(errorMessage(reason));
+        } finally {
+          setRestartingId(null);
         }
       },
     });
@@ -192,10 +263,54 @@ export default function SinkConnectorPage() {
     {
       title: '操作',
       key: 'actions',
-      width: 170,
+      width: 530,
       fixed: 'right',
       render: (_, record) => (
-        <Space size={4}>
+        <Space size={4} wrap>
+          <Button
+            type="link"
+            size="small"
+            icon={<ThunderboltOutlined />}
+            loading={checkingId === record.id}
+            onClick={() => void handleCheck(record)}
+          >
+            检测
+          </Button>
+          <Button
+            type="link"
+            size="small"
+            icon={<SyncOutlined />}
+            loading={restartingId === record.id}
+            onClick={() => handleRestart(record)}
+          >
+            重启
+          </Button>
+          <Button
+            type="link"
+            size="small"
+            icon={<HistoryOutlined />}
+            onClick={() =>
+              setResetTarget({
+                kind: 'sink',
+                id: record.id,
+                name: record.name,
+                record,
+              })
+            }
+          >
+            重置位点
+          </Button>
+          <Button
+            type="link"
+            size="small"
+            icon={<WarningOutlined />}
+            onClick={() => {
+              const type: DeadLetterConnectorType = 2;
+              navigate(`/dead-letter?connectorType=${type}&connectorId=${record.id}`);
+            }}
+          >
+            死信
+          </Button>
           <Button
             type="link"
             size="small"
@@ -347,7 +462,7 @@ export default function SinkConnectorPage() {
         columns={columns}
         dataSource={data.list}
         locale={{ emptyText: loading ? '加载中…' : '暂无下游连接器' }}
-        scroll={{ x: 1200 }}
+        scroll={{ x: 1500 }}
         pagination={{
           current: pageNum,
           pageSize,
@@ -372,6 +487,18 @@ export default function SinkConnectorPage() {
           setFormOpen(false);
           reload();
         }}
+      />
+
+      <DetectResultModal
+        open={detectOutcome !== null}
+        outcome={detectOutcome}
+        onClose={() => setDetectOutcome(null)}
+      />
+
+      <ResetOffsetsModal
+        target={resetTarget}
+        onClose={() => setResetTarget(null)}
+        onDone={reload}
       />
 
       <Drawer

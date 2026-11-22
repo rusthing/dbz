@@ -199,16 +199,17 @@ src/
 │   ├── kafka-connector.ts  # /dbz/kafka-connector（集群连接器/插件查询与远端运维）
 │   └── dead-letter.ts      # /dbz/dead-letter（死信查询、重投、废弃）
 ├── components/          # StatusTag / EnabledSwitch / JsonEditor / ConnectorConfigEditor
+│   └── connector-ops/   # 四类对象共用：检测、重启、重置位点、导出/导入连接器、集群备份恢复
 ├── dic/                 # 状态枚举的整数判别式 → 文案/颜色
 ├── hooks/               # usePagedQuery / useAsync / useOptions / useCancelConfirm（脏表单确认）
 ├── layouts/AppLayout.tsx
 ├── pages/
 │   ├── control-panel/           # 控制面板：broker → Connect → 连接器的实时卡片树
 │   ├── dead-letter/             # 死信列表 + 报文详情 + 重投/废弃
-│   ├── kafka-broker/            # 消息集群维护（列表 + CRUD + 连通性检测）
-│   ├── kafka-connect/           # 集群维护（列表 + CRUD）
-│   ├── source-connector/        # 上游连接器维护（列表 + CRUD + 重新同步）
-│   ├── sink-connector/          # 下游连接器维护（列表 + CRUD）
+│   ├── kafka-broker/            # 消息集群维护（列表 + CRUD + 检测 + 备份/恢复）
+│   ├── kafka-connect/           # 集群维护（列表 + CRUD + 检测 + 连接器导出/导入）
+│   ├── source-connector/        # 上游连接器维护（列表 + CRUD + 检测/重启/重置位点 + 重新同步）
+│   ├── sink-connector/          # 下游连接器维护（列表 + CRUD + 检测/重启/重置位点 + 死信入口）
 │   └── kafka-connector/         # 集群连接器与插件查询（只读，不进菜单）
 └── utils/format.ts
 scripts/smoke.mjs        # 冒烟测试
@@ -352,13 +353,17 @@ scripts/smoke.mjs        # 冒烟测试
 死信页把连接器/状态/失败原因放在常用筛选行，失败分类/子类/topic/失败时间收进「更多筛选」；
 有高级条件生效时按钮上会标出数量，筛选与批量操作分两行，展开高级条件也不会盖住操作按钮。
 
+四类维护页不再只是 CRUD：控制面板卡片上的检测、重启、重置位点、死信入口、连接器导出/导入、
+集群备份/恢复都在对应维护页提供，且弹窗与判定复用同一套组件（`components/connector-ops/`），
+避免面板与页面各写一份口径。
+
 | 页面 | 用到的接口 |
 | --- | --- |
 | 控制面板 | 四张表的 `/list` + 每台 Connect 的 `GET /dbz/kafka-connector/list`（实时连接器）、`GET /dbz/kafka-connector/plugins`（插件）、`GET /dbz/kafka-connect/health`（Connect 自身健康）；`POST /restart`；上游/下游 `PUT`（启用/停用）；`POST /kafka-broker/check`（Kafka 卡片检测）、`POST /kafka-connect/detect`（Connect 卡片检测）、`POST /control-plane/connector-config/detect`（上/下游卡片一致性检测）、`POST /control-plane/connector-config/sync`（不一致双向同步） |
-| Kafka 集群 | `/dbz/kafka-broker` 的 `/page`、`POST`、`PUT`、`DELETE /{id}` + `POST /check` |
-| Kafka Connect | `/dbz/kafka-connect` 的 `/page`、`POST`、`PUT`、`DELETE /{id}` |
-| 上游连接器 | `/dbz/source-connector` 同上 + `GET /snapshot/preview`、`POST /snapshot` |
-| 下游连接器 | `/dbz/sink-connector` 同上 |
+| Kafka 集群 | `/dbz/kafka-broker` 的 `/page`、`POST`、`PUT`、`DELETE /{id}` + `POST /check`（检测）；`GET /dbz/backup/export`（备份）、`POST /dbz/backup/restore`（恢复集群） |
+| Kafka Connect | `/dbz/kafka-connect` 的 `/page`、`POST`、`PUT`、`DELETE /{id}` + `GET /health`、`POST /detect`（检测）；导出/导入连接器由前端生成 transfer 文件，并读四张表 `/list` + 上游/下游 `POST`、`PUT` |
+| 上游连接器 | `/dbz/source-connector` 同上 + `POST /control-plane/connector-config/detect`（一致性检测）、`POST /dbz/kafka-connector/restart`（重启）、`POST /dbz/control-plane/connector/reset-offsets`（重置位点）、`GET /snapshot/preview`、`POST /snapshot` |
+| 下游连接器 | `/dbz/sink-connector` 同上 + `POST /control-plane/connector-config/detect`、`POST /dbz/kafka-connector/restart`、`POST /dbz/control-plane/connector/reset-offsets`；死信跳转 `/dead-letter` |
 | 集群连接器 | `GET /dbz/kafka-connector/list`（集群上全部连接器）、`GET /dbz/kafka-connector/plugins`（已安装插件） |
 | 死信 | `POST /dbz/dead-letter/sync`（立即从 DLQ 同步）、`GET /page`（连接器/状态/失败分类/子类/原因/topic/时间筛选）、`GET /pending-count`（卡片角标）、`POST /retry`、`POST /edit-payload`、`POST /discard`、`POST /mark-handled`、`POST /unmark-handled`；没有上报接口 |
 

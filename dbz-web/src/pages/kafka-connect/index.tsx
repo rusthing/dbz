@@ -6,13 +6,32 @@
  * 「启用」是一个会注销集群上连接器的动作，放在列表的开关里做，关之前先确认。
  */
 
-import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
+import {
+  DownloadOutlined,
+  PlusOutlined,
+  ReloadOutlined,
+  ThunderboltOutlined,
+  UploadOutlined,
+} from '@ant-design/icons';
 import { App as AntdApp, Alert, Button, Card, Input, Select, Space, Table, Tooltip } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { useCallback, useState } from 'react';
+import { useCallback, useRef, useState, type ChangeEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { kafkaConnectApi } from '../../api/kafka-connect';
 import type { DbzKafkaConnectVo, Id, KafkaConnectStatus } from '../../api/types';
+import DetectResultModal, {
+  type DetectOutcome,
+} from '../control-panel/DetectResultModal';
+import ExportConnectorsModal from '../../components/connector-ops/ExportConnectorsModal';
+import ImportConnectorsModal, {
+  type ConnectorImportRequest,
+} from '../../components/connector-ops/ImportConnectorsModal';
+import {
+  DETECT_KIND_LABEL,
+  detectConnect,
+  detectFailure,
+  detectKeyOf,
+} from '../../components/connector-ops/detect';
 import EnabledSwitch from '../../components/EnabledSwitch';
 import StatusTag from '../../components/StatusTag';
 import type { StatusDetail } from '../../components/StatusTag';
@@ -57,6 +76,12 @@ export default function KafkaConnectPage() {
   const [draft, setDraft] = useState<FilterDraft>({});
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<DbzKafkaConnectVo | null>(null);
+  const [detectOutcome, setDetectOutcome] = useState<DetectOutcome | null>(null);
+  const [checkingId, setCheckingId] = useState<Id | null>(null);
+  const [exportTarget, setExportTarget] = useState<DbzKafkaConnectVo | null>(null);
+  const [importRequest, setImportRequest] = useState<ConnectorImportRequest | null>(null);
+  const importFileRef = useRef<HTMLInputElement>(null);
+  const pendingImportTarget = useRef<DbzKafkaConnectVo | null>(null);
 
   const { data, loading, error, pageNum, pageSize, search, reload, setPageNum, setPageSize } =
     usePagedQuery<DbzKafkaConnectVo>((params) => kafkaConnectApi.page(params));
@@ -90,6 +115,41 @@ export default function KafkaConnectPage() {
         }
       },
     });
+  };
+
+  /** 检测：可达性 / 版本 / worker / 连接器 / 插件，并同步纳管记录（与控制面板同源） */
+  const handleCheck = async (record: DbzKafkaConnectVo) => {
+    const key = detectKeyOf('connect', record.id);
+    setCheckingId(record.id);
+    try {
+      const outcome = await detectConnect(record, key, DETECT_KIND_LABEL.connect);
+      setDetectOutcome(outcome);
+      reload();
+    } catch (reason) {
+      setDetectOutcome(detectFailure(record.name, key, DETECT_KIND_LABEL.connect, reason));
+    } finally {
+      setCheckingId(null);
+    }
+  };
+
+  /** 导入入口：先记住目标集群，选完文件再交给共享弹窗 */
+  const handleImportClick = (record: DbzKafkaConnectVo) => {
+    pendingImportTarget.current = record;
+    if (importFileRef.current) {
+      importFileRef.current.value = '';
+      importFileRef.current.click();
+    }
+  };
+
+  const handleImportFileChange = (event: ChangeEvent<HTMLInputElement>) => {
+    const selected = event.target.files?.[0];
+    const target = pendingImportTarget.current;
+    event.target.value = '';
+    pendingImportTarget.current = null;
+    if (!selected || !target) {
+      return;
+    }
+    setImportRequest({ target, file: selected, fileName: selected.name });
   };
 
   const columns: ColumnsType<DbzKafkaConnectVo> = [
@@ -188,10 +248,42 @@ export default function KafkaConnectPage() {
     {
       title: '操作',
       key: 'actions',
-      width: 170,
+      width: 480,
       fixed: 'right',
       render: (_, record) => (
-        <Space size={4}>
+        <Space size={4} wrap>
+          <Button
+            type="link"
+            size="small"
+            icon={<ThunderboltOutlined />}
+            loading={checkingId === record.id}
+            onClick={() => void handleCheck(record)}
+          >
+            检测
+          </Button>
+          <Button
+            type="link"
+            size="small"
+            icon={<DownloadOutlined />}
+            onClick={() => setExportTarget(record)}
+          >
+            导出
+          </Button>
+          <Button
+            type="link"
+            size="small"
+            icon={<UploadOutlined />}
+            onClick={() => handleImportClick(record)}
+          >
+            导入
+          </Button>
+          <Button
+            type="link"
+            size="small"
+            onClick={() => navigate(`/kafka-connector?kafkaConnectId=${record.id}`)}
+          >
+            连接器
+          </Button>
           <Button
             type="link"
             size="small"
@@ -201,13 +293,6 @@ export default function KafkaConnectPage() {
             }}
           >
             编辑
-          </Button>
-          <Button
-            type="link"
-            size="small"
-            onClick={() => navigate(`/kafka-connector?kafkaConnectId=${record.id}`)}
-          >
-            连接器
           </Button>
           <Button type="link" size="small" danger onClick={() => handleDelete(record)}>
             删除
@@ -310,7 +395,7 @@ export default function KafkaConnectPage() {
         columns={columns}
         dataSource={data.list}
         locale={{ emptyText: loading ? '加载中…' : '暂无集群' }}
-        scroll={{ x: 1080 }}
+        scroll={{ x: 1400 }}
         pagination={{
           current: pageNum,
           pageSize,
@@ -335,6 +420,32 @@ export default function KafkaConnectPage() {
           setFormOpen(false);
           reload();
         }}
+      />
+
+      <input
+        ref={importFileRef}
+        type="file"
+        accept=".json,application/json"
+        style={{ display: 'none' }}
+        data-import-file
+        onChange={handleImportFileChange}
+      />
+
+      <DetectResultModal
+        open={detectOutcome !== null}
+        outcome={detectOutcome}
+        onClose={() => setDetectOutcome(null)}
+      />
+
+      <ExportConnectorsModal
+        target={exportTarget}
+        onClose={() => setExportTarget(null)}
+      />
+
+      <ImportConnectorsModal
+        request={importRequest}
+        onClose={() => setImportRequest(null)}
+        onDone={reload}
       />
     </Card>
   );

@@ -1375,6 +1375,23 @@ try {
       page.url(),
     );
   }
+  // 维护页要把控制面板已有的运维动作补齐：检测 / 重启 / 重置位点 / 导出导入 / 备份恢复
+  for (const [path, labels] of [
+    ['kafka-broker', ['检测', '备份', '恢复集群']],
+    ['kafka-connect', ['检测', '导出', '导入']],
+    ['source-connector', ['检测', '重启', '重置位点', '重新同步']],
+    ['sink-connector', ['检测', '重启', '重置位点', '死信']],
+  ]) {
+    await page.goto(`${base}/${path}`, { waitUntil: 'networkidle' });
+    await page.waitForSelector('.ant-table-tbody tr.ant-table-row', { timeout: 5000 }).catch(() => {});
+    const pageText = await page.locator('.ant-card').first().innerText();
+    check(
+      `/${path} 维护页具备控制面板同类操作`,
+      labels.every((label) => pageText.includes(label)),
+      labels.filter((label) => !pageText.includes(label)).join('、') || '全部存在',
+    );
+  }
+
   for (const [oldPath, target] of [
     ['connector-topology', 'control-panel'],
     ['control-plane', 'control-panel'],
