@@ -102,7 +102,9 @@ export default function AppLayout() {
   };
 
   return (
-    <Layout style={{ height: '100vh' }}>
+    /* 用容器高度而不是 100vh：联邦窗口比视口矮时，100vh 会让侧栏伸出窗口、
+       随内容一起滚。高度跟着 .dbz-federated（或独立站 #root）走，内容区自己滚。 */
+    <Layout style={{ height: '100%' }}>
       {/* 窄屏（< lg）自动收起，给内容区留出可读宽度；trigger 保留，随时可展开 */}
       <Sider
         width={216}

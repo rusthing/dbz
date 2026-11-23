@@ -261,6 +261,14 @@ input[type='color']:not(:disabled) {
   color: var(--dbz-text-3);
 }
 
+/* antd 的 <App> 包装层是 Layout 的直接父级：不给它确定高度，
+   Layout 的 height:100% 会退化成内容高度，侧栏跟着内容一起滚。
+   联邦窗口的根节点是 .dbz-federated，独立站是 #root，两处都覆盖。 */
+.dbz-federated > .ant-app,
+#root > .ant-app {
+  height: 100%;
+}
+
 .dbz-content {
   padding: 20px 24px 32px;
   overflow-y: auto;
@@ -593,7 +601,9 @@ input[type='color']:not(:disabled) {
   display: flex;
   flex-direction: column;
   gap: 12px;
-  height: calc(100vh - 112px);
+  /* 画布吃满内容区（.dbz-content 的 padding 已由 box-sizing 计入），
+     用 100% 而不是 100vh：联邦窗口比视口矮时 100vh 会撑破窗口。 */
+  height: 100%;
   min-height: 560px;
 }
 
