@@ -7,7 +7,7 @@
  * 处置。重投是把报文写回源 topic 让 Connect 重新消费，不再直接 POST 下游地址。
  */
 
-import { apiGet, apiGetPage, apiPost, type QueryParams } from './client';
+import { apiDeleteWithBody, apiGet, apiGetPage, apiPost, type QueryParams } from './client';
 import type {
   DbzDeadLetterCountVo,
   DbzDeadLetterDiscardInput,
@@ -61,5 +61,5 @@ export const deadLetterApi = {
    * `clearTopic` 为真时同时清空 DLQ topic 的历史报文，不可恢复且不受筛选条件限制。
    */
   purge: (input: DbzDeadLetterPurgeInput): Promise<void> =>
-    apiPost(BASE + '/purge', input),
+    apiDeleteWithBody(BASE + '/purge', input),
 };

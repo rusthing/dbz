@@ -9,7 +9,7 @@
 //! - `POST /dbz/dead-letter/discard`：单条/批量废弃
 //! - `POST /dbz/dead-letter/mark-handled`：批量标记「已人工处理」
 //! - `POST /dbz/dead-letter/unmark-handled`：批量撤销「已人工处理」
-//! - `POST /dbz/dead-letter/purge`：按条件物理清理页面索引（坐标记墓碑）
+//! - `DELETE /dbz/dead-letter/purge`：按条件物理清理页面索引（坐标记墓碑）
 //!
 //! 所有写操作沿用框架约定，缺少 `X-User-Id` 按参数校验失败处理。
 
@@ -196,7 +196,7 @@ pub async fn unmark_handled(
 /// `clearTopic=true` 时同时清空 DLQ topic 的历史报文（不可恢复，且这一步不按条件，
 /// 整个 topic 生效）。与「废弃」不同，清理不保留追溯，用于处置历史噪声。
 #[utoipa::path(
-    post,
+    delete,
     path = "/dbz/dead-letter/purge",
     request_body = DbzDeadLetterPurgeDto,
     responses((status = OK, description = "已清理"))

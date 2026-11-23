@@ -1,8 +1,8 @@
 //! # 死信路由
 //!
-//! 全部是手写接口（同步 / 分页 / 计数 / 重投 / 废弃 / 人工处理），没有 CRUD，
+//! 全部是手写接口（同步 / 分页 / 计数 / 重投 / 废弃 / 人工处理 / 清理），没有 CRUD，
 //! 因此单独一棵 `#[router(routes ...)]` 路由树；生成的代码一次性导入四个构造器，
-//! 这里只用到 `get` / `post`，屏蔽未使用导入告警。
+//! 这里用到 `get` / `post` / `delete`，屏蔽未使用导入告警。
 
 #![allow(unused_imports)]
 
@@ -17,6 +17,6 @@ use robotech::macros::router;
     ("/dbz/dead-letter/discard", post(discard)),
     ("/dbz/dead-letter/mark-handled", post(mark_handled)),
     ("/dbz/dead-letter/unmark-handled", post(unmark_handled)),
-    ("/dbz/dead-letter/purge", post(purge)),
+    ("/dbz/dead-letter/purge", delete(purge)),
 ])]
 struct DbzDeadLetterRouter;
