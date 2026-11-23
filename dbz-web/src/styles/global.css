@@ -272,6 +272,9 @@ input[type='color']:not(:disabled) {
 .dbz-content {
   padding: 20px 24px 32px;
   overflow-y: auto;
+  max-width: 1680px;
+  margin-inline: auto;
+  width: 100%;
 }
 
 /* 表格工具栏 */
