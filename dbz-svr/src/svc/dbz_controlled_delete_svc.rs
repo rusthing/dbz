@@ -10,7 +10,7 @@
 //! 3. 删除成功后写一条不可变的 `dbz_delete_audit`。
 //!
 //! 口令校验失败时**不删除任何一行**，返回值仍是 HTTP 200 + `Ro::warn` + 业务码，
-//! 与 `POST /dbz/control-plane/node-delete` 完全一致，前端可用同一套分流逻辑。
+//! 与 `DELETE /dbz/control-plane/node-delete` 完全一致，前端可用同一套分流逻辑。
 
 use crate::mo::dbz_delete_audit::{ActiveModel as AuditActiveModel, Entity as AuditEntity};
 use crate::mo::{

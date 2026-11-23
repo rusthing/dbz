@@ -3,7 +3,7 @@
 //! - `GET    /dbz/control-plane/edges`：读取全部连线折点
 //! - `PUT    /dbz/control-plane/edges`：保存一条连线的折点
 //! - `DELETE /dbz/control-plane/edges`：恢复某条连线的默认走线
-//! - `POST   /dbz/control-plane/node-delete`：校验当前用户口令后删除节点
+//! - `DELETE /dbz/control-plane/node-delete`：校验当前用户口令后删除节点
 //! - `POST   /dbz/control-plane/connector-config/sync`：对比弹窗里的双向配置同步
 //! - `POST   /dbz/control-plane/connector-config/detect`：单条连接器的一致性检测
 //!
@@ -93,7 +93,7 @@ pub async fn remove_edge(
 /// `ADM00005` 登录状态已失效、`DBZ00001` 认证服务不可用。成功时 `extra.pswdKind`
 /// 说明本次校验的是审核口令（`audit`）还是登录口令（`login`）。
 #[utoipa::path(
-    post,
+    delete,
     path = "/dbz/control-plane/node-delete",
     request_body = DbzControlPlaneNodeDeleteDto,
     responses((status = OK, body = Ro<DbzControlPlaneNodeDeleteVo>))

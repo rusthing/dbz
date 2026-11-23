@@ -5,7 +5,7 @@
  * 节点本身仍由 broker / connect / source / sink 四套 CRUD 管理，这里不重复造节点接口。
  */
 
-import { apiDelete, apiGet, apiGetList, apiPost, apiPut } from './client';
+import { apiDelete, apiDeleteWithBody, apiGet, apiGetList, apiPost, apiPut } from './client';
 import type {
   ControlPlaneNodeType,
   DbzConnectorConfigSyncInput,
@@ -96,7 +96,7 @@ export const controlPlaneApi = {
    * `ADM00009` 账号不可用、`ADM00005` 登录状态已失效、`DBZ00001` 认证服务不可用。
    */
   deleteNode: (input: DbzControlPlaneNodeDeleteInput): Promise<DbzControlPlaneNodeDeleteVo> =>
-    apiPost<DbzControlPlaneNodeDeleteVo>('/dbz/control-plane/node-delete', input),
+    apiDeleteWithBody<DbzControlPlaneNodeDeleteVo>('/dbz/control-plane/node-delete', input),
 
   /**
    * 在「不一致」对比弹窗里双向同步配置

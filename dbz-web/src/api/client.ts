@@ -180,3 +180,15 @@ export async function apiDelete<T>(path: string, params?: QueryParams): Promise<
   const ro = await request<T>('DELETE', path, { params });
   return ro.extra as T;
 }
+
+/**
+ * # DELETE 携带请求体，返回业务数据
+ *
+ * 节点删除这类「复杂删除」需要把口令摘要放进请求体，不能塞进查询串。绝大多数
+ * HTTP 客户端 / 网关 / 反向代理都支持 DELETE 带 body，但签名上与只带查询参数的
+ * {@link apiDelete} 分开，避免误用。
+ */
+export async function apiDeleteWithBody<T>(path: string, body?: unknown): Promise<T> {
+  const ro = await request<T>('DELETE', path, { body });
+  return ro.extra as T;
+}

@@ -854,7 +854,7 @@ await page.route('**/dbz/**', async (route) => {
       path,
       query: url.search,
       headers: request.headers(),
-      // DELETE 不带请求体，postDataJSON() 在没有 body 时会抛错
+      // 无请求体的请求（含不带 body 的 DELETE）postDataJSON() 会抛错，这里统一判空
       body: request.postData() ? request.postDataJSON() : null,
     });
     // 检测接口要回业务数据（reachable/topicCount…），空信封会让页面走进异常分支
@@ -1040,7 +1040,7 @@ await page.route('**/dbz/**', async (route) => {
     }
     // 删除节点：按业务码返回，前端只按 code 分流
     // 未设置审核口令时后端自动改用登录口令，不再有「未设置」这类阻断错误
-    if (path === '/dbz/control-plane/node-delete' && request.method() === 'POST') {
+    if (path === '/dbz/control-plane/node-delete' && request.method() === 'DELETE') {
       if (failNextDelete === 'wrong') {
         failNextDelete = null;
         return route.fulfill({
@@ -2560,12 +2560,13 @@ try {
       (await page.locator('.dbz-graph-bend-handle').count()) === 0 &&
       (await page.locator('.dbz-graph-anchor-handle').count()) === 0,
   );
+  const deletesBeforeShortcut = posted.filter((item) => item.method === 'DELETE').length;
   await page.keyboard.press('Delete');
   await page.waitForTimeout(300);
   check(
     'Delete 快捷键不会删除连线，也不弹旧提示',
     (await page.locator('.ant-message-notice-content:has-text("连线不能删除")').count()) === 0 &&
-      !posted.some((item) => item.method === 'DELETE'),
+      posted.filter((item) => item.method === 'DELETE').length === deletesBeforeShortcut,
   );
 
   // D. 泳道布局：四列泳道从左到右，节点都落在所属泳道列内，列头固定顶部
