@@ -11,7 +11,8 @@
  * 最近一次结论，且与弹窗说法一致。
  */
 
-import { Alert, Badge, Descriptions, Modal, Space, Table, Tag, Typography } from 'antd';
+import { Alert, Badge, Descriptions, Space, Table, Tag, Typography } from 'antd';
+import { Modal } from '../../lib/federated-overlay';
 import type {
   DbzConnectorDetectItemVo,
   DbzKafkaConnectDetectVo,

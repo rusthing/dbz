@@ -15,10 +15,22 @@ export function antdConfig({ dark }: AntdThemeOptions): {
   locale: typeof zhCN;
   button: { autoInsertSpace: boolean };
   theme: ThemeConfig;
+  getPopupContainer: (triggerNode?: HTMLElement) => HTMLElement;
 } {
   return {
     locale: zhCN,
     button: { autoInsertSpace: false },
+    /**
+     * 弹出层挂到应用根节点，而不是 document.body。
+     *
+     * 默认挂 body 有两个问题：① 窗口内容区滚动时，body 不在弹层的滚动祖先链里，
+     * antd 不会重新对齐，下拉框会停在原地、和字段错开一屏；② 弹层落在
+     * uiam 的桌面层，既拿不到本应用的主题作用域，也会盖到窗口外面。
+     * 反例也要顾着：Modal / Drawer 本身挂在 body 上，里面的下拉框跟着回 body，
+     * 否则弹层会被窗口的层叠上下文压到遮罩下面，看不见。
+     */
+    getPopupContainer: (triggerNode?: HTMLElement) =>
+      triggerNode?.closest<HTMLElement>('.dbz-federated') ?? document.body,
     theme: {
       algorithm: dark ? antdTheme.darkAlgorithm : antdTheme.defaultAlgorithm,
       token: {

@@ -12,12 +12,12 @@ import {
   Alert,
   App as AntdApp,
   Button,
-  Modal,
   Select,
   Table,
   Tag,
   Typography,
 } from 'antd';
+import { Modal } from '../../lib/federated-overlay';
 import { useEffect, useMemo, useState, type HTMLAttributes } from 'react';
 import { kafkaConnectorApi } from '../../api/kafka-connector';
 import { sinkConnectorApi } from '../../api/sink-connector';

@@ -18,7 +18,6 @@ import {
   Alert,
   Button,
   Card,
-  Drawer,
   Input,
   Select,
   Space,
@@ -26,6 +25,7 @@ import {
   Tag,
   Tooltip,
 } from 'antd';
+import { Drawer } from '../../lib/federated-overlay';
 import type { ColumnsType } from 'antd/es/table';
 import { useCallback, useState } from 'react';
 import { useNavigate } from 'react-router-dom';

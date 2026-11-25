@@ -17,10 +17,8 @@ import {
   Checkbox,
   Col,
   DatePicker,
-  Drawer,
   Empty,
   Input,
-  Modal,
   Popover,
   Row,
   Select,
@@ -30,6 +28,7 @@ import {
   Tooltip,
   Typography,
 } from 'antd';
+import { Modal, Drawer } from '../../lib/federated-overlay';
 import type { ColumnsType } from 'antd/es/table';
 import {
   CheckCircleOutlined,
@@ -1345,11 +1344,11 @@ export default function DeadLetterPage() {
         >
           同时清空 DLQ topic 的历史报文（Kafka DeleteRecords，topic 与分区保留）
         </Checkbox>
-        <div style={{ marginTop: 8, color: 'rgba(0,0,0,0.45)' }}>
+        <Typography.Paragraph type="secondary" style={{ marginTop: 8, marginBottom: 0 }}>
           不勾选时只删 dbz 的索引，Kafka 里的报文仍按 topic 的 retention 保留；
           勾选后报文被物理删除，之后无法再重投。Kafka 只能按分区前缀截断，这一步是整个
           topic 生效、不受上面的筛选条件限制。
-        </div>
+        </Typography.Paragraph>
       </Modal>
     </Card>
   );

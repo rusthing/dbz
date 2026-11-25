@@ -14,7 +14,8 @@
  * 注销集群上的连接器，不适合混在「改个名字、改个地址」的表单里一起提交。
  */
 
-import { Alert, App as AntdApp, Button, Form, Input, Modal, Select } from 'antd';
+import { Alert, App as AntdApp, Button, Form, Input, Select } from 'antd';
+import { Modal } from '../../lib/federated-overlay';
 import { useCallback, useEffect, useState } from 'react';
 import { kafkaBrokerApi } from '../../api/kafka-broker';
 import { kafkaConnectApi } from '../../api/kafka-connect';

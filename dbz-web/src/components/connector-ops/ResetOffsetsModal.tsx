@@ -6,7 +6,8 @@
  * 成功后由调用方刷新列表让状态与集群一致。
  */
 
-import { Alert, App as AntdApp, Button, Checkbox, Modal, Tag } from 'antd';
+import { Alert, App as AntdApp, Button, Checkbox, Tag } from 'antd';
+import { Modal } from '../../lib/federated-overlay';
 import { useEffect, useState } from 'react';
 import {
   controlPlaneApi,

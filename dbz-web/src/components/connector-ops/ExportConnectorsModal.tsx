@@ -6,7 +6,8 @@
  * 并在 sensitiveConfigKeys 里标注，导入后需要人工补回。
  */
 
-import { Alert, App as AntdApp, Modal, Radio, Space, Spin } from 'antd';
+import { Alert, App as AntdApp, Radio, Space, Spin } from 'antd';
+import { Modal } from '../../lib/federated-overlay';
 import { useEffect, useState } from 'react';
 import { kafkaBrokerApi } from '../../api/kafka-broker';
 import { sinkConnectorApi } from '../../api/sink-connector';

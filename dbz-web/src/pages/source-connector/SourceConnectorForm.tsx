@@ -13,7 +13,8 @@
  * 集群上的连接器，不适合混在改配置的表单里一起提交。
  */
 
-import { App as AntdApp, Form, Input, Modal, Select } from 'antd';
+import { App as AntdApp, Form, Input, Select } from 'antd';
+import { Modal } from '../../lib/federated-overlay';
 import { useState } from 'react';
 import { sourceConnectorApi } from '../../api/source-connector';
 import type { DbzSourceConnectorVo, Id } from '../../api/types';

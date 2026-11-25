@@ -24,7 +24,6 @@ import {
   Button,
   Empty,
   Input,
-  Modal,
   Radio,
   Space,
   Spin,
@@ -33,6 +32,7 @@ import {
   Tooltip,
   Typography,
 } from 'antd';
+import { Modal } from '../../lib/federated-overlay';
 import type { ColumnsType } from 'antd/es/table';
 import { ApiError } from '../../api/client';
 import { controlPlaneApi } from '../../api/control-plane';

@@ -4,11 +4,14 @@
 .dbz-federated {
   min-height: 100%;
   height: 100%;
-  background: #f4f6fa;
+  background: var(--dbz-bg, #f4f6fa);
+  /* antd 弹出层按应用根节点定位（见 lib/theme-config.tsx），根节点必须是定位祖先，
+     否则绝对定位会落到窗口外层，坐标算的是一处、画的是另一处。 */
+  position: relative;
+  isolation: isolate;
 }
 
 .dbz-federated[data-theme='dark'] {
-  background: #141414;
   color-scheme: dark;
 }
 

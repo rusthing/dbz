@@ -40,7 +40,6 @@ import {
   Empty,
   Input,
   InputNumber,
-  Modal,
   Spin,
   Switch,
   Table,
@@ -49,6 +48,7 @@ import {
   Tooltip,
   Typography,
 } from 'antd';
+import { Modal } from '../../lib/federated-overlay';
 import {
   useCallback,
   useEffect,

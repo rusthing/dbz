@@ -13,12 +13,22 @@ import App from './App';
 import { AuthProvider } from './auth/AuthContext';
 import { initEmbed, useEmbedTheme } from './lib/embed-bridge';
 import { antdConfig } from './lib/theme-config';
+import { FederatedOverlayRoot } from './lib/federated-overlay';
 import './styles/global.css';
 
 const container = document.getElementById('root');
 if (!container) {
   throw new Error('找不到挂载节点 #root');
 }
+
+/**
+ * 独立站也给根节点挂上作用域类。
+ *
+ * global.css 的基础规则（height / 底色 / 字体）现在只在 `#root.dbz-federated`
+ * 上生效——这样联邦窗口里不会去改 uiam 宿主的 html/body；独立站靠这一行让
+ * 规则依旧命中。
+ */
+container.classList.add('dbz-federated');
 
 /**
  * 路由前缀（basename）
@@ -49,4 +59,9 @@ function Root() {
 
 initEmbed('dbz');
 
-ReactDOM.createRoot(container).render(<Root />);
+ReactDOM.createRoot(container).render(
+  // 独立站的对话框也挂到 #root：与联邦窗口里「挂应用根节点」保持同一套行为
+  <FederatedOverlayRoot resolve={() => container}>
+    <Root />
+  </FederatedOverlayRoot>,
+);

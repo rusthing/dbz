@@ -9,10 +9,14 @@
 /* ---------------------------------------------------------------- token
  *
  * 只有这几个词：文字三级、两级分隔线、两级底色、一个主色、一个圆角族。
- * 之前各处直接写 rgba(0,0,0,.45) / #eef0f4，改一处颜色要全文替换；
+ * 之前各处直接写 var(--dbz-text-3) / var(--dbz-line)，改一处颜色要全文替换；
  * 收进变量后「次要文字」只有一个定义，也顺手把对比度从 3.4:1 抬到 4.9:1。
  */
-:root {
+/* 令牌挂在根节点上，而不是 :root：
+   uiam 桌面里同时开着七个应用，写 :root 会把 dbz 的配色糊到宿主和别的窗口上；
+   #root 是独立站，.dbz-federated 是联邦窗口，两处都覆盖。 */
+.dbz-federated {
+  --dbz-bg: #f4f6fa;
   --dbz-text-1: rgba(0, 0, 0, 0.88);
   --dbz-text-2: rgba(0, 0, 0, 0.65);
   --dbz-text-3: rgba(0, 0, 0, 0.56);
@@ -21,7 +25,12 @@
   --dbz-surface: #fff;
   --dbz-surface-sunken: #fafbfd;
   --dbz-accent: #1677ff;
+  --dbz-accent-hover: #4096ff;
+  --dbz-accent-strong: #0958d9;
+  --dbz-accent-soft: #e6f4ff;
   --dbz-danger: #cf1322;
+  --dbz-warn: #faad14;
+  --dbz-warn-soft: #fffbe6;
   --dbz-font-mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
   --dbz-shadow-1: 0 1px 2px rgba(15, 23, 42, 0.04);
   --dbz-shadow-2: 0 4px 14px rgba(15, 23, 42, 0.08);
@@ -33,19 +42,49 @@
   --dbz-radius-md: 10px;
 }
 
-html,
-body,
-#root {
+
+/* 暗色：同一套令牌换一组值，组件代码一行都不用动。
+   值对齐 antd 的 darkAlgorithm（bodyBg #141414、container #1f1f1f、border #424242）。 */
+.dbz-federated[data-theme='dark'] {
+  --dbz-bg: #141414;
+  --dbz-text-1: rgba(255, 255, 255, 0.85);
+  --dbz-text-2: rgba(255, 255, 255, 0.65);
+  --dbz-text-3: rgba(255, 255, 255, 0.45);
+  --dbz-line: #303030;
+  --dbz-line-strong: #424242;
+  --dbz-surface: #1f1f1f;
+  --dbz-surface-sunken: #262626;
+  --dbz-accent: #1677ff;
+  --dbz-accent-hover: #4096ff;
+  --dbz-accent-strong: #4096ff;
+  --dbz-accent-soft: #111a2c;
+  --dbz-danger: #ff7875;
+  --dbz-warn: #d89614;
+  --dbz-warn-soft: #2b2111;
+  --dbz-shadow-1: 0 1px 2px rgb(0 0 0 / 32%);
+  --dbz-shadow-2: 0 4px 14px rgb(0 0 0 / 40%);
+  --dbz-shadow-3: 0 10px 24px rgb(0 0 0 / 48%);
+  --dbz-shadow-card: 0 1px 2px rgb(0 0 0 / 32%), 0 4px 14px rgb(0 0 0 / 32%);
+  --dbz-shadow-card-hover: 0 2px 4px rgb(0 0 0 / 36%), 0 12px 26px rgb(0 0 0 / 44%);
+}
+
+/* 只有独立站（#root 带应用类名）才撑满 html/body。
+   联邦窗口里 html/body 属于 uiam 桌面，这里动它们会把整个桌面改成 dbz 的底色。 */
+html:has(#root.dbz-federated),
+body:has(#root.dbz-federated),
+#root.dbz-federated {
   height: 100%;
   margin: 0;
 }
 
-body {
+.dbz-federated {
+  /* 独立站里 antd 弹层也挂到根节点（见 lib/theme-config.tsx），根节点得是定位祖先 */
+  position: relative;
   font-family:
     -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Hiragino Sans GB',
     'Microsoft YaHei', sans-serif;
-  background: #f4f6fa;
-  color: rgba(0, 0, 0, 0.88);
+  background: var(--dbz-bg);
+  color: var(--dbz-text-1);
 }
 
 /* 可点击元素统一手型；禁用态统一禁用光标（详见 dtw-web/docs/ui-spec.md）。 */
@@ -81,10 +120,10 @@ input[type='color']:not(:disabled) {
   height: 32px;
   min-height: 32px;
   padding: 0 10px;
-  border: 1px solid #d9d9d9;
+  border: 1px solid var(--dbz-line-strong);
   border-radius: 6px;
-  background: #fff;
-  color: rgba(0, 0, 0, 0.65);
+  background: var(--dbz-surface);
+  color: var(--dbz-text-2);
   font-size: 12.5px;
   line-height: 1;
   white-space: nowrap;
@@ -95,14 +134,14 @@ input[type='color']:not(:disabled) {
 }
 
 .dbz-option-button:hover:not(:disabled) {
-  border-color: #4096ff;
-  color: #1677ff;
+  border-color: var(--dbz-accent-hover);
+  color: var(--dbz-accent);
 }
 
 .dbz-option-button[aria-checked='true'] {
-  border-color: #1677ff;
-  background: #e6f4ff;
-  color: #0958d9;
+  border-color: var(--dbz-accent);
+  background: var(--dbz-accent-soft);
+  color: var(--dbz-accent-strong);
   font-weight: 500;
 }
 
@@ -128,7 +167,10 @@ input[type='color']:not(:disabled) {
 
 /* 侧边栏 */
 .dbz-sider {
-  border-right: 1px solid #eef0f4;
+  border-right: 1px solid var(--dbz-line);
+  /* 窗口矮时菜单自己滚（与 msg-sider 一致）：否则 antd 的 Menu 会把内容区顶高，
+     `.win-body` 多出几十像素滚动，里面所有 `fixed` 的对话框、遮罩都跟着错位。 */
+  overflow-y: auto;
 }
 
 .dbz-brand {
@@ -137,7 +179,7 @@ input[type='color']:not(:disabled) {
   gap: 10px;
   height: 60px;
   padding: 0 18px;
-  border-bottom: 1px solid #eef0f4;
+  border-bottom: 1px solid var(--dbz-line);
 }
 
 .dbz-brand-logo {
@@ -147,7 +189,7 @@ input[type='color']:not(:disabled) {
   width: 30px;
   height: 30px;
   border-radius: 8px;
-  background: #1677ff;
+  background: var(--dbz-accent);
   color: #fff;
   font-size: 15px;
   font-weight: 600;
@@ -179,8 +221,8 @@ input[type='color']:not(:disabled) {
   height: 60px;
   padding: 0 24px;
   line-height: 1.4;
-  background: #fff;
-  border-bottom: 1px solid #eef0f4;
+  background: var(--dbz-surface);
+  border-bottom: 1px solid var(--dbz-line);
 }
 
 .dbz-header-title {
@@ -204,12 +246,12 @@ input[type='color']:not(:disabled) {
   align-items: center;
   gap: 8px;
   cursor: pointer;
-  color: rgba(0, 0, 0, 0.65);
+  color: var(--dbz-text-2);
   transition: color 0.2s;
 }
 
 .dbz-header-user:hover {
-  color: #1677ff;
+  color: var(--dbz-accent);
 }
 
 /* 登录页：沿用 dbz 的白底卡片与蓝色主色 */
@@ -219,15 +261,15 @@ input[type='color']:not(:disabled) {
   justify-content: center;
   min-height: 100vh;
   padding: 24px;
-  background: #f4f6fa;
+  background: var(--dbz-bg);
 }
 
 .dbz-login-card {
   width: 100%;
   max-width: 400px;
   padding: 22px 24px 20px;
-  background: #fff;
-  border: 1px solid #eef0f4;
+  background: var(--dbz-surface);
+  border: 1px solid var(--dbz-line);
   border-radius: 10px;
   box-shadow: 0 8px 28px rgba(15, 23, 42, 0.06);
 }
@@ -236,7 +278,7 @@ input[type='color']:not(:disabled) {
   height: auto;
   padding: 0 0 18px;
   margin-bottom: 18px;
-  border-bottom: 1px solid #eef0f4;
+  border-bottom: 1px solid var(--dbz-line);
 }
 
 .dbz-login-form {
@@ -249,13 +291,13 @@ input[type='color']:not(:disabled) {
 .dbz-login-form label {
   margin-top: 6px;
   font-size: 12.5px;
-  color: rgba(0, 0, 0, 0.65);
+  color: var(--dbz-text-2);
 }
 
 .dbz-login-foot {
   margin-top: 16px;
   padding-top: 12px;
-  border-top: 1px dashed #eef0f4;
+  border-top: 1px dashed var(--dbz-line);
   font-size: 12.5px;
   line-height: 1.6;
   color: var(--dbz-text-3);
@@ -278,12 +320,25 @@ input[type='color']:not(:disabled) {
 }
 
 /* 表格工具栏 */
+/* 搜索栏尽量摆在一行：条件多到放不下时横向滚动，而不是折成两三行把表格顶下去 */
 .dbz-toolbar {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
+  overflow-x: auto;
   align-items: center;
   gap: 12px;
   margin-bottom: 16px;
+}
+
+/* 工具栏里的搜索框可伸缩，其它控件不压缩，保证一行排得下 */
+.dbz-toolbar .ant-input-affix-wrapper,
+.dbz-toolbar .ant-input-search {
+  flex: 0 1 280px;
+  min-width: 160px;
+}
+
+.dbz-toolbar > * {
+  flex-shrink: 0;
 }
 
 .dbz-toolbar-spacer {
@@ -306,9 +361,9 @@ input[type='color']:not(:disabled) {
   gap: 12px;
   margin-bottom: 12px;
   padding: 12px 14px;
-  border: 1px solid #eef0f4;
+  border: 1px solid var(--dbz-line);
   border-radius: 6px;
-  background: #fafbfd;
+  background: var(--dbz-surface-sunken);
 }
 
 .dbz-advanced-filter-row {
@@ -333,8 +388,8 @@ input[type='color']:not(:disabled) {
 .dbz-json-view {
   margin: 0;
   padding: 12px 14px;
-  background: #fafbfd;
-  border: 1px solid #eef0f4;
+  background: var(--dbz-surface-sunken);
+  border: 1px solid var(--dbz-line);
   border-radius: 6px;
   max-height: 420px;
   overflow: auto;
@@ -462,7 +517,7 @@ input[type='color']:not(:disabled) {
 
 .dbz-id:focus-visible,
 .dbz-status-hover:focus-visible {
-  outline: 2px solid #1677ff;
+  outline: 2px solid var(--dbz-accent);
   outline-offset: 2px;
   border-radius: 4px;
 }
@@ -487,8 +542,8 @@ input[type='color']:not(:disabled) {
 /* 连接器配置编辑器的分组：一组一张浅底卡片，视觉上把「源库连接」「信号」分开 */
 .dbz-config-group {
   padding: 12px 14px;
-  background: #fafbfd;
-  border: 1px solid #eef0f4;
+  background: var(--dbz-surface-sunken);
+  border: 1px solid var(--dbz-line);
   border-radius: 8px;
 }
 
@@ -540,10 +595,10 @@ input[type='color']:not(:disabled) {
   padding: 8px 10px;
   max-height: 180px;
   overflow: auto;
-  background: #fafbfd;
-  border: 1px solid #eef0f4;
+  background: var(--dbz-surface-sunken);
+  border: 1px solid var(--dbz-line);
   border-radius: 6px;
-  color: #cf1322;
+  color: var(--dbz-danger);
   font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
   font-size: 11.5px;
   line-height: 1.6;
@@ -571,12 +626,16 @@ input[type='color']:not(:disabled) {
     display: none;
   }
 
+  /* 手机宽度下「一行排满」只会挤成横向滚动条，这里放开换行，让搜索框独占一行 */
   .dbz-toolbar {
+    flex-wrap: wrap;
     gap: 8px;
+    overflow-x: visible;
   }
 
   .dbz-toolbar .ant-input-search {
     width: 100% !important;
+    flex: 1 1 100%;
   }
 
   .ant-table-wrapper .ant-table .ant-btn-link {
@@ -644,9 +703,9 @@ input[type='color']:not(:disabled) {
   align-items: center;
   gap: 6px;
   padding: 0 8px;
-  border: 1px solid #eef0f4;
+  border: 1px solid var(--dbz-line);
   border-radius: 8px;
-  background: #fff;
+  background: var(--dbz-surface);
 }
 
 .dbz-canvas-refresh-unit {
@@ -663,7 +722,7 @@ input[type='color']:not(:disabled) {
 .dbz-reset-order {
   margin: 0;
   font-size: 12.5px;
-  color: rgba(0, 0, 0, 0.55);
+  color: var(--dbz-text-3);
 }
 
 .dbz-reset-result {
@@ -675,7 +734,7 @@ input[type='color']:not(:disabled) {
   flex-direction: column;
   gap: 6px;
   padding: 8px 10px;
-  background: #fafafa;
+  background: var(--dbz-surface-sunken);
   border-radius: 8px;
 }
 
@@ -700,8 +759,8 @@ input[type='color']:not(:disabled) {
   display: flex;
   align-items: center;
   justify-content: center;
-  background: #fff;
-  border: 1px solid #eef0f4;
+  background: var(--dbz-surface);
+  border: 1px solid var(--dbz-line);
   border-radius: 12px;
 }
 
@@ -714,8 +773,8 @@ input[type='color']:not(:disabled) {
   min-height: 0;
   display: flex;
   overflow: hidden;
-  background: #fff;
-  border: 1px solid #eef0f4;
+  background: var(--dbz-surface);
+  border: 1px solid var(--dbz-line);
   border-radius: 12px;
   box-shadow: 0 2px 10px rgba(15, 23, 42, 0.04);
 }
@@ -734,8 +793,8 @@ input[type='color']:not(:disabled) {
   flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
-  background-color: #f8fafc;
-  background-image: radial-gradient(#dbe0ea 1px, transparent 1px);
+  background-color: var(--dbz-surface-sunken);
+  background-image: radial-gradient(var(--dbz-line-strong) 1px, transparent 1px);
   background-size: 20px 20px;
   cursor: grab;
   touch-action: none;
@@ -771,8 +830,8 @@ input[type='color']:not(:disabled) {
   height: 40px;
   z-index: 6;
   overflow: hidden;
-  background: #f8fafc;
-  border-bottom: 1px solid #e8ecf3;
+  background: var(--dbz-surface-sunken);
+  border-bottom: 1px solid var(--dbz-line);
   pointer-events: none;
 }
 
@@ -816,7 +875,7 @@ input[type='color']:not(:disabled) {
   height: 18px;
   padding: 0;
   border-radius: 50%;
-  border: 0.5px solid #cdd5e0;
+  border: 0.5px solid var(--dbz-line-strong);
   background: none;
   color: #8a94a6;
   font-size: 10px;
@@ -829,8 +888,8 @@ input[type='color']:not(:disabled) {
 }
 
 .dbz-graph-lane-add:hover:not(:disabled) {
-  color: #1677ff;
-  border-color: #1677ff;
+  color: var(--dbz-accent);
+  border-color: var(--dbz-accent);
 }
 
 .dbz-graph-lane-add:disabled {
@@ -869,7 +928,7 @@ input[type='color']:not(:disabled) {
 .dbz-graph-lane-grip:hover::after,
 .dbz-graph-lane-grip:active::after,
 .dbz-graph-lane-grip:focus-visible::after {
-  background: #1677ff;
+  background: var(--dbz-accent);
 }
 
 .dbz-graph-lane-empty {
@@ -924,7 +983,7 @@ input[type='color']:not(:disabled) {
   background: var(--dbz-surface);
   /* 左侧色条表达类型，状态只放在标签里 */
   border: 1px solid var(--dbz-line-strong);
-  border-left: 3px solid var(--node-color, #bfbfbf);
+  border-left: 3px solid var(--node-color, var(--dbz-line-strong));
   border-radius: 11px;
   box-shadow: var(--dbz-shadow-card);
   cursor: pointer;
@@ -947,7 +1006,7 @@ input[type='color']:not(:disabled) {
 }
 
 .dbz-graph-node--broker {
-  --node-color: #1677ff;
+  --node-color: var(--dbz-accent);
 }
 
 .dbz-graph-node--connect {
@@ -963,7 +1022,7 @@ input[type='color']:not(:disabled) {
 }
 
 .dbz-graph-node.is-selected {
-  border-color: #1677ff;
+  border-color: var(--dbz-accent);
   box-shadow:
     0 0 0 3px rgba(22, 119, 255, 0.12),
     0 8px 22px rgba(15, 23, 42, 0.1);
@@ -1019,7 +1078,7 @@ input[type='color']:not(:disabled) {
   line-height: 1.35;
   white-space: nowrap;
   text-overflow: ellipsis;
-  color: rgba(0, 0, 0, 0.88);
+  color: var(--dbz-text-1);
 }
 
 /* 状态行压到卡片底部（紧贴操作行），标签略微加宽 */
@@ -1095,7 +1154,7 @@ input[type='color']:not(:disabled) {
   flex-wrap: nowrap;
   gap: 2px;
   padding-top: 6px;
-  border-top: 1px solid #f0f2f7;
+  border-top: 1px solid var(--dbz-surface-sunken);
 }
 
 /* 右上角启用开关：不参与卡片拖动，也不和操作行混在一起 */
@@ -1117,16 +1176,16 @@ input[type='color']:not(:disabled) {
   width: 1px;
   height: 16px;
   margin: 0 5px;
-  background: #f0f2f7;
+  background: var(--dbz-surface-sunken);
 }
 
 /* 删除按钮单独着色，悬停更醒目，与其它动作区分 */
 .dbz-graph-action .ant-btn-dangerous {
-  color: #cf1322;
+  color: var(--dbz-danger);
 }
 
 .dbz-graph-action .ant-btn-dangerous:hover {
-  color: #ff4d4f;
+  color: var(--dbz-danger);
 }
 
 .dbz-graph-action {
@@ -1141,7 +1200,7 @@ input[type='color']:not(:disabled) {
 }
 
 .dbz-graph-action .ant-btn:hover {
-  color: #1677ff;
+  color: var(--dbz-accent);
 }
 
 .dbz-mono {
@@ -1162,9 +1221,9 @@ input[type='color']:not(:disabled) {
   margin-left: -11px;
   padding: 0;
   font-size: 11.5px;
-  color: var(--node-color, #1677ff);
-  background: #fff;
-  border: 1px solid var(--node-color, #1677ff);
+  color: var(--node-color, var(--dbz-accent));
+  background: var(--dbz-surface);
+  border: 1px solid var(--node-color, var(--dbz-accent));
   border-radius: 50%;
   cursor: pointer;
   box-shadow: 0 2px 6px rgba(15, 23, 42, 0.12);
@@ -1196,7 +1255,7 @@ input[type='color']:not(:disabled) {
   gap: 2px;
   padding: 4px;
   background: rgba(255, 255, 255, 0.94);
-  border: 1px solid #e8ebf2;
+  border: 1px solid var(--dbz-line);
   border-radius: 9px;
   box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08);
 }
@@ -1217,8 +1276,8 @@ input[type='color']:not(:disabled) {
 }
 
 .dbz-graph-controls button:hover {
-  background: #f2f5fb;
-  color: #1677ff;
+  background: var(--dbz-surface-sunken);
+  color: var(--dbz-accent);
 }
 
 /* 分隔线：缩放与「适应/定位」两类动作之间 */
@@ -1226,7 +1285,7 @@ input[type='color']:not(:disabled) {
   width: 1px;
   height: 16px;
   margin: 0 2px;
-  background: #e8ecf3;
+  background: var(--dbz-line);
 }
 
 .dbz-graph-scale {
@@ -1243,7 +1302,7 @@ input[type='color']:not(:disabled) {
   height: 104px;
   padding: 4px;
   background: rgba(255, 255, 255, 0.94);
-  border: 1px solid #e8ebf2;
+  border: 1px solid var(--dbz-line);
   border-radius: 9px;
   box-shadow: 0 4px 14px rgba(15, 23, 42, 0.08);
   cursor: pointer;
@@ -1288,8 +1347,8 @@ input[type='color']:not(:disabled) {
   display: flex;
   flex-direction: column;
   min-height: 0;
-  background: #fff;
-  border-left: 1px solid #e8ecf3;
+  background: var(--dbz-surface);
+  border-left: 1px solid var(--dbz-line);
   overflow: visible;
 }
 
@@ -1334,7 +1393,7 @@ input[type='color']:not(:disabled) {
   justify-content: space-between;
   gap: 8px;
   padding: 6px 10px 6px 14px;
-  border-bottom: 1px solid #f0f2f7;
+  border-bottom: 1px solid var(--dbz-surface-sunken);
   flex-shrink: 0;
 }
 
@@ -1361,7 +1420,7 @@ input[type='color']:not(:disabled) {
 
 .dbz-graph-inspector-collapse:hover {
   color: var(--dbz-text-1);
-  background: #f2f4f8;
+  background: var(--dbz-surface-sunken);
 }
 
 /* 收起后的边缘把手：贴右缘竖排抽屉式，垂直居中 */
@@ -1377,8 +1436,8 @@ input[type='color']:not(:disabled) {
   padding: 12px 5px;
   font-size: 12.5px;
   color: var(--dbz-text-2);
-  background: #fff;
-  border: 1px solid #e3e8f0;
+  background: var(--dbz-surface);
+  border: 1px solid var(--dbz-line-strong);
   border-right: none;
   border-radius: 10px 0 0 10px;
   box-shadow: var(--dbz-shadow-2);
@@ -1422,7 +1481,7 @@ input[type='color']:not(:disabled) {
 .dbz-inspector-section {
   margin: 4px 0 0 !important;
   padding-top: 10px;
-  border-top: 1px solid #f0f2f7;
+  border-top: 1px solid var(--dbz-surface-sunken);
   font-size: 12.5px !important;
 }
 
@@ -1438,16 +1497,16 @@ input[type='color']:not(:disabled) {
   font-size: 12.5px;
   line-height: 1.5;
   color: var(--dbz-text-3);
-  background: #fafbfc;
-  border: 1px dashed #e5eaf2;
+  background: var(--dbz-surface-sunken);
+  border: 1px dashed var(--dbz-line-strong);
   border-radius: 8px;
 }
 
 .dbz-inspector-check-group {
   margin-top: 8px;
   padding: 8px 10px;
-  background: #fafbfc;
-  border: 1px solid #eef0f4;
+  background: var(--dbz-surface-sunken);
+  border: 1px solid var(--dbz-line);
   border-radius: 8px;
 }
 
@@ -1457,7 +1516,7 @@ input[type='color']:not(:disabled) {
   justify-content: space-between;
   font-size: 12.5px;
   font-weight: 600;
-  color: rgba(0, 0, 0, 0.72);
+  color: var(--dbz-text-1);
 }
 
 .dbz-inspector-check-count {
@@ -1501,8 +1560,8 @@ input[type='color']:not(:disabled) {
   padding: 8px 10px;
   font-size: 11.5px;
   line-height: 1.5;
-  color: rgba(0, 0, 0, 0.55);
-  background: #fafbfd;
+  color: var(--dbz-text-3);
+  background: var(--dbz-surface-sunken);
   border-radius: 7px;
 }
 
@@ -1512,7 +1571,7 @@ input[type='color']:not(:disabled) {
   gap: 8px;
   align-items: center;
   padding-top: 12px;
-  border-top: 1px solid #f0f2f7;
+  border-top: 1px solid var(--dbz-surface-sunken);
 }
 
 .dbz-inspector-tip {
@@ -1579,12 +1638,12 @@ input[type='color']:not(:disabled) {
 }
 
 .dbz-graph-node.is-hit {
-  outline: 2px solid #fadb14;
+  outline: 2px solid var(--dbz-warn);
   outline-offset: 2px;
 }
 
 .dbz-graph-node.is-active-hit {
-  outline: 3px solid #faad14;
+  outline: 3px solid var(--dbz-warn);
   outline-offset: 3px;
   animation: dbz-hit-pulse 1.2s ease-in-out 2;
 }
@@ -1617,11 +1676,11 @@ input[type='color']:not(:disabled) {
 /* ---------- Connect 集群检测：插件清单 ---------- */
 .dbz-connect-detect p {
   margin: 0 0 12px;
-  color: rgba(0, 0, 0, 0.65);
+  color: var(--dbz-text-2);
 }
 
 .dbz-connect-detect-plugins {
-  border: 1px solid #eef0f4;
+  border: 1px solid var(--dbz-line);
   border-radius: 6px;
   overflow: hidden;
 }
@@ -1636,7 +1695,7 @@ input[type='color']:not(:disabled) {
 }
 
 .dbz-connect-detect-head {
-  background: #fafbfd;
+  background: var(--dbz-surface-sunken);
   color: var(--dbz-text-3);
   font-weight: 500;
 }
@@ -1647,7 +1706,7 @@ input[type='color']:not(:disabled) {
 }
 
 .dbz-connect-detect-row {
-  border-top: 1px solid #f2f4f7;
+  border-top: 1px solid var(--dbz-surface-sunken);
 }
 
 .dbz-connect-detect-row .dbz-mono {
@@ -1668,7 +1727,7 @@ input[type='color']:not(:disabled) {
   max-height: 200px;
   margin-bottom: 12px;
   overflow: auto;
-  border: 1px solid #eef0f4;
+  border: 1px solid var(--dbz-line);
   border-radius: 6px;
 }
 
@@ -1678,7 +1737,7 @@ input[type='color']:not(:disabled) {
   gap: 10px;
   align-items: center;
   padding: 6px 12px;
-  border-top: 1px solid #f2f4f7;
+  border-top: 1px solid var(--dbz-surface-sunken);
   font-size: 12.5px;
 }
 
@@ -1741,22 +1800,22 @@ input[type='color']:not(:disabled) {
 }
 
 .dbz-diff-row-changed > td {
-  background: #fffbe6;
+  background: var(--dbz-warn-soft);
 }
 
 .dbz-diff-row-changed:hover > td {
-  background: #fff1b8 !important;
+  background: var(--dbz-warn-soft) !important;
 }
 
 .dbz-diff-row-changed > td:first-child {
-  box-shadow: inset 3px 0 0 #faad14;
+  box-shadow: inset 3px 0 0 var(--dbz-warn);
 }
 
 /* ---------- 控制面：按 Kafka 集群分 tab ---------- */
 .dbz-cluster-tabs {
   padding: 0 12px;
-  background: #fff;
-  border: 1px solid #eef0f4;
+  background: var(--dbz-surface);
+  border: 1px solid var(--dbz-line);
   border-radius: 10px;
 }
 
@@ -1785,7 +1844,7 @@ input[type='color']:not(:disabled) {
 .dbz-cluster-tab-meta + .dbz-cluster-tab-meta::before {
   content: '·';
   margin-right: 6px;
-  color: #d9d9d9;
+  color: var(--dbz-line-strong);
 }
 
 .dbz-cluster-tab-meta.is-abnormal {
@@ -1818,7 +1877,7 @@ input[type='color']:not(:disabled) {
 
 .dbz-transfer-file {
   font-size: 12.5px;
-  color: rgba(0, 0, 0, 0.55);
+  color: var(--dbz-text-3);
 }
 
 .dbz-transfer-bulk {
@@ -1827,7 +1886,7 @@ input[type='color']:not(:disabled) {
   align-items: center;
   gap: 8px;
   padding: 8px 10px;
-  background: #fafafa;
+  background: var(--dbz-surface-sunken);
   border-radius: 8px;
 }
 
@@ -1836,7 +1895,7 @@ input[type='color']:not(:disabled) {
   flex-direction: column;
   gap: 4px;
   font-size: 12.5px;
-  color: rgba(0, 0, 0, 0.55);
+  color: var(--dbz-text-3);
 }
 
 .dbz-transfer-conflict .ant-tag {
@@ -1861,7 +1920,7 @@ input[type='color']:not(:disabled) {
   max-height: 320px;
   overflow: auto;
   padding: 8px 10px;
-  background: #fafafa;
+  background: var(--dbz-surface-sunken);
   border-radius: 8px;
 }
 
@@ -1882,7 +1941,7 @@ input[type='color']:not(:disabled) {
 }
 
 .dbz-transfer-outcome-message {
-  color: rgba(0, 0, 0, 0.55);
+  color: var(--dbz-text-3);
 }
 
 .dbz-transfer-errors {
@@ -1957,4 +2016,43 @@ html[data-embed='1'] .dbz-header-note {
 
 html[data-embed='1'] .dbz-header {
   padding-inline: 16px;
+}
+
+/* ---- 对话框收进窗口 -----------------------------------------------------
+   getContainer 把 Modal 挂到 `.dbz-federated` 里，wrap 会撑满窗口内容区；
+   但 antd 默认 `top:100px` + 内容多高就多高，表单长一点就顶出窗口底部，
+   页脚（取消 / 确定）根本够不到。这里让 wrap 垂直居中，并给 Modal 设
+   上限高度、把滚动条收到 body 里，页头页脚常驻。 */
+.dbz-federated .ant-modal-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px 0;
+}
+
+.dbz-federated .ant-modal {
+  top: 0;
+  max-height: 100%;
+  margin: 0;
+  padding-bottom: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.dbz-federated .ant-modal-container {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+.dbz-federated .ant-modal-header,
+.dbz-federated .ant-modal-footer {
+  flex: 0 0 auto;
+}
+
+.dbz-federated .ant-modal-body {
+  min-height: 0;
+  overflow-y: auto;
 }

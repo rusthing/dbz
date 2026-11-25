@@ -24,7 +24,6 @@ import {
   App as AntdApp,
   Button,
   Descriptions,
-  Modal,
   Radio,
   Select,
   Space,
@@ -32,6 +31,7 @@ import {
   Tag,
   Typography,
 } from 'antd';
+import { Modal } from '../../lib/federated-overlay';
 import { useState } from 'react';
 import { sourceConnectorApi } from '../../api/source-connector';
 import type {

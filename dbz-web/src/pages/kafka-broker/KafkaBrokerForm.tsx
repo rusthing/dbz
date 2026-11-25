@@ -8,7 +8,8 @@
  * 密码**只进不出**：编辑时输入框永远为空，留空表示沿用原密码，不是清空。
  */
 
-import { Alert, App as AntdApp, Form, Input, Modal } from 'antd';
+import { Alert, App as AntdApp, Form, Input } from 'antd';
+import { Modal } from '../../lib/federated-overlay';
 import { useEffect, useState } from 'react';
 import { kafkaBrokerApi } from '../../api/kafka-broker';
 import type {

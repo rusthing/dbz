@@ -10,12 +10,12 @@ import {
   Alert,
   App as AntdApp,
   Button,
-  Modal,
   Radio,
   Table,
   Tag,
   Typography,
 } from 'antd';
+import { Modal } from '../../lib/federated-overlay';
 import { useEffect, useState } from 'react';
 import { backupApi } from '../../api/backup';
 import type {

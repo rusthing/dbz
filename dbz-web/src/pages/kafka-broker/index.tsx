@@ -12,7 +12,6 @@
 import {
   DownloadOutlined,
   PlusOutlined,
-  ReloadOutlined,
   ThunderboltOutlined,
   UploadOutlined,
 } from '@ant-design/icons';
@@ -362,9 +361,6 @@ export default function KafkaBrokerPage() {
           }}
         >
           恢复集群
-        </Button>
-        <Button icon={<ReloadOutlined />} onClick={reload}>
-          刷新
         </Button>
         <Button
           type="primary"
