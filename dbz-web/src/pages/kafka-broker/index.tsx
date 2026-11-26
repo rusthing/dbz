@@ -310,6 +310,11 @@ export default function KafkaBrokerPage() {
           style={{ width: 260 }}
           value={draft.keyword ?? ''}
           onChange={(event) => setDraft((prev) => ({ ...prev, keyword: event.target.value }))}
+          onClear={() => {
+            const next = { ...draft, keyword: '' };
+            setDraft(next);
+            applyFilters(next);
+          }}
           onSearch={() => applyFilters(draft)}
         />
         <Select

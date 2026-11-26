@@ -838,6 +838,7 @@ export default function DeadLetterPage() {
           style={{ width: 200 }}
           value={draft.reason ?? ''}
           onChange={(event) => setDraft((prev) => ({ ...prev, reason: event.target.value }))}
+          onClear={() => changeFilter({ reason: '' })}
           onSearch={() => applyFilters(draft)}
         />
         <Button
@@ -898,6 +899,7 @@ export default function DeadLetterPage() {
               style={{ width: 180 }}
               value={draft.topic ?? ''}
               onChange={(event) => setDraft((prev) => ({ ...prev, topic: event.target.value }))}
+              onClear={() => changeFilter({ topic: '' })}
               onSearch={() => applyFilters(draft)}
             />
           </div>
