@@ -653,7 +653,7 @@ export const BRANDS: Record<BrandKey, LoginBrand> = {
     shortTerms: "WKT · GEO-FENCE · RULE",
     key: "dtw",
     mark: "DT",
-    name: "DTW 数字孪生",
+    name: "DTW 人员定位",
     en: "Region Console",
     eyebrow: "REGION · WKT · ALARM RULE",
     headline: ["区域、规则与报警的", "一体化控制台"],
